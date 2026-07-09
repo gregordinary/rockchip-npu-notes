@@ -43,7 +43,8 @@ because the CPU baseline degrades faster than the NPU as the matmuls grow. The e
 architectural: the **MoE expert FFNs** of gpt-oss-20b (1.04×) and DeepSeek-V2-Lite (1.26×) route
 through `MUL_MAT_ID` and stay on the CPU by default, so the bulk of prefill FLOPs never reach the
 NPU (a bit-faithful `ROCKET_MOE=1` handler exists but is dequant-bound and slower); DeepSeek adds
-**MLA** attention (engageable with `-fa`, CPU by default at these lengths). Qwen3.6-27B's
+**MLA** attention (the FA gate accepts DK≠DV and is bit-faithful, but its DeepSeek FA path is not
+yet exercised on-device, so attention stays on the CPU here). Qwen3.6-27B's
 **Gated-DeltaNet** hybrid keeps its linear-attention layers on the CPU but they do not gate the
 win. The two MoE models decode briskly for their size (gpt-oss 7.2, DeepSeek 7.8 t/s) because only
 ~3.6 B / ~2.4 B params are active per token. Every NPU−CPU PPL Δ sits within its per-run stderr —
@@ -113,8 +114,10 @@ multi-camera pool** (Frigate's regime), not single-stream latency. Accuracy is C
   NPU−CPU delta isolates the fp16-accumulation fidelity of the NPU matmul (the absolute PPL of
   an instruct model is not meaningful; the delta is). Detection uses COCO mAP; the Whisper /
   SigLIP encoders use output cosine.
-- **Reproducibility.** Generator and raw `llama-bench` output under [data/](data/). Models are
-  stock GGUFs (provenance per model); F16 is `llama-quantize <bf16> <f16> F16` from the
+- **Reproducibility.** Generator and raw `llama-bench` output under [data/](data/) for most
+  models; a few runs (gpt-oss-20b, the DeepSeek `ROCKET_MOE=1` re-bench, and the Ministral-3-8B
+  perplexity) are summarized inline in this doc rather than archived as separate raw files. Models
+  are stock GGUFs (provenance per model); F16 is `llama-quantize <bf16> <f16> F16` from the
   published BF16.
 
 ## LLM (llama.cpp via ggml-rocket)
@@ -379,7 +382,7 @@ the published BF16. The small-end reference point next to the 8–9 B models abo
 | pp1024 | 15.96 → **47.86** (3.0×) | 14.81 → 38.77 (2.6×) | 13.55 → 37.29 (2.8×) |
 | pp2048 | 15.07 → **39.79** (2.6×) | 13.90 → 34.91 (2.5×) | 12.89 → 33.42 (2.6×) |
 
-F16 pp512 hits **55 t/s — the fastest prefill in this record** — but the win *falls* with prompt
+F16 pp512 hits **55 t/s** — but the win *falls* with prompt
 length (3.4×→2.6×) as the NPU rate declines 55→40. On a model this small the per-op readback and
 dispatch are a larger fixed fraction and grow with M (more output tiles to read back), so the F16
 curve slopes down — the opposite of the flat Qwen3.5-9B F16. The quants are flatter (~33–39 t/s)
@@ -607,7 +610,7 @@ in this record** and the field's standard reference point. GGUFs from
 | pp1024 | 17.74 → **52.91** (3.0×) | 16.48 → 36.31 (2.2×) | 16.34 → 36.66 (2.2×) |
 | pp2048 | 17.29 → **45.54** (2.6×) | 15.72 → 34.11 (2.2×) | 15.49 → 34.46 (2.2×) |
 
-F16 pp512 hits **61.79 t/s — the fastest prefill in this record** (past Phi-4-mini's 55), because
+F16 pp512 hits **61.79 t/s** (past Phi-4-mini's 55), because
 this is the smallest model here: fewer FLOPs per matmul. As with Phi-4-mini the F16 win *falls*
 with prompt length (3.4×→2.6×, the NPU rate declining 62→46) — on a small model the per-op readback
 and dispatch are a larger fixed fraction and grow with M.
@@ -689,8 +692,8 @@ derived from the published BF16. [HW sweep, 600 MHz, 2026-07-03].
 | pp1024 | 17.39 → **48.57** (2.8×) | 15.54 → 35.14 (2.3×) | 15.10 → 34.67 (2.3×) |
 | pp2048 | 16.26 → **39.78** (2.4×) | 14.50 → 30.78 (2.1×) | 14.32 → 30.54 (2.1×) |
 
-F16 pp512 hits **57.6 t/s — second only to Llama-3.2-3B (61.8) in this record** and just past
-Phi-4-mini (55.4): the three ~3–4 B dense models cluster at the top of the absolute-prefill table
+F16 pp512 hits **57.6 t/s** — between Llama-3.2-3B (61.8) and Phi-4-mini (55.4): the three ~3–4 B
+dense models cluster near the top of the absolute-prefill table
 because they run the fewest FLOPs per matmul. As on the other two the F16 win *falls* with prompt
 length (3.2×→2.4×, the NPU rate declining 58→40) — a small model's per-op readback is a larger fixed
 fraction and grows with M. The quants read ~2.0–2.3× (NPU absolute ~31–35 t/s) and *rise* then
@@ -764,9 +767,10 @@ fit the 31 GB board. [HW sweep, 600 MHz, 2026-07-03; MoE offload re-bench 2026-0
 
 This is a **combined gap-finder** — it stacks two offload gaps in one model, both addressed at the
 op level, neither a default win. (1) Its **MLA attention** has asymmetric key/value dims (DK=192 ≠ DV=128);
-the FLASH_ATTN handler **accepts DK≠DV** (bit-faithful primitive, cos=1.000000), so MLA is *engageable*
-with `-fa` — but it is dispatch-bound (large-DK, few-KV-head) and pays only at long context, so this
-default-flag re-bench keeps it on the CPU (pp-neutral here). (2) Its **routed experts** go through
+the FLASH_ATTN handler **accepts DK≠DV** (bit-faithful primitive, cos=1.000000), so the MLA FA
+primitive is ready — though the DeepSeek DL-backend FA path is not yet wired on-device, and it is
+dispatch-bound anyway (large-DK, few-KV-head, pays only at long context), so attention stays on the
+CPU here (pp-neutral). (2) Its **routed experts** go through
 `GGML_OP_MUL_MAT_ID`, which has a handler (`ROCKET_MOE=1`), but offloading the quantized experts is a
 **net loss** (below) — so they too stay on the CPU by default.
 
@@ -848,8 +852,8 @@ faithful. The handler's problem is purely speed, not accuracy (matching `test-ro
 **Verdict.** DeepSeek-V2-Lite stacks **MLA attention** and **MoE** in one model; both gaps now have op-level
 handlers, but neither is a default win. MLA's asymmetric head dims (DK=192 ≠ DV=128) once failed the
 FLASH_ATTN `DK==DV` contract; the gate is now **relaxed to accept DK≠DV** (bit-faithful primitive), so
-MLA is *engageable* with `-fa` — but it is dispatch-bound and pp-neutral at these lengths, so with default
-flags it stays on the CPU. The routed experts have a `MUL_MAT_ID` handler, but offloading the quantized
+the MLA FA primitive is ready — but the DeepSeek DL-backend FA path is not yet exercised on-device, and
+it is dispatch-bound and pp-neutral at these lengths, so attention stays on the CPU. The routed experts have a `MUL_MAT_ID` handler, but offloading the quantized
 experts **loses harder than gpt-oss** (0.25×→0.59× the CPU; DeepSeek's faster CPU and winning default NPU
 leave more to give up), so it too is opt-in. By default, then, the MLA projections + 2 shared experts +
 `lm_head` offload for a **modest, real 1.18–1.26×** prefill — larger than gpt-oss's ~1.04× (bigger dense
@@ -1111,7 +1115,8 @@ checking it, so the broken config still benchmarks — the transcript is what ca
 `rocket_weight_key` by rejecting ggml-default `leaf_`/`node_` names (they stream per call instead of
 caching — correct, and timing-neutral for a single-pass encoder, so the numbers above are the same
 with or without the fix). llama.cpp weights carry real names (`blk.N.*`) and never match, so LLM
-resident caching and prefill speed are unchanged (Llama-3.2-3B F16 pp512 = 60.9 t/s after the fix).
+resident caching and prefill speed are unchanged (Llama-3.2-3B F16 pp512 stays ~61 t/s, within
+run-to-run noise of the 61.79 headline).
 
 **Verdict.** Whisper encoder offload is a CPU-faithful accelerator whose win scales with model size:
 ~1.2× at tiny/base, ~2.1× at large-v3 / large-v3-turbo, transcripts byte-identical to the CPU. It is

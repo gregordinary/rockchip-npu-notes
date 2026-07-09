@@ -56,7 +56,7 @@ ones — they were the most expensive to learn.
 | [encodings/sdp-stage-precision.md](encodings/sdp-stage-precision.md) | DPU SDP (BS/BN/EW) + CORE | the 3 SDP stages' precision: no stage adds a per-element *integer* tensor (BS/BN per-channel int32 broadcast, EW per-element but float-only ALU) → on-device int32 K-accum impossible = the int8 ceiling; CACC no cross-op accumulate |
 | [encodings/dpu-lut-activation.md](encodings/dpu-lut-activation.md) | DPU LUT (SDP) | on-NPU activation (NVDLA LE/LO hybrid): sigmoid/hardsigmoid/tanh/SiLU + **GELU (accurate 2-pass `x·Φ(x)`; the single-pass spikes in the flat tail)** + conv→act fusion + **LeakyReLU** + **sqrt/rsqrt/reciprocal/EXP/LOG** (shifted single-table, <1% over ~128×; EXP works standalone; **LOG = the first SIGNED-output positive-domain kind, negative `out_lo` via OUT_CVT offset, absolute-error metric**) + fully-on-NPU EW **mul/add/sub/div**; the x≈0 mux glitch = the LE/LO mux selects on `sign(x)`; **QUIRK 1: a flat/saturated in-table run mis-toggles the mux (~128 spike) ⇒ single-pass LUT fusion is curved-region-only, use 2-pass `x·gate(x)`**; **QUIRK 3: riding the EXACT max width (cols 8191) corrupts ~54 cube positions**; **QUIRK 4: a q=0 LUT table entry mis-decodes to a garbage ~4.0 ⇒ floor every table entry to q≥1** |
 | [encodings/whisper-encoder.md](encodings/whisper-encoder.md) | composition | the Whisper/transformer encoder block FULLY on the NPU (cos=1.000000): EXP LUT, row-wise softmax (host row-max, no on-NPU max-reduce datapath) + **LogSoftmax** (`x−logsumexp`, host `log(s)` like softmax's `1/s`, per-row `ew_sub`) + stable **cross-entropy** (`logsumexp − logits[target]`, the on-NPU logsumexp + a **host GATHER** — NO HW gather exists; fp32-grade since the loss skips fp16 output storage), LayerNorm (BOTH reductions in ONE stacked-row feature-reduce), conv1d (lower with TIME on the HEIGHT axis — IH=1 overflows the feature banks), multi-head self-attention (pad the key count to %32 + mask the pad score columns; the matmul rejects unaligned N/K), 2-pass GELU, the full pre-norm block |
-| [encodings/siglip-encoder.md](encodings/siglip-encoder.md) | composition | the **SigLIP-B/16 vision encoder** (SmolVLM-256M front-end) end-to-end on the NPU = patch-embed (im2col→matmul, stride==kernel patchify) + pos + 12×`rocket_encoder_block_fp16` `(L=1024,d=768,12h,d_ff=3072)` + post-LN; **fidelity 0.999998 cosine vs the fp32 HF oracle (SHARD 0.95)**; latency ~6 s warm (resident: prepacked GEMMs + threaded host softmax/GELU), NOT iso-hardware vs SHARD's 2.24 s; **NPU FACT: full-attention softmax is data-movement bound on-NPU (~6.5 s, batching heads doesn't help) → host threaded softmax ~10× cheaper once scores are de-tiled**; remaining floor = matmul de-tile + non-fused attention |
+| [encodings/siglip-encoder.md](encodings/siglip-encoder.md) | composition | the **SigLIP-B/16 vision encoder** (SmolVLM-256M front-end) end-to-end on the NPU = patch-embed (im2col→matmul, stride==kernel patchify) + pos + 12×`rocket_encoder_block_fp16` `(L=1024,d=768,12h,d_ff=3072)` + post-LN; **fidelity 0.999998 cosine vs the fp32 HF oracle (SHARD 0.95)**; latency ~2.71 s warm (resident: prepacked GEMMs, multicore head-fanned attention, host softmax + bit-exact GELU LUT; ~2.30 s with all levers, 1.78×), NOT iso-hardware vs SHARD's 2.24 s; **NPU FACT: full-attention softmax is data-movement bound on-NPU (~6.5 s, batching heads doesn't help) → host threaded softmax ~10× cheaper once scores are de-tiled**; remaining floor = matmul de-tile + the host-softmax score round-trip |
 | [encodings/feature-reduce.md](encodings/feature-reduce.md) | CNA/CORE/DPU (matmul) | reduce over the hidden/feature axis (`sum_h x[m,h]`) = a **ones-vector matmul** — the PPU **cannot** reduce the channel axis (it pools spatial `[H,W]` within a channel only); fp32-accumulate, the transformer-norm / softmax contraction. **Cumsum / prefix sum** = the same matmul with the ones-COLUMN widened to a **triangular ones MATRIX** (`out=in·Lᵀ`; incl/excl×fwd/rev; HW bit-exact) ⇒ the reduce-as-matmul family = full + weighted reduce + prefix scan |
 | [encodings/rmsnorm-onnpu.md](encodings/rmsnorm-onnpu.md) | composition | RMSNorm = square→feature-reduce→(host rsqrt)→scale; the rsqrt stays on the HOST (M per-row scalars; LUT-domain otherwise); fp16-square overflow needs a power-of-2 prescale; the per-row broadcast scale primitive |
 | [encodings/ffn-block.md](encodings/ffn-block.md) | composition | the gated-MLP FFN (GeGLU/SwiGLU): the only new op vs matmul is `act(gate)⊙up`; cosine-validated; the resident-cube fusion plan (host handoff today) |
@@ -68,7 +68,7 @@ ones — they were the most expensive to learn.
 | [encodings/cbuf-reuse.md](encodings/cbuf-reuse.md) | CNA (CBUF) | the WEIGHT_REUSE / DATA_REUSE operand-reuse bits |
 | [encodings/cbuf-bank-slack.md](encodings/cbuf-bank-slack.md) | CNA (CBUF) | the int8 feature DMA over-reads by one bank — reserve `data_bank = fd_banks+1` |
 | [encodings/mrdma-trap.md](encodings/mrdma-trap.md) | DPU-RDMA | the regcmd block you must emit or the job times out |
-| [perf/not-mac-bound.md](perf/not-mac-bound.md) | whole NPU | the ~460 GOP/s dtype-independent ceiling — quant doesn't speed up matmul |
+| [perf/not-mac-bound.md](perf/not-mac-bound.md) | whole NPU | the ~460 GOP/s dtype-independent floor at this operating point — quant doesn't speed up matmul here (bottleneck-conditional, not a silicon law) |
 | [perf/quant-prefill-microbatch.md](perf/quant-prefill-microbatch.md) | LLM prefill | quantized-GGUF prefill is **per-micro-batch dequant-bound** — `-ub 2048` ~2×'s it, quant *type* is irrelevant to throughput, quant ≈ 0.64× F16; short quant prefills route to CPU (`ROCKET_MIN_M_QUANT`); the F16 NPU prefill win **scales with model size** (0.8B 1.44× → 9B 3.65× CPU); Qwen3.5/3.6 incl. hybrid-DeltaNet validated |
 | [perf/iova-and-multicore.md](perf/iova-and-multicore.md) | kernel/DMA | per-fd 4 GB IOVA window; N fds for N cores |
 | [perf/clock.md](perf/clock.md) | clock/PM | 200 → 600 MHz, the cold power-domain gotcha, the 900 MHz hard-lock |
@@ -89,7 +89,7 @@ done by int8 byte-decomposition). Weights and activations must be pre-scattered 
 native tiled layouts on the host (the NPU has no on-chip row-major→tiled
 conversion). The integer-output write stride has a quirk (`size_e=7`). You can
 accumulate fp16 K-partials on-chip via the DPU eltwise unit, but not integer
-ones — the EW operand DMA is ≤16-bit. The int8 feature cube has a CBUF gotcha — its
+ones — the DPU eltwise ALU is float-only. The int8 feature cube has a CBUF gotcha — its
 DMA over-reads by one bank, so you must give it `data_bank = fd_banks+1` of slack
 (fp16 is immune). The matmul rows are the conv's spatial height, and a height below
 4 (the `M==1` single-vector / GEMV case) mis-computes on the hardware at every
@@ -99,8 +99,9 @@ NVDLA LUT unit that computes nonlinear activations on-chip (sigmoid/tanh/SiLU/GE
 reciprocal/exp) — enough, composed with the matmul, to run a full transformer/Whisper encoder
 block on the NPU; two LUT gotchas: a table entry of exactly `q=0` mis-decodes to a garbage ~4.0
 (floor entries to `q≥1`), and riding the exact 13-bit max cube width corrupts the tail (tile under
-it). And the most important performance fact: on this hardware the matmul is DMA/dispatch-bound,
-not MAC-bound — so quantization buys you RAM, not prefill speed. The clock boots at 200 MHz and
+it). And the most important performance fact: at the current operating point the matmul is
+DMA/dispatch-bound, not MAC-bound — so quantization buys you RAM, not prefill speed
+(bottleneck-conditional, not a permanent silicon law). The clock boots at 200 MHz and
 can only be raised
 from inside the driver after the power domain is up.
 

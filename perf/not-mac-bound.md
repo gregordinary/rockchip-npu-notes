@@ -57,8 +57,8 @@ In the live model int8 loses, decisively:
 
 - **Resident int8 prefill ≈ 9.1 t/s vs resident fp16 ≈ 15.1 t/s = 0.60×.** [HW sweep, 600 MHz]
 
-fp16 has on-NPU K-accum (`read ∝ M·N`); int8 cannot (its int32 partials exceed the EW's
-≤16-bit operand — see [../encodings/k-accumulation.md](../encodings/k-accumulation.md)). So
+fp16 has on-NPU K-accum (`read ∝ M·N`); int8 cannot (the DPU-EW ALU is float-only, and fp32
+can't hold its int32 partials exactly — see [../encodings/k-accumulation.md](../encodings/k-accumulation.md)). So
 int8's un-K-accumulated int32 readback (`∝ M·N·nKt`, 2× the bytes of fp16) eats its MAC
 advantage and then some. Making int8 *resident* removes the per-call requant + packB
 overhead (+25–58% over the naive int8 path), but the readback wall is untouched and caps it
@@ -109,8 +109,8 @@ are settled:
   field that accumulates the CACC across CBUF passes**: the CORE block has no
   accumulate-vs-reset control, and the conv task splitter splits spatial height, never the
   channel (K) axis [source-confirmed: Mesa `rkt_task.c`]. Beyond one tile the partials are
-  summed through DRAM via the same DPU-EW path the `ROCKET_KACC` mechanism uses, capped at the
-  ≤16-bit operand — so there is **no** on-device cross-tile int32 K-accum on any stack.
+  summed through DRAM via the same DPU-EW path the `ROCKET_KACC` mechanism uses, whose ALU is
+  float-only — so there is **no** on-device cross-tile int32 K-accum on any stack.
   [HW sweep + source-confirmed; see [../encodings/k-accumulation.md](../encodings/k-accumulation.md)]
 - **On-chip SRAM stages whole tensors, not partials.** The 956 KB NPU SRAM holds *weight* or
   *internal (activation)* tensors to relieve DDR bandwidth; the vendor's own doc notes it "may

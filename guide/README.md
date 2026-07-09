@@ -51,7 +51,8 @@ the exact build and test commands.
 
 ## 2. (Optional) Raise the NPU clock
 
-The NPU compute clock boots pinned at 200 MHz — one-fifth of its usable speed. The
+The NPU compute clock boots pinned at 200 MHz — one-fifth of its 1 GHz spec max (one-third of the
+600 MHz operating point). The
 clock patch in `patches/rocket` raises
 it safely to a 600 MHz operating point (~1.43× prefill), as a module rebuild that never
 touches the kernel image or device tree. Apply it before benchmarking; the background is

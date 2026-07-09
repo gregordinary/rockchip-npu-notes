@@ -17,7 +17,7 @@ and §"In-model fused integration". Two things are reproduced here:
 |---|---|
 | `whisper_fmt.py` | Parser for whisper.cpp's legacy ggml model format (magic `ggml`, **not** GGUF). Returns `{name: ndarray}` in `(out,in)` row-major (== `nn.Linear`, == rocket's weight layout). |
 | `gelu_block_diff.c` | Standalone (no NPU): quantifies whisper's tanh-GELU vs rocket's erf-GELU at the block level. Result: cos 1.0, max_abs 1.7e-4 → GELU variant is a non-issue. |
-| `wprep.py` | Loads real encoder weights, computes a double-precision **whisper-exact golden** (biased-var LayerNorm eps=1e-5, tanh-GELU, attn scale 1/√dh, K no bias), exports weights (fp16) + per-block golden in/out for the C harness. Optional `--x0` real captured input. |
+| `wprep.py` | Loads real encoder weights, computes a double-precision **whisper-exact golden** (biased-var LayerNorm eps=1e-5, tanh-GELU, attn scale 1/√dh, K no bias), exports weights (fp16) + per-block golden in/out for the C harness. Optional 4th positional arg: real captured encoder input (`.bin`). |
 | `wvalidate.c` | C harness: runs `rocket_encoder_block_fp16` on the NPU per block (isolated + chained), writes outputs. Build: `gcc -O2 wvalidate.c -I <rocket-userspace>/include -I/usr/include/libdrm -L <build> -lrocketnpu -lpthread -lm -ldrm`. |
 | `wcmp.py` | Per-block cosine / max_abs of NPU vs golden. |
 | `apply_dump_patch.py` | Idempotent whisper.cpp patch (env `WHISPER_DUMP_ENC=1`) dumping the real encoder input (`embd_conv`) + output (`embd_enc`). Temporary instrumentation; revert with the `.bak`. |
@@ -42,6 +42,7 @@ python3 wprep.py /tmp/wenc_real 1500 /path/to/ggml-base.en.bin /tmp/inpL_real.bi
 
 # in-model fused encoder (byte-identical transcript)
 python3 apply_rocket_enc_patch.py /path/to/whisper.cpp
-cmake -S whisper.cpp -B whisper.cpp/build -DWHISPER_ROCKET=ON && cmake --build whisper.cpp/build -j8 --target whisper-cli
+cmake -S whisper.cpp -B whisper.cpp/build -DWHISPER_ROCKET=ON -DROCKETNPU_DIR=/abs/path/to/rocket-userspace && cmake --build whisper.cpp/build -j8 --target whisper-cli
+#   (ROCKETNPU_DIR defaults to a sibling ../../rocket-userspace; it must be built into its build/ dir first)
 WHISPER_ROCKET_ENC=1 [ROCKET_ATTN_HOST_SOFTMAX=1] whisper-cli -m ggml-base.en.bin -f samples/jfk.wav
 ```

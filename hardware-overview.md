@@ -98,16 +98,17 @@ with the encoding detail in [encodings/precision-field.md](encodings/precision-f
 
 ## TOPS vs reality
 
-Rockchip markets the NPU at **6 TOPS** — that is int4-convolution peak. In matmul terms
-the realistic numbers (clehaxze, external RKNN benchmarks) are ~0.5–1 TFLOPS fp16 peak,
-~2× for int8, ~2× again for int4 *in MAC throughput*.
+Rockchip markets the NPU at **6 TOPS** — the int8-convolution peak. The theoretical 3-core
+MAC peak scales with the datatype: ~3 TFLOPS fp16, ~6 TOPS int8 (2×), ~12 TOPS int4 (2×
+again). In practice, measured RKNN matmul benchmarks (clehaxze, external) reach only
+~0.5–1 TFLOPS fp16.
 
 **On the FOSS rocket path the matmul does not get anywhere near MAC peak.** It measures
 ~460 GOP/s at 600 MHz **across precisions** (fp16 ≈ int8 ≈ int4) — about 15% of the
-fp16 MAC peak and ~4% of the int4 peak. The matmul is **DMA/dispatch-bound, not
-MAC-bound**, so the 2×/4× quant MAC advantages do not express as speed. This is the single
-most important performance fact and it has its own doc:
-[perf/not-mac-bound.md](perf/not-mac-bound.md).
+theoretical fp16 MAC peak and ~4% of the int4 peak. At this operating point the matmul is
+**DMA/dispatch-bound, not MAC-bound**, so the 2×/4× quant MAC advantages do not express as
+speed. This is the single most important performance fact and it has its own doc, which
+scopes it carefully: [perf/not-mac-bound.md](perf/not-mac-bound.md).
 
 ## The clock boots throttled
 

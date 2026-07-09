@@ -10,21 +10,19 @@
      nope + 64 rope, value_length 128, 16 heads) + MoE (64 routed + 2 shared experts, 6 routed
      active per token, 27 blocks, block 0 dense). ~2.4B of 15.71B params active per token.
 
-     A COMBINED gap-finder -- it stacks the two current offload gaps in one model:
-       1. MLA attention: FLASH_ATTN_EXT does NOT offload. llama.cpp builds the fused FA op for
-          deepseek2 (with -fa 1 the FA column reads 1, no error), but the backend's supports_op
-          rejects every one: MLA's key/value head dims are ASYMMETRIC (DK=192 != DV=128), which
-          fails the handler's DK==DV==head_dim contract (it assumes standard GQA). The FA_TIMING
-          probe stays silent even with -fa forced on -> zero FA ops reached the NPU -> attention
-          runs entirely on the CPU. (The FA engagement diagnostic below is the evidence: no
-          "ROCKET FA total" line under either -fa auto or -fa 1.)
-       2. MoE routed FFN: GGML_OP_MUL_MAT_ID, not offloaded (the gpt-oss-20b gap), so the 6 active
-          routed experts' gate/up/down matmuls stay on the CPU too.
+     A COMBINED gap-finder -- it stacks the two attention/expert paths that run on the CPU here:
+       1. MLA attention: the FA gate accepts DK != DV (DeepSeek's DK=192 = 128 nope + 64 rope,
+          DV=128), so the FLASH_ATTN_EXT primitive is bit-faithful for MLA. The DeepSeek DL-backend
+          FA path is not yet exercised on-device, so in this bench attention ran on the CPU -- the
+          FA engagement diagnostic below shows no "ROCKET FA total" line under -fa auto or -fa 1.
+       2. MoE routed FFN: GGML_OP_MUL_MAT_ID has an opt-in handler (ROCKET_MOE=1), but offloading
+          quantized experts is dequant-bound and a net loss, so the 6 active routed experts'
+          gate/up/down matmuls stay on the (faster) CPU by default.
      What DOES reach the NPU: the large MLA projections (q_a/q_b/kv_a/kv_b), the 2 always-on SHARED
      experts' gate/up/down, and lm_head -- all ordinary static-weight MUL_MAT. Those dense GEMMs are
      substantial (bigger than gpt-oss's GQA projections + no shared expert), so the NPU prefill win
-     is modest-but-real (1.18-1.26x) and LARGER than gpt-oss's ~1.04x, even though DeepSeek loses
-     BOTH attention and routed-expert offload. Unlike the instruct/reasoning models in this record,
+     is modest-but-real (1.18-1.26x) and LARGER than gpt-oss's ~1.04x, even with attention and the
+     routed experts on the CPU. Unlike the instruct/reasoning models in this record,
      the absolute wikitext PPL (~8.2) is in the normal range (base model); the NPU-CPU delta is the
      faithfulness measure. See ../benchmarks.md Method. Generator: run_sweep_deepseek.sh, 2026-07-03. -->
 
@@ -34,8 +32,9 @@
 --- -fa 1 (flash attention FORCED ON) ---
 | deepseek2 16B Q4_K - Medium    |   9.65 GiB |    15.71 B | ROCKET     |  -1 |     2048 |   1 |          pp2048 |         23.92 ± 0.00 |
 NO "ROCKET FA total" line printed under either -fa auto or -fa 1 -> the FLASH_ATTN_EXT op is built
-by llama.cpp (fa=1 column present, no error) but rejected by supports_op (MLA DK=192 != DV=128) ->
-zero attention ops offloaded -> MLA attention runs on the CPU.
+by llama.cpp (fa=1 column present, no error) but did not engage the NPU FA path in this backend
+build -> attention ran on the CPU for this bench. (The FA gate itself accepts DK != DV and is
+bit-faithful; the DeepSeek end-to-end offload is not yet wired/validated on-device.)
 
 == DeepSeek-V2-Lite Q4_K_M  Fri Jul  3 19:40:28 UTC 2026 ==
 ### DeepSeek-V2-Lite Q4_K_M  [cpu]  19:41:22  clk=200 MHz

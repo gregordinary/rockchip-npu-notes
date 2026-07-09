@@ -102,7 +102,7 @@ if (WHISPER_ROCKET)
         set(ROCKETNPU_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../rocket-userspace")
     endif()
     target_include_directories(whisper PRIVATE ${ROCKETNPU_DIR}/include /usr/include/libdrm)
-    target_link_libraries(whisper PRIVATE ${ROCKETNPU_DIR}/build_nv/librocketnpu.a drm)
+    target_link_libraries(whisper PRIVATE ${ROCKETNPU_DIR}/build/librocketnpu.a drm)
     target_compile_definitions(whisper PRIVATE WHISPER_ROCKET_ENABLED)
 endif()'''
     c = c.replace(canchor, cblock, 1)

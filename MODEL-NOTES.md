@@ -95,8 +95,8 @@ Use a few-hundred-token prompt so the prefill is large enough to actually route 
   to CPU fp16** → prefill is faithful at 12B scale [HW sweep]. Native **int8**
   (`ROCKET_INT8=1 ROCKET_INT8_HADAMARD=1`) and **int4** (`ROCKET_INT4=1`) also run
   coherently and greedy char-identical to fp16 — these are RAM / model-fit levers, **not**
-  prefill-speed levers (the NPU is dispatch-bound, so quantization buys footprint, not
-  speed).
+  prefill-speed levers (at this operating point the NPU is dispatch-bound, so quantization
+  buys footprint, not speed).
 - **Eval note:** it is a reasoning model, so **wikitext perplexity is not a valid quality
   metric** (the F16 reference PPL is itself ~545). Evaluate with greedy-match against the
   CPU reference and a cosine probe, not PPL.

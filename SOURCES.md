@@ -49,7 +49,7 @@ driver (see the [README](README.md) evidence tags).
   "jump-to-next-task"** / working / input / output) from real models — a reference for the
   **multi-task chaining structure** (task-persistence / the dispatch floor), though
   decoding raw BSP dumps is lower-value than a targeted Teflon capture on the rocket path.
-  Independently corroborates the **≤16-bit EW operand** limit that kills integer K-accum.
+  Independently corroborates the **float-only EW ALU** that kills integer K-accum.
 
 - **6.6 BSP kernel `rknpu` driver** — the vendor kernel driver: HW performance
   counters, the devfreq/OPP table, and —
@@ -259,15 +259,14 @@ driver (see the [README](README.md) evidence tags).
 
 - **rk-llama.cpp issue #9** (the proprietary rknpu2 stack) — independently confirms
   the *direction*: "Q8_0 maps well to RKNPU W8A8" → Q8_0 prefill +200–400%; Q4_0
-  maps poorly; decode is memory-bound (matches our CPU-decode split). **The
-  *mechanism* behind their Q8 win is inferred, not proven** — our path measures int8
-  *slower* than fp16 (the int32-readback wall), and *something* lets theirs avoid it,
-  but we have not isolated which of: native on-device int32 K-accum / weight-DMA
-  binding (theirs may be weight-bandwidth-bound where ours is not) / on-chip SRAM
-  staging of partials (a second memory interface `rocket` doesn't use). So the numbers
-  validate direction but do *not* transfer to our readback-bound path, and the causal
-  attribution is hypothesis-level — see
-  [perf/not-mac-bound.md](perf/not-mac-bound.md) §"int8 is slower than fp16".
+  maps poorly; decode is memory-bound (matches our CPU-decode split). Their Q8 win is
+  **operand bandwidth at a lower dispatch floor**, not a capability the open path lacks:
+  RKLLM quantizes to W8A8 (8-bit weights *and* activations), halving the bytes moved for
+  both operands on a path that is dispatch/DMA-bound — and their own Gemma int8 runs at
+  40–58% NPU utilization, so their stack is not MAC-bound either. The one thing it is
+  *not* is native on-device int32 K-accum: that is a hardware dead-end for every stack
+  (the DPU-EW ALU is float-only — [encodings/k-accumulation.md](encodings/k-accumulation.md)).
+  See [perf/not-mac-bound.md](perf/not-mac-bound.md) §"The proprietary stack's int8 win is bandwidth".
 
 - **kevbuh/rk3588** — notes/datasheets confirming int4/int8/int16/fp16/bf16/tf32
   support on the silicon (used to sanity-check the precision menu).

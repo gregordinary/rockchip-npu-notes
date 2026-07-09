@@ -148,5 +148,7 @@ the layouts' real payoff is **RAM / model size**, not speed.
 
 A related per-dtype constant in the descriptor: a "data entry" is a fixed **64 bytes**, so
 the divisor = `64 / element-bytes`: fp16/bf16/int16 (2 B) → **32**, int8 (1 B) → **64**,
-int4 (½ B) → **128**, **tf32 (4 B) → 16**. The field reads as the number of K-groups for
-the dtype's K-group size. (Diagnostic knobs `ROCKET_*_DENTRIES_DIV` exist in the driver.)
+int4 (½ B) → **128**, **tf32 (4 B) → 16**. This equals the number of K-groups only for the dtypes
+whose K-group spans a full 64-byte entry (fp16/bf16/int16, tf32); for int8/int4 a K-group is smaller
+than 64 B, so `data_entries` is fewer than the K-group count. (Diagnostic knobs
+`ROCKET_*_DENTRIES_DIV` exist in the driver.)

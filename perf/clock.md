@@ -48,8 +48,9 @@ returning cleanly is itself the "didn't cold-set" proof. See the `rocket-clk` pr
 ## 600 MHz is the operating point (~1.43×)
 
 - **600 MHz: safe + coherent.** Standalone fp16 `512×3840×4096` 56.5 → 75.3 GFLOP/s
-  (1.33×); Gemma pp2048 **7.98 → 11.40 t/s (1.43×)**; int8 still bit-exact; temps
-  48–57 °C, no throttle. Vendor-validated at vdd_npu 0.80 V (the OPP table puts 300–700
+  (1.33×); Gemma pp2048 **7.98 → 11.40 t/s (1.43×)** isolating the clock; int8 still bit-exact;
+  temps 48–57 °C, no throttle. (With the datapath levers on, 600 MHz Gemma pp2048 is ~15 t/s.)
+  Vendor-validated at vdd_npu 0.80 V (the OPP table puts 300–700
   MHz at 0.70 V, 900 MHz at 0.80 V, 1 GHz at 0.85 V).
 
 - **Why only 1.43×, not ~4.5×:** at 600 MHz the NPU `wait` collapses and the *other*

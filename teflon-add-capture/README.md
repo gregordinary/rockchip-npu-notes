@@ -20,6 +20,12 @@ ROCKET_DEBUG=dbg_msgs,dump_bos ~/tfvenv/bin/python3 .../tools/run_delegate.py \
 python3 .../rocket/decode.py --xml .../rocket/registers.xml --dump mesa-regcmd-000-000.bin
 ```
 
+The `.../` tools (`make_add_tflite.py`, `run_delegate.py`, `decode.py`, `registers.xml`,
+`libteflon.so`) live in a Mesa **Teflon** checkout (the `rocket` gallium driver + `teflon`
+frontend), not vendored here — point the `.../` paths at your Mesa tree. The committed
+`regcmd.decoded.txt` is the decoded result, so the analysis below is reproducible by
+inspection without re-running the capture.
+
 ## What the decode shows (the baseline)
 
 The dumped task is a **plain conv** — Teflon's TFLite partitioner only claimed one

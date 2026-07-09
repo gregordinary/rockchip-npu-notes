@@ -14,7 +14,7 @@ accumulate-vs-reset control** — nothing makes a later CBUF pass add into the p
 — and the conv task splitter splits spatial *height*, never the channel (K) axis [source-confirmed: Mesa `rkt_task.c`]. So a K
 larger than one CBUF tile is always `nKt` separate jobs whose partials leave the chip; the only
 choice is *where they are summed* — host fp32 (the int-type fallback) or the DPU-EW add below. The
-integer EW path's ≤16-bit ceiling is then a hard wall: no silicon path on this NPU sums int32
+integer EW path's float-only ALU is then a hard wall: no silicon path on this NPU sums int32
 K-partials on-chip.
 
 This works for **fp16** and is a real win. It is **dead** for every integer type. Both
@@ -62,38 +62,39 @@ practice it does **not** flip greedy LLM tokens — Gemma-4-12B output stays coh
 and the per-op verify is `nonfinite=0`, worst `max_abs≈0.38`. So fp16 EW K-accum is
 "good enough," not bit-exact. **Measured: +19% Gemma prefill** (pp2048, 600 MHz).
 
-## Integer EW K-accumulation — DEAD. The EW operand DMA is ≤16-bit.
+## Integer EW K-accumulation — DEAD. The EW ALU is float-only.
 
 int8 K-accum would matter: its int32 readback is 2× fp16's bytes and is *not*
-K-accumulated, so int8 is strictly worse per-op than fp16 with K-accum. But every
-approach fails, with one root cause:
+K-accumulated, so int8 is strictly worse per-op than fp16 with K-accum. But there is no
+on-chip path for it. EW is the only per-element SDP stage (BS/BN broadcast a per-channel
+`[C]` vector, useless for per-pixel K-partials — see
+[sdp-stage-precision.md](sdp-stage-precision.md)), and its ALU does fp16/fp32 per-element
+adds, never an integer add — so every approach fails:
 
-1. **int32 integer-add via `EW_ALU_ALGO`** (`0x10C202C0`) → garbage: the EW added the
-   int32 bit patterns *as float*. The EW ALU is a **float-only** unit.
-2. **int32 via the `EW_OP_TYPE=1` integer path** (`0x10C203C4`) → fp16-special garbage
-   (a true add of conv(226)+op(1000000) should give 1000226; got `0x3A7C80` with a
-   low-16 fp16 inf/NaN pattern). Tested with a **constant** int32 operand
-   (geometry-invariant) so this is the *operand read* failing, not addressing.
-3. **fp32 EW-add** (cast int8-conv's int32 → fp32, add via the proven float path):
-   the first stage passed — **int8-conv → fp32 output cast works bit-exact** (still needs
-   `size_e=7`!). The second stage failed — a **constant** fp32 operand returned ref on some
-   lanes and garbage on others, so again the 32-bit operand *read* is broken.
+1. **int32 integer-add via `EW_ALU_ALGO`** (`0x10C202C0`) → garbage: the EW adds the
+   int32 bit patterns *as float*.
+2. **int32 via the `EW_OP_TYPE=1` integer path** (`0x10C203C4`) → garbage: a true add of
+   conv(226)+op(1000000) should give 1000226; the EW returns `0x3A7C80`, an fp16 inf/NaN
+   pattern in the low 16 bits. Tested with a **constant** operand, so it is the ALU, not
+   the addressing.
+3. **fp32 EW-add** (cast int8-conv's int32 → fp32, then add via the float path): the pieces
+   exist — int8-conv → fp32 output cast is bit-exact (still needs `size_e=7`), and a 32-bit
+   fp32 EW operand read works (`EDATA_SIZE(3)`=32-bit, the same read the fp32-output matmul
+   uses). But fp32 cannot hold the sum: a Kt=768 tile reaches ~12M and the full K-sum ~248M,
+   past fp32's exact-integer range (2²⁴ ≈ 16.7M), so accumulating the int32 partials as fp32
+   drops the low bits. int16 EW-add cannot hold them either.
 
-**Root cause (HW + source-confirmed):** the three failures all trace to a 32-bit operand
-*read*. `EDATA_SIZE(3)` = 32-bit appears in **no EW exemplar**: the fp16 K-accum path above
-works precisely because it uses `EDATA_SIZE(2)`=16-bit, and Mesa's int8 EW uses
-`EDATA_SIZE(1)`=8-bit. The DPU EW operand path is fundamentally **≤16-bit**.
-fp16 K-accum works *only because fp16 is 16-bit*. int8's int32 partials (a Kt=768 tile
-reaches ~12M, the full sum ~248M) need ≥32-bit → unreachable by the EW in int32, fp32,
-or any type. **int16 EW-add cannot hold them either.** [HW sweep + source-confirmed]
+**Net (HW + source-confirmed):** the per-element SDP stage is float-only, and the one type
+it can accumulate (fp32) cannot represent an int32 K-sum exactly. There is **no bit-exact
+on-device integer K-accum**, for int8→int32 or int16.
 
 **Do not reattempt integer EW K-accum on this hardware.** The output pattern is
 universal — int8→int32, int4→int16, fp16→fp32 — and nobody does on-device integer K-accum.
 
 ## int4's int16 output: feasible in principle, but moot
 
-int4's output is **int16** — within the EW's ≤16-bit range — so int4 EW K-accum
-*could* work (if the running sum stays in range). But it doesn't matter: int4 can
+int4's int16 output has K-sums that stay within fp32's exact-integer range, so int4 EW
+K-accum via the float path *could* be bit-exact. But it doesn't matter: int4 can
 reach single-pass K (`nKt=1`, zero K-accum) by shrinking the output tile, **and** the
 matmul isn't readback-bound anyway (single-pass int4 is no faster — see
 [../perf/not-mac-bound.md](../perf/not-mac-bound.md)). So int4 EW K-accum is not worth

@@ -120,7 +120,9 @@ dequant path alone.
 
 ## Model-size scaling: the NPU prefill win grows with the model
 
-F16 prefill, NPU vs CPU, best per model [HW sweep, 2026-06-27/28, 600 MHz]:
+F16 prefill, NPU vs CPU, best per model [HW sweep, 2026-06-27/28, 600 MHz] (best-case runs from an
+early scaling sweep; canonical per-model warm medians are in [benchmarks.md](benchmarks.md) — e.g.
+9B pp2048 ≈ 24.9 t/s / 3.5×):
 
 | model | params | best NPU prefill | CPU | NPU× |
 |---|---|---:|---:|---:|

@@ -63,7 +63,7 @@ def block(x, L):
     f2 = h @ W(p+"mlp.2.weight").T + W(p+"mlp.2.bias")
     return xa + f2
 
-# block-0 input: real captured (--x0) or realistic synthetic (pos-embed + noise)
+# block-0 input: real captured (4th positional arg) or realistic synthetic (pos-embed + noise)
 pe = t['encoder.positional_embedding'].astype(np.float64)
 if X0F:
     x0 = np.fromfile(X0F, dtype=np.float32).astype(np.float64).reshape(T, d)

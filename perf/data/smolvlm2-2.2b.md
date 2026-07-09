@@ -35,11 +35,13 @@ Graph placement (ggml_backend_sched reserve):
 The vision graph shatters into 272 CPU<->NPU handoffs. ggml-rocket offloads only STATIC-WEIGHT
 GEMMs that clear K%32==0, N%16==0, K>=64, N>=64 (src0 == a model-parameter leaf). Per SigLIP
 layer that admits exactly q/k/v/o projections + fc1 (5 GEMMs). Excluded:
+
   - fc2 down-proj: K=4304, 4304%32=16 -> fails K%32.
   - attention QK^T and score*V: src0 is a COMPUTED tensor (not a weight leaf), so the handler
     skips them by design -- independent of head_dim 72 also missing %32/%16.
   - every norm / softmax / GELU / residual-add / patch-embed op -- op types ggml-rocket does
     not implement.
+
 27 layers x 5 offloaded GEMMs = ~135 NPU ops, each bracketed by CPU-only ops -> 272 splits.
 
   backend      cold(rep0)   warm reps (ms)                          warm median   speedup
