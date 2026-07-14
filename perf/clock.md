@@ -90,6 +90,113 @@ load, the **first** `-r 1` benchmark after any `rmmod`/`insmod`/reboot/idle gap 
 runs (2nd–3rd); treat run 1 as a throwaway. A single cold sample reads like a ~14%
 regression — a trap for anyone benchmarking after a reload.
 
+## The per-core park yanks a globally shared clock [HW + source-confirmed]
+
+**The three NPU cores share ONE clock, but the clock patch parks it PER CORE.** `scmi_clk_npu`
+is a single SCMI clock (id 6) with `fdab0000.npu` / `fdac0000.npu` / `fdad0000.npu` all as
+consumers — one rate row, three consumers in `clk_summary`. But
+`rocket_device_runtime_suspend()` gates on `rocket_job_is_idle(&rdev->cores[core])` — *this*
+core — and then calls `clk_set_rate(npu_clk, ROCKET_NPU_POWER_DOWN_HZ)` on the shared clock.
+
+So **when one core goes idle for its 50 ms `autosuspend_delay_ms` while the other two are
+still mid-job, that core's suspend handler drops the shared clock to 200 MHz out from under
+them.** With work fanned across worker fds — which is the default everywhere in this stack —
+the cores idle at different times and independently fight over one rate.
+
+Measured on the MoE int8 spike (one resident GEMM per iteration, ~10 ms of host work between
+them): **identical invocations alternated 15 ms / 69 ms — a 4.8× swing**, run to run,
+indefinitely; sampling `scmi_clk_npu` through it showed the rate flapping 200 ↔ 600 MHz. That
+is *larger* than the 3× the clock ratio implies, because jobs get the rate cut mid-flight and
+pay resume latency on top.
+
+The worker-count sweep is the tell: **`W=1` is the one stable configuration** (31.1 ms unpinned
+vs 28.4 ms pinned) — with a single worker only one core cycles, so its own suspend parks the
+clock and its own resume raises it, with nobody to interfere. Every multi-worker config was
+wildly unstable. This does not look like noise, it looks like a *finding*: a worker sweep and a
+group sweep both came back non-monotonic and were **100% artefact**, and read cleanly monotonic
+once the flapping was stopped.
+
+### Stopping it
+
+**Raise `autosuspend_delay_ms` past the longest NPU-idle gap inside the workload.** This is the
+right knob and it is strictly better than pinning `power/control`:
+
+```sh
+for d in /sys/devices/platform/*.npu; do echo 2000 | sudo tee $d/power/autosuspend_delay_ms; done
+...measure...
+for d in /sys/devices/platform/*.npu; do echo 50   | sudo tee $d/power/autosuspend_delay_ms; done
+```
+
+Variance collapses from 4.8× to ±3%, and — verified — the domain **still parks**: after the run
+it goes `runtime_status=suspended` with the clock back at 200 MHz. The suspend path still runs,
+so the clock is always parked *before* the domain powers down. That invariant is precisely what
+`power/control=on` destroys, which is why the pin hard-locks the box at 900 MHz (above) and a
+raised delay would not.
+
+| | idles at 200? | flaps mid-run? | parks before power-down? | safe >600 MHz? |
+|---|---|---|---|---|
+| `auto`, 50 ms (default) | yes | **yes — 4.8×** | yes | yes |
+| `control=on` (the pin) | **no** | no | **no** | **no — hard-locks** |
+| **`auto`, raised delay** | **yes** | **no** | **yes** | **yes** |
+
+Prefer the raised delay. The pin still works at 600 MHz and remains a valid measurement crutch,
+but it buys nothing the delay does not, and it is never safe above 600.
+
+### It costs ~nothing on a CPU-bound graph — do not chase it there [HW A/B]
+
+The flapping is dramatic, so it is tempting to assume the recorded NPU baselines are all
+artificially depressed. **They are not, and the A/B says so.** gpt-oss `pp2048`, NPU-default
+(projections on the NPU, experts on the CPU), 2 reps:
+
+| `autosuspend_delay_ms` | pp2048 | clock duty cycle (1 Hz sampler) |
+|---|---:|---|
+| 50 (default) | 10.90 t/s | **18%** of samples at 600 MHz |
+| 2000 | 11.05 t/s | **61%** of samples at 600 MHz |
+
+Tripling the time spent at 600 MHz bought **1.4%**. The reason is that this graph is
+**CPU-bound**: the expert FFNs are ~76% of the compute and they run on the CPU, so the NPU is
+*waiting*, not computing, for most of the wall clock — and idle time at 200 MHz is free. Raising
+the clock duty cycle of a mostly-idle unit buys almost nothing.
+
+So the two regimes are genuinely different, and conflating them wastes a day:
+
+- **NPU-dense, multi-worker** (a resident-weight matmul loop; the MoE int8 spike) — the cross-core
+  yank is a **4.8×** measurement disaster and *must* be stopped before any A/B is trustworthy.
+- **CPU-bound graph** (today's MoE default, anything where the NPU mostly waits) — worth ~1%.
+  Not a hidden win. Do not go looking for one.
+
+The corollary matters for planning: **the clock fix gets more valuable as more work moves onto the
+NPU**, not less. Offloading the MoE experts, for instance, flips the graph from CPU-bound to
+NPU-dense and multi-worker — precisely the regime where the per-core yank bites hardest.
+
+### The fix — refcount the park [shipped: `081-rocket-drv-npu-clk.patch`]
+
+Only the **last** core down may park the shared clock. `rocket_clk_users` counts runtime-resumed
+cores, independently of `rocket_npu_clk_hz` (so flipping the sysfs-writable param while cores are
+active cannot strand the count), under a mutex that serialises against a concurrent resume on
+another core. The decrement sits *after* the `rocket_job_is_idle()` `-EBUSY` bail, or a busy core
+would leak the count.
+
+The voltage path deliberately stays **per core** and is *not* refcounted: the rail only falls once
+every core has lowered its own request, which is exactly what max-aggregation already gives — gating
+it on the last core would strand the earlier cores' votes high and the rail would never come down.
+
+**Measured on the RK1, stock 50 ms autosuspend, no pin** (resident-int8 matmul, 3 worker fds):
+
+| | stock module | with the refcounted park |
+|---|---|---|
+| 6 repeats | 15.5 / **68.6** / 15.2 / **35.5** / 15.2 / **72.9** ms | 15.5 / 14.6 / 16.0 / 23.5 / 15.1 / 14.9 ms |
+| clock through a long multi-core run | flaps 200 ↔ 600 | **holds 600**; exactly one 600→200 transition — the park at the end |
+| parks when idle | yes | **yes** (invariant preserved: `suspended`, 200 MHz) |
+
+With the refcounted park applied, the `autosuspend_delay_ms` workaround above is no longer needed for a
+multi-core workload. It is still the right tool for a genuinely *single*-core harness with long
+host-side gaps, where the park is legitimate and simply unwanted.
+
+**Unchanged above 600 MHz.** This does not revisit the 900 MHz hard-lock: staggered multi-core
+resume *already* powers a domain on at a rate a sibling raised, so that exposure is pre-existing.
+600 MHz remains the only validated operating point.
+
 There is a **second, independent** frequency confounder: the **CPU** governor. The
 per-submit/dispatch overhead is CPU-side (the submit `ioctl` + the blocking wait on the
 completion IRQ), so on an idle box an `ondemand`/`interactive` governor under-clocks the
