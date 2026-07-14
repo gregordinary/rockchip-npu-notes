@@ -35,14 +35,17 @@ prefill) where F16 fits a board, else the top precision that runs (tagged). Deco
 | Gemma-4-12B | 11.9B | 17.4 → 15.0 | 3.6× → 3.2× | 2.5 | 6.9 | −0.81% |
 | Phi-4 (14B) | 14.7B | 10.3 → 11.8 (Q4) | 2.9× → 3.5× | 2.2 | 8.3 | −0.31% |
 | DeepSeek-V2-Lite (MoE+MLA) | 15.7B | 24.0 → 23.9 (Q4) | 1.18× → 1.26× | 7.8 | 9.7 | −0.26% |
-| gpt-oss-20b (MoE) | 20.9B | 14.5 → 13.1 (MXFP4) | 1.10× → 1.04× | 7.2 | 11.3 | +1.0% |
+| gpt-oss-20b (MoE) | 20.9B | 17.6 → 26.8 (MXFP4) | 1.34× → 2.16× | 7.2 | 11.3 | greedy-match |
 | Qwen3.6-27B (hybrid) | 27.3B | 5.4 → 7.8 (Q4) | 3.0× → 4.4× | 1.1 | 15.9 | −0.26% |
 
 The prefill × grows with model size — to Qwen3.6-27B's **4.4× at pp2048, the largest here** —
 because the CPU baseline degrades faster than the NPU as the matmuls grow. The exceptions are
-architectural: the **MoE expert FFNs** of gpt-oss-20b (1.04×) and DeepSeek-V2-Lite (1.26×) route
-through `MUL_MAT_ID` and stay on the CPU by default, so the bulk of prefill FLOPs never reach the
-NPU (a bit-faithful `ROCKET_MOE=1` handler exists but is dequant-bound and slower); DeepSeek adds
+architectural: the **MoE expert FFNs** of gpt-oss-20b and DeepSeek-V2-Lite (1.26×) route through
+`MUL_MAT_ID` and stay on the CPU by default. gpt-oss's are the one case now measured with them
+**on** the NPU: `ROCKET_MOE=1` holds each quantized expert resident as native int8, which deletes
+the per-micro-batch host dequant that makes the naive expert offload a loss, and takes it to
+**2.16×** at pp2048 (the table row) from 1.12× with the experts on the CPU. It is opt-in because
+the win is conditional on nearly the whole expert stack fitting RAM. DeepSeek adds
 **MLA** attention (the FA gate accepts DK≠DV and is bit-faithful, but its DeepSeek FA path is not
 yet exercised on-device, so attention stays on the CPU here). Qwen3.6-27B's
 **Gated-DeltaNet** hybrid keeps its linear-attention layers on the CPU but they do not gate the
@@ -188,65 +191,67 @@ near-lossless middle.
 ### gpt-oss-20b (MXFP4, MoE)
 
 OpenAI's `gpt-oss` 20B (arch `gpt-oss`; 24 layers, 32 experts with 4 active per token — ~3.6 B
-active of 20.9 B, GQA 64/8 heads, sliding-window attention, window 128). Distributed **only** in
-native **MXFP4** (the 4-bit block-float the model was trained to emit); GGUF from
-`ggml-org/gpt-oss-20b-GGUF` (11.27 GiB). [HW sweep, 600 MHz, 2026-07-02; MoE offload re-bench 2026-07-03].
+active of 20.9 B, GQA 64/8 heads, **alternating** sliding-window (128) and full-attention layers,
+and a learned **attention sink** per head). Distributed **only** in native **MXFP4** (the 4-bit
+block-float the model was trained to emit); GGUF from `ggml-org/gpt-oss-20b-GGUF` (11.27 GiB).
+Raw data: [data/gpt-oss-20b.md](data/gpt-oss-20b.md). [HW sweep, 600 MHz, 2026-07-14 — one board,
+one session, clock pinned; every baseline below re-measured alongside the thing under test.]
 
-This is a gap-finder, and the gap it finds is the MoE expert FFNs, not the datatype. MXFP4 dequantizes
-fine on the streaming path (it is a normal `ggml_is_quantized` type with a `to_float` trait and a
-32-element block, so `K%32` holds) — an MXFP4 *dense* weight offloads like any other quant. `gpt-oss` is
-a **mixture of experts**, and llama.cpp routes the expert FFNs through `GGML_OP_MUL_MAT_ID`. A
-`MUL_MAT_ID` handler now exists (`ROCKET_MOE=1`, **off by default**) — it buckets the routed rows by
-expert id and runs each active expert's GEMM on the NPU, **bit-faithfully** (`test-rocket-moe`
-cos = 1.000000) — but for the quantized experts every board-fitting MoE ships it is a net **loss**
-(measured below), so it is opt-in and the experts run on the CPU by default. So by default the bulk of
-prefill FLOPs — the 4-of-32 expert gate/up/down matmuls — stay on the CPU; only the dense attention
-projections (q/k/v/o) and `lm_head` reach the NPU (the router `N=32 < 64` and the windowed attention
-`n_kv≤128 <` the FLASH_ATTN floor of 1024 do not).
+This is the MoE model, and the whole question it asks is what to do with the expert FFNs. llama.cpp
+routes them through `GGML_OP_MUL_MAT_ID`, and they are the bulk of prefill FLOPs (~75%); the dense
+attention projections and `lm_head` are the rest.
 
-**Prefill — prompt processing, t/s (MXFP4; default — routed experts on the CPU).**
+> **`-ub` is not a free choice on this model, and mixing it is the classic trap.** A quantized MoE
+> **requires `-b 2048 -ub 2048`** — a quantized expert is re-dequantized *per micro-batch*, so the
+> llama.cpp default `-ub 512` pays that tax fourfold. But `-ub 2048` makes the *dense* graph slower
+> here, and the CPU does not care either way. Every number below is `-ub 2048`. An earlier
+> `-ub 512` NPU-default figure of 13.11 t/s at pp2048 circulated as a baseline and caused a
+> nonexistent "regression" to be chased: the like-for-like `-ub 2048` figure was always ~11.
 
-| test | CPU → NPU |
-|---|---|
-| pp512  | 13.15 → 14.46 (1.10×) |
-| pp1024 | 12.93 → 13.86 (1.07×) |
-| pp2048 | 12.62 → 13.11 (1.04×) |
+**Prefill — prompt processing, t/s (MXFP4, `-b 2048 -ub 2048`).**
 
-The NPU speedup is marginal — a fraction of the several-fold wins the dense models post (Ministral
-3.1–3.8×, Gemma-4-12B 3.2–3.6× on F16) — and it **shrinks with prompt length**. The reason is the
-MoE gap read from the other side: as M grows, the CPU-resident expert FFNs take a larger share of
-the graph, so the fraction the NPU can touch (attention projections + `lm_head`) shrinks. CPU prefill
-is itself unusually fast here (~13 t/s vs ~7 for a dense 8B) because only ~3.6 B params are active
-per token. (A same-session re-measure holds: CPU 13.12 / 12.88 / 12.56; NPU-default 14.42 at pp512.)
+| test | CPU | NPU, experts on CPU | **NPU, native-quant experts** (`ROCKET_MOE=1`) |
+|---|---:|---:|---:|
+| pp512  | 13.09 | 14.11 (1.08×) | **17.57 (1.34×)** |
+| pp1024 | 12.99 | 14.29 (1.10×) | **24.38 (1.88×)** |
+| pp2048 | 12.40 | 13.89 (1.12×) | **26.78 (2.16×)** |
 
-**Offloading the experts (`ROCKET_MOE=1`) — measured, kept opt-in.** The `MUL_MAT_ID` handler routes the
-routed-expert gate/up/down GEMMs onto the NPU. It is bit-faithful (below), but at the `-ub 2048` a
-quantized GGUF needs, prefill still **falls short** — it rises with M but never catches the CPU (which
-itself is faster than a dense 8B here):
+**The expert route is the model's whole story.** Holding the routed experts on the NPU as native int8
+is **1.93× the NPU-default** and **2.16× the CPU** at pp2048, and it wins at every prefill length. CPU
+prefill is itself unusually fast here (~12–13 t/s, vs ~7 for a dense 8B) because only ~3.6 B params
+are active per token — so 2.16× is against a strong baseline.
 
-| test | CPU | NPU (`ROCKET_MOE=1`) |
-|---|---|---|
-| pp512  | 13.09 | 5.29 (0.40×) |
-| pp1024 | 12.99 | 8.83 (0.68×) |
-| pp2048 | 12.59 | 11.36 (0.90×) |
+**Why it works, and why the obvious alternative does not.** A quantized expert on the *streaming*
+route is dequantized to fp16 on the host **every micro-batch**, and that decode is **independent of
+the row count** — it decodes the whole `[2880,2880]` weight whatever the router gave that expert.
+Measured: **75 ms per expert, per micro-batch**, and a prefill touches ~1580 of them, so streaming
+burns **~119 s per prefill** before any arithmetic. That is why the fp16 expert route (`ROCKET_MOE=1
+ROCKET_MOE_NATIVE=0`) measures **4.59 / 10.18** at pp512 / pp2048 — *worse than leaving the experts on
+the CPU*. The native-quant route ingests each expert **once** into resident int8 codes and deletes
+that tax entirely. **Quantization here buys residency; residency buys the speed** — the int8 GEMM
+itself moves *more* bytes than fp16 would (see [not-mac-bound.md](not-mac-bound.md)).
 
-*(All `-b 2048 -ub 2048`, the mandated quantized-GGUF setting. At the llama-bench default `-ub 512` it is
-far worse — a flat ~0.42× — because each ubatch re-dequantizes every expert, so MoE pays the quant `-ub`
-tax **fourfold**; even at `-ub 2048`, pp2048 is only ~0.90× the CPU — a net loss at every size, and no
-faster than the projections-only default, so enabling the handler never pays.)*
+**Residency is the route, not a nice-to-have.** The win is conditional on nearly all the experts
+fitting: 99% resident gives the numbers above, but at **82%** resident the same route reads **12.19**
+at pp512 — *below* the 14.11 you get by leaving the experts on the CPU. The cliff is the cost
+structure, not a threshold effect: a streamed expert keeps paying that M-independent 75 ms while a
+resident one pays a GEMM that shrinks with M, so the streamed remainder's share of the wall clock
+**grows as the prefill shortens** (12% of pp2048, 43% of pp512). On this 31 GiB board gpt-oss reaches
+99% (≈14 GB of int8 experts alongside its 11.3 GiB GGUF, which must stay mapped for CPU decode);
+a smaller board will not, and the backend warns when it lands short.
 
-Root cause: **quant-MoE is dequant-bound.** Each of the 32 experts' `[2880,2880]` MXFP4 weights is
-dequantized to fp16 on the host *every micro-batch* (streaming — 32 experts × 24 layers cannot stay
-resident), amortized over only `M_e ≈ n_tokens·4/32` rows (256 @pp2048), not the full `M`. A dense model
-has ~7 weights per layer, each reused over all `M` rows; MoE has ~96 (32 experts × 3 projections), each
-over a fraction — so the per-expert host dequant + 32× dispatch dominate, where the CPU's fused quantized
-kernel pays **no** dequant at all. The rise with M (0.40×→0.90×) is that per-expert dequant amortizing as
-`M_e` grows, but it plateaus below parity because `M_e` is capped by the 2048-token ubatch. The de-risk
-spike over-promised (~2×) because it timed **F16** GEMMs — no dequant — on a single shape. A win would
-need **native-quant experts** (int4 / int8 on the NPU, no host dequant) or a **resident-expert fp16 cache**
-(which for MoE is the whole model as fp16 — it does not fit the board); both are deferred. This is the
-same dequant-bound class as the quant-fused-group lever. So the handler ships default-off;
-enabling it is faithful but slower.
+**The one-time cost.** The ingest is lazy and lands inside the first prefill: **~70 s** for ~1750
+experts (42 ms each — 21 s of MXFP4→int8 decode, 50 s of NPU-BO scatter). It is paid **per
+`llama_context`**, so `llama-bench` — which builds a fresh one per test row — pays it per row; a
+long-running host pays it once. It does **not** contaminate the numbers: llama-bench's warmup is a
+full prompt run, so the ingest lands there.
+
+**Attention stays on the CPU here, and that is a correctness requirement.** gpt-oss carries an
+**attention sink** — a learned per-head logit that joins the softmax denominator — and the NPU
+FLASH_ATTN handler has no sink term. The offload is declined for such ops. (It had been silently
+*accepted*, computing a sink-less softmax past the `n_kv` floor of 1024; declining it is both correct
+and **+26%** at pp2048, since it was spending real time on the wrong answer. See
+[attention-offload-crossover.md](attention-offload-crossover.md).)
 
 **Decode — generation, t/s (CPU-bound on both).**
 
@@ -263,29 +268,53 @@ brisk (7.2 t/s, roughly Ministral's Q4_K_M rate at ~half the bytes touched).
 no quant lever, since MXFP4 is the only distribution. The combined `pp2048+tg128` point (CPU 11.61,
 NPU 12.03 t/s) confirms the ~1.04× ceiling end to end.
 
-**Faithfulness — differential perplexity, wikitext test, 12 chunks (same GGUF, NPU prefill vs CPU).**
+**Faithfulness — and a warning about how it was previously measured.**
 
-| config | CPU PPL | NPU PPL | Δ |
-|---|---|---|---|
-| default (experts → CPU; projections + `lm_head` → NPU) | 385.31 ± 22.07 | 389.18 ± 22.28 | +1.0% |
-| `ROCKET_MOE=1` (routed experts → NPU) | 385.31 ± 22.07 | 386.87 ± 22.15 | +0.40% |
+`gpt-oss` is a harmony **reasoning** model, so absolute wikitext PPL is meaningless (its own F16
+reference is ~385). Differential PPL — NPU prefill vs CPU on the same text — used to be the gate, and
+it read **+1.0%** for the default config against a ±5.7% per-run stderr: comfortably "within noise",
+and recorded as faithful.
 
-The **absolute** PPL is not meaningful — `gpt-oss` is a reasoning model trained for the harmony chat
-format, so raw-wikitext PPL is inflated (as with any reasoning/instruct model, only the delta is
-informative). Both NPU−CPU deltas sit well inside the ±5.7% per-run stderr: the dense offloads are
-faithful, and — the point of the second row — so is the `MUL_MAT_ID` **expert** offload (+0.40%),
-confirming end-to-end what `test-rocket-moe` proves at cos = 1.000000. The handler's problem is purely
-speed, not accuracy.
+> **It was not noise. It was a bug.** That configuration was running the NPU FLASH_ATTN offload on
+> gpt-oss's full-attention layers — and the handler was **silently dropping the model's attention
+> sinks** (`src[4]`), computing a sink-less softmax, i.e. *a different attention*. A
+> wrong-but-plausible attention still produces fluent text and a plausible perplexity, so the metric
+> could not tell a **wrong function** from run-to-run variance. **A faithfulness metric that cannot
+> distinguish those is not a faithfulness metric.** The gate now declines such ops (and declining is
+> also +26% at pp2048 — the offload had been paying to compute the wrong answer).
 
-**Verdict.** The `MUL_MAT_ID` handler closes the op-coverage gap and is bit-faithful, but offloading the
-**quantized** experts is **dequant-bound and loses** (0.90× at pp2048 `-ub 2048`, worse at smaller
-batches), so it ships opt-in and `gpt-oss`
-runs its experts on the CPU by default — prefill stays ~1.04–1.10×, unchanged, with only the dense
-projections + `lm_head` on the NPU. The datatype was never the blocker (MXFP4 dequants fine); the
-blocker is that streaming per-expert dequant costs more than the small-`M_e` GEMM saves, which the CPU's
-fused quant kernel sidesteps. A default MoE win needs native-quant experts (no host dequant) or resident
-experts (does not fit) — deferred. Run `gpt-oss-20b` on the CPU; the NPU backend loads, offloads the
-dense projections faithfully, and `ROCKET_MOE=1` is available to experiment with expert offload.
+Faithfulness is now gated the way [MODEL-NOTES.md](../MODEL-NOTES.md) prescribes for a reasoning
+model, and the prompt is a real **~1400-token** passage chosen to clear the FA `n_kv` floor of 1024 —
+so the gate actually reaches the regime where that class of bug lives. A short prompt would have
+passed while the bug was live, which is exactly what happened before.
+
+| gate | result |
+|---|---|
+| **per-matmul cosine** vs an fp64 CPU reference, on **real weights and real activations** (one expert per `MUL_MAT_ID` op, rotating across every layer / projection / expert) | **mean 0.999821, min 0.998980** over 50 expert GEMMs |
+| **greedy match** vs the CPU (`--temp 0`, same seed, 48 tokens) | native-quant experts diverge at token ~35 — **no earlier and no worse than the experts-on-CPU NPU path**, which diverges identically |
+| synthetic route gate (`test-rocket-moe`, 7/7, outlier-channel activations) | MXFP4 0.9999 / Q4_K 0.9999 / Q8_0 0.9999 |
+
+Read the greedy row carefully: the NPU path *without any MoE offload* diverges from the CPU in the
+same place, so that divergence is the known fp16-prefill vs fp32-CPU greedy-boundary flip — late,
+coherent, and expected — **not** the expert route. And the cosine number is the one that matters for
+the int8 question: it is above the synthetic prediction (0.9994) and far above the **0.98** that
+already proved token-identical for int4+Hadamard, so int8 **activations** survive the real
+outlier-channel distribution with no Hadamard rotation.
+
+**Verdict.** The `MUL_MAT_ID` handler closes the op-coverage gap, and with the experts held resident on
+the NPU as **native int8** it is a **2.16× prefill win** at pp2048 (1.34× at pp512 — it wins at every
+length). The **fp16 streaming** expert route still loses (4.59 / 10.18), and that is the finding the
+earlier verdict recorded: the datatype was never the blocker (MXFP4 dequants fine); the blocker is that
+streaming per-expert dequant costs more than the small-`M_e` GEMM saves, which the CPU's fused quant
+kernel sidesteps. **The native-quant route removes that dequant entirely, which is the whole win** —
+quantization here buys residency, and residency buys the speed.
+
+`ROCKET_MOE` remains **opt-in**, but for a new reason: the win is conditional on nearly the whole
+expert stack fitting RAM (99% resident wins; 82% resident *loses* at short prefill), so its **sign
+depends on the host's memory** — and a default whose sign depends on the machine is not a default. A
+pre-flight residency check in `supports_op` would make it unconditional; until then the backend warns
+when residency lands under ~95%. Recommended invocation on a 31 GiB board: `ROCKET_MOE=1` with
+`-b 2048 -ub 2048`, and expect a one-time ~70 s expert ingest at the first prefill.
 
 ### Qwen3.5-9B
 

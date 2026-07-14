@@ -106,6 +106,43 @@ Use a few-hundred-token prompt so the prefill is large enough to actually route 
 - **Best use:** the primary LLM-pillar target — real Q&A and prefill benchmarking. No
   loop/confabulation pathology like the 0.8B.
 
+### gpt-oss-20b (MXFP4, MoE)
+
+The mixture-of-experts model, and the one whose settings pull against each other. 24 layers,
+32 experts with 4 active; attention alternates windowed (128) and full, so **half its layers
+are full-attention**.
+
+- **Stack status:** prefill is faithful — greedy output matches the CPU reference, on both the
+  default route and the native-quant expert route. It is a **reasoning** model (harmony
+  format), so **wikitext PPL is not a valid quality metric**; evaluate by greedy-match and a
+  cosine probe. Decode stays on the CPU as always (~7.2 t/s, brisk for 20B because only ~3.6 B
+  params are active per token).
+- **The `-ub` setting pulls two ways, and you must choose deliberately.**
+  - The **MoE expert route needs `-b 2048 -ub 2048`**: a quantized expert is re-dequantized
+    *per micro-batch*, so the llama.cpp default `-ub 512` pays that tax fourfold and collapses
+    the numbers (0.40× the CPU).
+  - But **`-ub 2048` makes the *dense* graph slower on this model** — NPU-default reads 13.11
+    t/s at `-ub 512` against 11.31 at `-ub 2048` (pp2048). The CPU does not care either way.
+  - So there is no single best `-ub` here: it depends on whether the experts are on the NPU.
+    **Never compare a `-ub 512` number against a `-ub 2048` one** — that mistake is what made
+    an earlier session chase a nonexistent regression.
+- **Routed experts: `ROCKET_MOE=1` is worth 2.16× the CPU, and it is opt-in for a reason.**
+  Prefill **17.57 / 24.38 / 26.78 t/s** at pp512 / pp1024 / pp2048 (**1.34× / 1.88× / 2.16×** the
+  CPU) with the experts held resident on the NPU as native int8. The *fp16* expert route is a net
+  **loss** (4.59 / 10.18) — it re-dequantizes every expert every micro-batch, ~75 ms each,
+  *independent of the row count*. The native route ingests each expert **once** and deletes that
+  tax, at a one-time **~70 s** ingest inside the first prefill.
+  **It is opt-in because the win is conditional on residency:** 99% resident wins, **82% resident
+  loses** at pp512 (12.19, below the 14.11 you get leaving the experts on the CPU). Check the split
+  with `ROCKET_LOG_STDERR=1`; raise `ROCKET_MOE_CACHE_MB` if the RAM is there.
+- **Its attention stays on the CPU, and must.** gpt-oss carries a learned **attention sink** per
+  head, and the NPU FLASH_ATTN handler has no sink term — so the offload is declined for it. It had
+  been silently *accepted*, computing a sink-less (wrong) softmax past the `n_kv` floor of 1024.
+  Declining is both correct and **+26%** at pp2048. If you benchmark a model and the NPU curve
+  *collapses past ~1K context but is fine below it*, suspect this class of bug.
+- **Best use:** the MoE showcase, and the residency stress case — its expert stack only just fits a
+  31 GiB board alongside its own GGUF, so it is where partial residency gets exercised.
+
 ## Template for a new row
 
 ```

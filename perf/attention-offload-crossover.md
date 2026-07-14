@@ -12,8 +12,24 @@ pushes the crossover out to ~6K.
 > heads fanned across the worker fds, per-head QK/AV submits collapsed into one job each via a
 > resident batched-matmul context. The crossover *context* depends on that handler's host
 > overhead and on the CPU's flash-attention speed; it is not a fixed property of the silicon.
-> The offload is **bit-faithful** regardless of context (differential perplexity FA-NPU ==
-> FA-CPU; per-head cosine 1.0) — only the speed crosses over.
+> Within the attention **shape** the handler implements, the offload is bit-faithful
+> (differential perplexity FA-NPU == FA-CPU; per-head cosine 1.0) — only the speed crosses over.
+
+> **The handler implements one attention, and it must decline anything else.** It computes
+> `softmax(scale·QKᵀ + mask) · V`. An **attention sink** — a learned per-head logit that joins the
+> softmax denominator, passed as the op's `src[4]` by `ggml_flash_attn_ext_add_sinks` — is a
+> *different* attention, and the handler has no term for it. Accepting such an op does not lose a
+> little accuracy; it computes the wrong function, silently, and the graph cannot tell.
+>
+> This was live: `supports_op` validated `src[0..3]` and never looked at `src[4]`, so **gpt-oss**
+> (which carries sinks on every layer; so do `mimo2` and `deepseek4`) took the offload and got a
+> sink-less softmax. It hid well — it fires only past the `n_kv` floor of 1024, so short-prompt
+> tests never reached it, and a wrong-but-plausible attention still produces fluent text, so the
+> differential-PPL check read it as "+1.0%, within noise". **A faithfulness metric that cannot
+> distinguish a wrong function from run-to-run noise is not a faithfulness metric.** The gate now
+> declines on `src[4]`. Implementing the sink is easy in principle — the softmax is host-side, so
+> it is one more term in the denominator — but it is only worth doing where the offload *wins*,
+> and on gpt-oss's head geometry it does not (below).
 
 ## What the offload targets
 

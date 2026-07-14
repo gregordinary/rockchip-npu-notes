@@ -45,6 +45,32 @@ warmup-M ≠ prefill-M — a multi-minute stall on a 12B model for a single shor
 A genuine tiling mismatch (e.g. a `ROCKET_MM_*` override changing the tiling between pack
 and compute) is detected and returns `-2` so the caller re-packs rather than miscomputing.
 
+**The N-tile must fit the *slice*, not the tile cap — or the tail tile is mostly empty.**
+Because N is split across the worker fds, each worker plans its tiling on a **slice**, and a
+slice is not a multiple of the 256-column tile cap. Defaulting the N-tile to the cap then
+stores a nearly-empty tail tile: at the gpt-oss expert shape (`N=2880` over 5 workers → a
+**576**-wide slice) three 256-wide tiles store **768** columns to hold 576 — a **35% memory
+tax on every resident weight**, paid for the process lifetime.
+
+The fix costs nothing. The tile *count* is what the cap fixes (`nNt = ceil(N/max_tile)`), and
+**any** tile ≥ `ceil(N/nNt)` reaches that same count — so take the smallest one. Here that is
+`ceil(576/3) = 192`: the **same three tiles**, hence the same task count, the same dispatch and
+the same real DMA, but storing exactly 576 columns. Measured per resident gpt-oss expert:
+**10.70 → 8.07 MiB** (1.35× → 1.02× of the logical `N·K` int8 bytes) [HW sweep]. Round the
+32-column alignment **up**, not down — rounding down can drop the tile below `ceil(N/nNt)` and
+buy an *extra* tile, a real dispatch cost to save nothing.
+
+Two cautions this cost to learn:
+
+- **It is a residency lever, and residency is the whole product** of a native-quant MoE expert
+  cache — the tax falls on the one thing being bought. It is nearly invisible on a dense model
+  (one weight per tensor); it is decisive across thousands of experts.
+- **Shrinking `Nt` frees CBUF banks, which can let `Kt` grow** — and that would re-tile K,
+  changing the host K-accumulation order and breaking the resident-vs-one-shot bit-exactness.
+  Safe on the *group-wise* planner only, where `Kt` can never exceed the quant group (checked:
+  `Kt` is invariant over every `(group, slice)` a real weight produces). On the per-channel
+  planner the same change moves `Kt` 640 → 768, so it needs its own gate run.
+
 ## Multicore: N fds for N cores, not a core-mask
 
 There are 3 NPU cores. `rocket` exposes them through the **scheduler topology**, not a

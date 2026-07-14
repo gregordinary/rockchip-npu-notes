@@ -150,6 +150,43 @@ At the current operating point it is **not** a prefill throughput win — its MA
 advantage is buried under the DMA/dispatch floor. Say that plainly, but say it with
 its scope (below), not as a permanent law.
 
+### The one place quantization *does* buy speed: it buys residency, and residency buys speed
+
+A **MoE routed expert** is the exception that proves the rule, and it is worth following
+carefully because the arithmetic is not the one people reach for.
+
+A quantized expert on the streaming path is dequantized to fp16 on the host **every
+micro-batch**. That decode is **independent of `M`** — it decodes the whole `[N,K]` weight
+whatever row count the router happened to give that expert. Measured on gpt-oss-20b's
+`[2880,2880]` MXFP4 experts: **75 ms per expert, per micro-batch**, and a prefill touches
+~1580 of them, so the host spends **~119 s per prefill dequantizing weights** — 59% of a
+pp2048 prefill — before any arithmetic happens. That is why offloading quantized MoE experts
+through the fp16 route *loses to leaving them on the CPU*. [HW sweep, 600 MHz, 2026-07-14]
+
+Ingesting the expert **once** into resident int8 codes deletes that tax. The speed does not
+come from int8 being int8 — the int8 GEMM's int32 output reads back at 8 B/element and moves
+*more* bytes than the fp16 one would. It comes from the weight no longer crossing the host
+every micro-batch. **Quantization here buys residency; residency buys the speed.**
+
+**And partial residency is not linear — this is the trap.** It is tempting to read "85% of the
+experts are resident" as "85% of the tax is gone, 15% remains". It is not, because the two
+routes have different *cost structures*: a streamed expert keeps paying the full,
+**M-independent** 75 ms, while a resident one pays a small GEMM that *shrinks with M*. So the
+non-resident remainder's share of the wall clock grows as the prefill gets shorter:
+
+| | share of the prefill spent on the streamed 15% |
+|---|---:|
+| pp2048 | 12% |
+| pp512 | **43%** |
+
+which is exactly why the native-quant route wins at long prefill and loses at short. **A
+residency percentage is not a cost percentage.** The practical consequence is sharp: the
+resident weight's *memory efficiency* is a first-order throughput lever, not a footprint
+nicety — every byte of tile padding is an expert that has to stream instead, and a streamed
+expert costs many times what a resident one does. That is what makes the N-tile padding fix
+in [iova-and-multicore.md](iova-and-multicore.md) a performance change rather than a
+housekeeping one.
+
 <a name="scope"></a>
 ## Scope — is this permanent?
 
