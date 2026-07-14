@@ -118,9 +118,20 @@ are full-attention**.
   cosine probe. Decode stays on the CPU as always (~7.2 t/s, brisk for 20B because only ~3.6 B
   params are active per token).
 - **The `-ub` setting pulls two ways, and you must choose deliberately.**
-  - The **MoE expert route needs `-b 2048 -ub 2048`**: a quantized expert is re-dequantized
-    *per micro-batch*, so the llama.cpp default `-ub 512` pays that tax fourfold and collapses
-    the numbers (0.40× the CPU).
+  - **Run the MoE expert route at `-b 2048 -ub 2048`** — every number here was measured there,
+    and two mechanisms say a smaller micro-batch costs it. First, the **dense** MXFP4 weights
+    (attention projections, `lm_head`) are *not* in the expert cache and still re-dequantize to
+    fp16 **per micro-batch**, so `-ub 512` runs that decode four times over on a 2048-token
+    prompt. Second, the router gives each expert only `n_tokens · n_used / n_expert` rows —
+    **64 at `-ub 512` against 256 at `-ub 2048`** — and the per-expert overhead around the GEMM
+    (dispatch, row gather, scatter, M-bucket padding) does not shrink with the row count, so a
+    quarter of the rows buys close to the same overhead. `ROCKET_MOE_MIN_TOKENS` (default 512)
+    also sits right at `-ub 512`, so offload barely qualifies.
+    **Not measured at `-ub 512` on the native route** — that is a prediction from the two
+    mechanisms, not a datum. (The often-quoted "`-ub 512` collapses MoE to ~0.42×" is the
+    **fp16 streaming** route, whose per-expert dequant *is* what `-ub` multiplies. Native-quant
+    ingests each expert once and deletes exactly that cost, so the old reasoning does not
+    transfer to it.)
   - But **`-ub 2048` makes the *dense* graph slower on this model** — NPU-default reads 13.11
     t/s at `-ub 512` against 11.31 at `-ub 2048` (pp2048). The CPU does not care either way.
   - So there is no single best `-ub` here: it depends on whether the experts are on the NPU.

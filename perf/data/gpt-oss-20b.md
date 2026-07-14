@@ -7,13 +7,18 @@
      previous session: the CPU and NPU-default baselines were re-measured alongside the thing
      under test. RK1 (RK3588), 31 GiB, kernel 7.1.1, llama.cpp a646006f0 (9932), 8 CPU threads.
 
-     -b 2048 -ub 2048 throughout. That setting is MANDATORY for a quantized MoE (a quantized
-     GGUF re-dequantizes per micro-batch, so the llama.cpp default -ub 512 quadruples the
-     expert dequant tax), and it is also why the NPU-default baseline here reads LOWER than the
-     13.11 recorded in earlier notes: that figure was measured at the default -ub 512. The
-     like-for-like -ub 2048 number has always been ~11 (Jul 3 raw: 11.31; this run: 10.99).
-     Comparing a -ub 512 baseline against a -ub 2048 result is the trap this file exists to
-     close.
+     -b 2048 -ub 2048 throughout -- for the moe_fp16 route because its per-expert dequant is
+     exactly what a smaller micro-batch multiplies, and for moe_native because (a) the DENSE
+     MXFP4 weights are not in the expert cache and still re-dequantize per micro-batch and
+     (b) each expert receives only n_tokens*n_used/n_expert rows (64 at -ub 512 vs 256 at
+     -ub 2048) while the per-expert dispatch/gather/scatter/padding around the GEMM stays flat.
+     The native route was NOT measured at -ub 512; do not quote the fp16 route's -ub 512
+     collapse as if it applied to it.
+
+     It is also why the NPU-default baseline here reads LOWER than the 13.11 recorded in earlier
+     notes: that figure was measured at the default -ub 512. The like-for-like -ub 2048 number
+     has always been ~11 (Jul 3 raw: 11.31; this run: 10.99). Comparing a -ub 512 baseline
+     against a -ub 2048 result is the trap this file exists to close.
 
      Configs:
        cpu             no backend loaded

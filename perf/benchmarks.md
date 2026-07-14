@@ -201,10 +201,17 @@ This is the MoE model, and the whole question it asks is what to do with the exp
 routes them through `GGML_OP_MUL_MAT_ID`, and they are the bulk of prefill FLOPs (~75%); the dense
 attention projections and `lm_head` are the rest.
 
-> **`-ub` is not a free choice on this model, and mixing it is the classic trap.** A quantized MoE
-> **requires `-b 2048 -ub 2048`** — a quantized expert is re-dequantized *per micro-batch*, so the
-> llama.cpp default `-ub 512` pays that tax fourfold. But `-ub 2048` makes the *dense* graph slower
-> here, and the CPU does not care either way. Every number below is `-ub 2048`. An earlier
+> **`-ub` is not a free choice on this model, and mixing it is the classic trap.** Every number
+> below is `-b 2048 -ub 2048`, and that is the setting to run the expert route at. Two mechanisms
+> make a smaller micro-batch cost it, and **neither is the per-expert dequant** — native-quant
+> ingests each expert once and deletes that. (a) The **dense** MXFP4 weights are not in the expert
+> cache and still re-dequantize per micro-batch, so `-ub 512` decodes them four times over.
+> (b) Each expert receives only `n_tokens · n_used / n_expert` rows — 64 at `-ub 512` vs 256 at
+> `-ub 2048` — while the per-expert dispatch, gather, scatter and bucket padding around the GEMM
+> stay flat, so a quarter of the rows buys nearly the same overhead. **The native route was not
+> measured at `-ub 512`**; the familiar "`-ub 512` collapses MoE" figure belongs to the fp16
+> streaming route. Meanwhile `-ub 2048` makes the *dense* graph slower here, and the CPU does not
+> care either way — so there is no single best `-ub`, only a per-configuration one. An earlier
 > `-ub 512` NPU-default figure of 13.11 t/s at pp2048 circulated as a baseline and caused a
 > nonexistent "regression" to be chased: the like-for-like `-ub 2048` figure was always ~11.
 
