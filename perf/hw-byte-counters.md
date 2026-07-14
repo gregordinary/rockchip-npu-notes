@@ -110,9 +110,9 @@ coarse `IDEL` status bit — no bytes-moved counter.
 
 ## 6. How to read DDMA safely (probe design)
 
-The hazard above (a read can hard-lock the box) shapes the safe probe
-(`patches/rocket/086-rocket-drv-perf-counters.patch`, source
-`patches/rocket/perf-probe-v2-safe.c`): debugfs `rocket_perf/ddma`, **read-only** (no
+The hazard above (a read can hard-lock the box) shapes the safe probe. It is not carried in
+the patch series — the counters proved unreadable, so there is nothing to ship — but the design
+is recorded here for anyone who retries it: debugfs `rocket_perf/ddma`, **read-only** (no
 writes → cannot corrupt DDMA config; note `0x8010 = RD_WEIGHT_1` is live config),
 **core-0 only**, **disarmed unless** loaded with `rocket_ddma_probe=1` (so `cat` while
 disarmed touches no hardware), reading the known `CFG_STATUS` first with each read in its
@@ -156,6 +156,5 @@ WDMA/DPU registers returns the programmed output *shape*, not traffic.
 - `rocket`: `drivers/accel/rocket/rocket_{drv,core}.c`, `rocket_registers.h`; DT
   `rk3588-base.dtsi` (per-core pc/cna/core)
 - Register map: Mesa `rocket/registers.xml` (`DDMA` domain @ 0x8000), our `npu_hw.h`
-- Probe source: the `rocket` perf-counter probe patch (`perf-probe-v2-safe.c`)
 - RK3576 lead (§7): gahingwoo's mainline-`rocket` RK3576 bring-up
   (`https://www.reddit.com/r/embedded/comments/1ub5npg/`)

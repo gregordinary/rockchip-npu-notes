@@ -282,7 +282,7 @@ issues **≈63 IOCTLs / 1 submit per inference** where an open replay path issue
 re-arming per IRQ. It is a coordinated change: a **userspace** regcmd-chaining pass
 (`rocket-userspace` `mm_pack_regcmd`/`mm_seal_chain`, `ROCKET_BATCH_SUBMIT=1` — packs regcmds
 contiguously and links each trailer's `PC_BASE_ADDRESS`+`PC_REGISTER_AMOUNTS` to the next task)
-plus a small kernel change (`patches/rocket/085-rocket-drv-batched-submit.patch`, module param
+plus a small kernel change (`patches/rocket/086-rocket-drv-batched-submit.patch`, module param
 `rocket_batch_submit=1` — set `TASK_NUMBER=N`, advance `next_task_idx` to the end so the stock
 IRQ-handler path retires on one completion). Both halves off by default; they must be enabled
 together (kernel-on + userspace-gapped → recoverable timeout). It removes `N−1` of every `N`
