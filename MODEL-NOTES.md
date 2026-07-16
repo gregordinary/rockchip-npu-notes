@@ -5,6 +5,10 @@ llama.cpp + the `ggml-rocket` backend): whether its prefill runs faithfully on t
 the sampling settings it wants, behavioral quirks worth knowing, and what it's good for.
 Add a row when you test a new model.
 
+For **which flags to enable for a given workload** (use-case, precision, prompt size, and
+the RAM/disk each opt-in needs), see [TUNING.md](TUNING.md) — this file records per-model
+behavior; that one is the decision guide.
+
 ## Read two questions separately
 
 Before judging any model on the NPU, separate two independent things:
@@ -43,7 +47,10 @@ The knobs every NPU run wants:
 
 - `GGML_BACKEND_PATH` = **absolute** path to `ggml-rocket/build-dl/libggml-rocket.so`. A
   wrong path silently falls back to CPU-only (no error beyond a `failed to load` line).
-- `ROCKET_KACC=1` — the best operating mode (DATA_REUSE follows automatically).
+- The operating-mode knobs — fp16 K-accumulation (`ROCKET_KACC`), DATA_REUSE
+  (`ROCKET_REUSE=2`), asymmetric tiling (`ROCKET_MM_ASYM`), attention offload
+  (`ROCKET_FLASH_ATTN`) — are **on by default**; you need not set them. The workload-specific
+  opt-ins are in [TUNING.md](TUNING.md).
 - `sudo -E` — `sudo` strips the environment; `-E` keeps `GGML_BACKEND_PATH` and the
   `ROCKET_*` knobs alive alongside `/dev/accel` privilege.
 - `taskset 0xf0` — pin to the A76 big cores (cpus 4–7 on RK3588).
@@ -77,6 +84,8 @@ Use a few-hundred-token prompt so the prefill is large enough to actually route 
 - **Stack status:** prefill runs out of the box; greedy output is **token-identical to CPU**
   [HW sweep, 2026-06-28, RK1, 600 MHz] → prefill is faithful for this arch. Warm prefill
   ≈ **1.44× CPU at pp512** [HW sweep]. The `qwen35` arch needs llama.cpp ≥ b9568.
+- **Recommended flags:** defaults only — F16 fits any board trivially, and at 0.8B the NPU
+  wins prefill only past ~pp96. Nothing to opt into. Its role is a throughput/bring-up canary.
 - **Recommended sampling:** `--temp 0.6 --top-p 0.95 --top-k 20 --min-p 0` (Qwen
   thinking-mode defaults); add `--presence-penalty 1.0` or `--dry-multiplier 0.8` to curb
   repetition.
@@ -97,6 +106,10 @@ Use a few-hundred-token prompt so the prefill is large enough to actually route 
   coherently and greedy char-identical to fp16 — these are RAM / model-fit levers, **not**
   prefill-speed levers (at this operating point the NPU is dispatch-bound, so quantization
   buys footprint, not speed).
+- **Recommended flags:** F16 (6.9 GB fp16) runs on defaults. A quantized GGUF wants
+  `-b 2048 -ub 2048`; add `ROCKET_QUANT_RESIDENT=auto` only if ~12 GB fp16 fits your board
+  (untested at this size — see [TUNING.md](TUNING.md)). Native `ROCKET_INT8`/`ROCKET_INT4`
+  run coherently but are RAM-fit levers from an F16 GGUF, not prefill-speed levers.
 - **Eval note:** it is a reasoning model, so **wikitext perplexity is not a valid quality
   metric** (the F16 reference PPL is itself ~545). Evaluate with greedy-match against the
   CPU reference and a cosine probe, not PPL.
@@ -112,6 +125,10 @@ The mixture-of-experts model, and the one whose settings pull against each other
 32 experts with 4 active; attention alternates windowed (128) and full, so **half its layers
 are full-attention**.
 
+- **Recommended flags:** `-b 2048 -ub 2048` **and** `ROCKET_MOE=1` on a 31 GB board (the ~14 GB
+  int8 expert stack plus the mmapped GGUF fit at ~99% resident → 2.16× at pp2048). On a smaller
+  board where the experts do not fit, leave `ROCKET_MOE` off — below ~82% resident it loses. The
+  `-ub` and residency detail below.
 - **Stack status:** prefill is faithful — greedy output matches the CPU reference, on both the
   default route and the native-quant expert route. It is a **reasoning** model (harmony
   format), so **wikitext PPL is not a valid quality metric**; evaluate by greedy-match and a
@@ -160,7 +177,8 @@ are full-attention**.
 ### <model> (<quant>)
 
 - Stack status: <prefill faithful? greedy NPU-vs-CPU result + provenance>; <warm pp512/pp2048 vs CPU>; <llama.cpp build / arch caveats>.
-- Recommended sampling: <temp/top-p/top-k/min-p + any anti-repetition>; <quant → -b/-ub>.
+- Recommended flags: <the workload-conditional opt-ins for this model — e.g. -b 2048 -ub 2048 for a quant GGUF; ROCKET_QUANT_RESIDENT=auto if its fp16 fits RAM; ROCKET_MOE=1 iff the expert stack fits. Defaults (KACC/REUSE/ASYM/FA) are on; do not restate them. See TUNING.md>.
+- Recommended sampling: <temp/top-p/top-k/min-p + any anti-repetition>.
 - Behavior: <reasoning vs not; loops/confabulation; thinking on/off>.
 - Best use: <canary / transform / chat / bench>.
 ```
