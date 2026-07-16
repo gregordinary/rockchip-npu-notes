@@ -214,7 +214,8 @@ The F16 sibling of the above: pack the all-K F16 weights once and reuse across m
   (`ROCKET_PREPACK_MADVISE`) but **breaks CPU decode** — do not use it for an interactive/serving run.
 - **Delta:** single-digit percent — ≈+6% pp2048, +9% pp512 on a 3B F16 model [HW sweep]. A fusable
   projection group (Q\|K\|V, gate\|up) goes resident as one combined weight, stacking pack-once with a
-  shared packA.
+  shared packA for another ≈+5.7% on top — see
+  [perf/weight-residency-fusion.md](perf/weight-residency-fusion.md) for the mechanism and the A/B.
 
 ### `ROCKET_MOE=1` — MoE routed experts on the NPU
 
@@ -290,7 +291,8 @@ them (they are on). The actionable rows are the first five.
 The flag *defaults* are model-independent, so the recipes above hold, but the **per-model paired
 default-vs-tuned A/B** has only been run on a subset. Treat a per-model number the recipe implies but that
 is not in [perf/benchmarks.md](perf/benchmarks.md) as a projection, not a datum. The gaps — and the plan to
-close them into a full model × use-case × flag matrix — are on the project roadmap. The largest ones:
+close them into a full model × use-case × flag matrix — are tracked in
+[../NPU_TODO.md](../NPU_TODO.md) under the tuning-guide effort. The largest ones:
 
 - `ROCKET_MM_ASYM` / `ROCKET_KACC` / DATA_REUSE isolation exists only on a few models (mostly Gemma-4-12B,
   Qwen3.5); every other model inherits the default silently.
