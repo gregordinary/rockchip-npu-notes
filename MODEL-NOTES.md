@@ -3,7 +3,8 @@
 A living, per-model record of how each model behaves on the FOSS NPU stack (stock
 llama.cpp + the `ggml-rocket` backend): whether its prefill runs faithfully on the NPU,
 the sampling settings it wants, behavioral quirks worth knowing, and what it's good for.
-Add a row when you test a new model.
+Add a row when you test a new model. Speech-to-text models (run through transcribe.cpp on
+the same backend) get their own subsection at the end of the per-model notes.
 
 For **which flags to enable for a given workload** (use-case, precision, prompt size, and
 the RAM/disk each opt-in needs), see [TUNING.md](TUNING.md) — this file records per-model
@@ -170,6 +171,61 @@ are full-attention**.
   *collapses past ~1K context but is fine below it*, suspect this class of bug.
 - **Best use:** the MoE showcase, and the residency stress case — its expert stack only just fits a
   31 GiB board alongside its own GGUF, so it is where partial residency gets exercised.
+
+### Speech-to-text models (transcribe.cpp, not llama.cpp)
+
+These run through **transcribe.cpp** (a ggml multi-STT host), not llama.cpp, but they load the same
+`ggml-rocket` `.so` (`GGML_BACKEND_PATH`) and the NPU does the same job: the **encoder** (and, on long
+audio, the batched decode-prefill). Autoregressive decode stays on the CPU. The faithfulness question
+splits from the LLM one above: **encoder-only offload is bit-faithful** (CPU==NPU), but a model whose
+decoder cross-attn offloads can diverge late as fp16 accumulation perturbs greedy decoding — that is
+expected, not an NPU bug. Cross-model speed/quality tables are in
+[perf/benchmarks.md](perf/benchmarks.md#speech-to-text-multi-model-transcribecpp-via-ggml-rocket).
+
+- **Recommended flags (all STT):** A76-pin (`taskset -c 4-7 --threads 4` — the A55 cluster is a
+  straggler), `ROCKET_KACC=1`. **Q8_0 is the default** — for STT it ties or beats F16 on both CPU and
+  NPU at half the RAM (these models are less matmul-dominated than LLM prefill, so the per-micro-batch
+  dequant tax is small while CPU-side decode is memory-bound and Q8 moves half the bytes). Build/run
+  traps (shared/DL build needs `-DGGML_CPU_ARM_ARCH=armv8.2-a+dotprod+fp16`, and a one-line
+  `main.cpp` backend-init patch) are in the benchmarks doc.
+
+- **Voxtral-mini 3B** (Whisper-large-v3 encoder + Ministral-3B AR decoder) — **best transcript** and
+  the only **translator** here (de→en, ja→en). CPU==NPU **char-identical** throughout. Big NPU win on
+  long audio (1.57×: encoder 1.82× *and* the 1500-token audio prefill offloads at 1.46×); on short
+  clips only the encoder offloads (jfk 1.26×). Slow (0.55× realtime — 3B decode). No diarization, no
+  timestamps. Best use: highest-accuracy transcription and translation when latency is not the concern.
+
+- **MOSS 0.9B** (Whisper-Medium encoder + Qwen3-0.6B AR decoder, audio injected as KV tokens) — **best
+  diarizer** by a wide margin (33 fine segments + timestamps, clean two-speaker split, never
+  degenerates). But **decode-bound**: the encoder offloads 1.64× yet the M=1 AR decode (90% of runtime)
+  cannot, so whole-pipeline NPU is only **1.08×** over a fair A76-pinned CPU baseline. No cheap NPU
+  lever exists (spec-decode unsupported; quant/threads already tuned). Best use: diarization where
+  quality matters more than speed (~0.42× realtime).
+
+- **Granite-Speech-2B** (conformer encoder + LLM cross-attention decoder) — three variants: **base**
+  (fastest, cleanest text, CPU==NPU and Q8==F16 char-identical, 1.68× on long audio — the
+  cross-attention decode offloads ~1.9×, unusually for an audio-LLM), **plus** (diarization: 8 coarse
+  speaker turns, no timestamps — coarser than MOSS), **NAR** (iterative non-autoregressive editor →
+  decode is *larger* than base's, ~1.4× slower and rougher; not the NPU speedster the name implies).
+  base can drop spans on hard conversational audio. Cross-attn decode is **not** bit-faithful CPU-vs-NPU
+  (greedy can diverge; plus even loops on CPU while staying coherent on NPU). Best use: fast clean
+  transcription (base); coarse diarization (plus).
+
+- **SenseVoice-small 234M** (SAN-M encoder + one CTC head) — the only **true single-pass** model
+  (decode 48 ms even on 120 s → 100% encoder-offloaded). **Fastest** (6.2× realtime), lowest quality
+  (30 s window; garbles longer audio into a run-on; no diarization/timestamps). Encoder is
+  dispatch-bound at short audio (jfk NPU==CPU 1.00×), wins 1.26× at 120 s. Best use: low-latency
+  short-clip transcription where quality is secondary.
+
+- **Fun-ASR-nano 800M** (same SAN-M encoder + a bundled Qwen3-0.6B AR decoder; 31 languages) — despite
+  the shared encoder it is **autoregressive**, so the decoder is the wall (1.15× at 120 s vs
+  SenseVoice's 1.26×) for only marginally better text. The AR decoder is pure overhead the NPU cannot
+  recover. Best use: multilingual coverage.
+
+- **Parakeet CTC/TDT-0.6B** (FastConformer) — F16, A76-pinned, ~4.6× realtime, 1.37× over CPU, but
+  **conv-capped**: its convolution modules do not offload (no conv path in ggml-rocket) and stay on the
+  CPU. `ROCKET_F16_RESIDENT` hurts here (single encoder pass). Quality is rougher on hard
+  conversational audio (LibriSpeech clean-speech bias). No diarization.
 
 ## Template for a new row
 

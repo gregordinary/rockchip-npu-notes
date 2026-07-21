@@ -81,6 +81,27 @@ The win grows monotonically with the encoder (matmul work ~d_model² vs ~linear 
 **large-v3-turbo** — the full 32-layer encoder with a 4-layer decoder (~6× cheaper per step) — is
 where the NPU-accelerated encoder carries the most of a real transcription.
 
+### STT beyond Whisper (transcribe.cpp via ggml-rocket)
+
+Beyond OpenAI Whisper, the same `.so` drops into **transcribe.cpp** (a ggml-based multi-STT host)
+and offloads a range of speech models. The unifying result: **the NPU offloads encoders, not
+autoregressive decode** — so the win tracks how encode-heavy the model is, and (on long audio) how
+much of decode is offloadable prefill vs per-token M=1 steps. Single fresh-process runs, warm,
+A76-pinned, Q8_0, on a hard 120 s two-speaker clip. [HW A/B]
+
+| Model | encoder + decoder | NPU × (120 s) | rt (NPU) | best at |
+|---|---|---:|---:|---|
+| SenseVoice-small 234M | SAN-M + CTC (single-pass) | 1.26× | 6.2× | lowest latency |
+| Fun-ASR-nano 800M | SAN-M + Qwen3-0.6B AR | 1.15× | 1.75× | 31-language coverage |
+| Granite-Speech-2B (base) | conformer + LLM cross-attn | 1.68× | 1.76× | fast clean transcript |
+| Voxtral-mini 3B | Whisper-lg-v3 + Ministral-3B AR | 1.57× | 0.55× | best transcript + translation |
+| MOSS 0.9B | Whisper-Med + Qwen3-0.6B AR | 1.08× | 0.42× | best diarization (33 seg + timestamps) |
+
+The **cross-attention decoder (Granite)** offloads decode best (its per-step cross-attn over the
+encoder is a large-K matmul, ~1.9×); a **big decoder-only over long audio (Voxtral 3B)** offloads
+its 1500-token audio prefill (decode 1.46×); a **small decoder-only (MOSS/FunASR 0.6B)** keeps
+generation on the CPU (M=1), so it barely moves despite a 1.6× encode.
+
 ### Detection (SSD-MobileDet, tflite-rocket)
 
 A single inference is host cube-gather-bound, so the NPU's value is **throughput under a
@@ -1158,6 +1179,155 @@ run-to-run noise of the 61.79 headline).
 ~1.2× at tiny/base, ~2.1× at large-v3 / large-v3-turbo, transcripts byte-identical to the CPU. It is
 a true drop-in — stock `whisper-bench` / `whisper-cli` load the `.so` via `GGML_BACKEND_PATH`, no
 fork. Raw data + full per-rep timings in [data/whisper-encoder.md](data/whisper-encoder.md).
+
+## Speech-to-text, multi-model (transcribe.cpp via ggml-rocket)
+
+The `ggml-rocket` `.so` is not whisper-specific. It drops into **transcribe.cpp** (handy-computer,
+MIT — a ggml-based host for 16+ STT families: Whisper, Parakeet, Canary, Granite-Speech, MOSS
+diarize, Voxtral, SenseVoice, FunASR) with no fork: transcribe.cpp vendors a ggml whose
+`GGML_BACKEND_API_VERSION` matches this backend, the NPU registers as an ACCEL device, and each
+model's runner logs `using accel backend: ROCKET` and offloads the encoder. This section is the
+cross-model result; it uses two clips — `jfk.wav` (11 s, clean) and a hard 120 s two-speaker
+conversational recording — A76-pinned (`taskset -c 4-7 --threads 4`), Q8_0, warm, fresh
+single-process runs (no session reuse), `ROCKET_KACC=1`. [HW A/B, 2026-07-21].
+
+### The offload taxonomy — encoders, not autoregressive decode
+
+One law decides every STT model's NPU win:
+
+- **Encode always offloads**, 1.2×–2.7×, scaling with encoder size × audio length. A big encoder
+  (Voxtral's Whisper-large-v3, MOSS's Whisper-Medium) offloads harder than the small SAN-M encoder
+  (SenseVoice/FunASR).
+- **Autoregressive decode is M=1 GEMV and mostly stays on the CPU** ([decode-gemv.md](decode-gemv.md)).
+  The exception is the **batched decode-prefill over the injected audio context** on long audio: a
+  real matmul that offloads when it is large enough. So decode offload is a spectrum:
+  - **Cross-attention decoder (Granite-Speech):** every step's cross-attn over the encoder output is
+    a large-K matmul → decode offloads best (~1.9× on the long clip).
+  - **Big decoder-only + long audio (Voxtral 3B):** the 1500-token audio prefill through 3B is a
+    large offloadable chunk → decode 1.46× on the long clip, but 1.00× on jfk (prefill too short).
+  - **Small decoder-only (MOSS/FunASR 0.6B):** prefill is a small, dequant-bound slice → decode
+    1.00× (MOSS) to 1.12× (FunASR).
+  - **Single-pass CTC (SenseVoice):** no decode at all (48 ms even on 120 s).
+
+So the NPU speedup ≈ (encoder fraction × encoder offload) + (prefill fraction × prefill offload).
+Decode-bound small-decoder models barely move; encode-heavy or big-prefill models win more.
+
+### Speed — jfk (11 s, clean)
+
+| Model | arch | CPU | NPU | NPU × | encode C→N | decode C→N |
+|---|---|--:|--:|--:|--|--|
+| SenseVoice-small 234M | SAN-M + CTC (single-pass) | 1367 ms | 1369 ms | 1.00× | 1324→1326 (1.00×) | 5→5 ms |
+| Fun-ASR-nano 800M | SAN-M enc + Qwen3-0.6B AR | 4772 ms | 4739 ms | 1.01× | 1237→1239 (1.00×) | 3497→3462 (1.01×) |
+| MOSS 0.9B | Whisper-Med + Qwen3-0.6B AR | 21198 ms | 15514 ms | 1.37× | 14876→9166 (1.62×) | 6273→6300 (1.00×) |
+| Voxtral-mini 3B | Whisper-lg-v3 + Ministral-3B AR | 62133 ms | 49193 ms | 1.26× | 29350→16306 (1.80×) | 32726→32832 (1.00×) |
+
+On jfk no decode offloads (the audio context is too short to make a large prefill), so the NPU win
+is purely the encoder — it tracks the encoder's share of runtime. SenseVoice/FunASR are
+encoder-tiny or decode-dominated → ~1.0×; MOSS/Voxtral carry big encoders → ~1.3×.
+
+### Speed — 120 s conversational clip
+
+| Model | CPU | NPU | NPU × | rt (NPU) | encode C→N | decode C→N |
+|---|--:|--:|--:|--:|--|--|
+| SenseVoice-small 234M | 24.37 s | 19.41 s | 1.26× | 6.2× | 23904→18939 (1.26×) | 48→48 ms |
+| Fun-ASR-nano 800M | 78.75 s | 68.42 s | 1.15× | 1.75× | 22843→18350 (1.25×) | 55490→49656 (1.12×) |
+| MOSS 0.9B (diarize) | 306.21 s | 284.18 s | 1.08× | 0.42× | 60626→37029 (1.64×) | 245395→246969 (1.00×) |
+| Voxtral-mini 3B | 340.48 s | 217.55 s | 1.57× | 0.55× | 117329→64396 (1.82×) | 222944→152947 (1.46×) |
+| Granite-Speech-2B (base) | 114.5 s | 68.2 s | 1.68× | 1.76× | — | ~1.9× (cross-attn) |
+
+Longer audio widens every win (bigger encoder matmuls; for Voxtral and Granite the decode-prefill
+also offloads). Voxtral on the long clip is the standout non-cross-attn win (1.57×) because its 3B
+decode-prefill over 1500 audio tokens offloads. **Parakeet** (FastConformer CTC-0.6B, F16,
+A76-pinned) also runs — ~4.6× realtime on the long clip, 1.37× over CPU — but the win is
+conv-capped: its convolution modules do not offload (ggml-rocket has no conv path) and stay on the
+CPU.
+
+### Quality and capability — the 120 s hard clip
+
+| Model | transcript accuracy | diarization | timestamps | translation | CPU==NPU |
+|---|---|---|---|---|---|
+| SenseVoice-small | worst: garbled run-on (fed past its 30 s window) | no | no | no | ~ (tiny CTC drift) |
+| Fun-ASR-nano | semi-fluent, garbles hard names | no | no | no | ~ (tiny AR drift) |
+| MOSS | good, coherent | **yes: 33 seg, clean two-speaker** | **yes, fine** | no | no (32 vs 33 seg, both good) |
+| Voxtral-mini 3B | **best: cleanest, correct names, complete** | no | no | **yes** | **yes (char-identical)** |
+| Granite-Speech-2B base | clean but drops ~40 s of the middle | plus variant: 8 coarse turns | no | no | no (AR decode diverges) |
+
+- **Voxtral** is the best transcriber — it alone recovers every proper name and transcribes the full
+  120 s without dropping spans — but emits flat text (no speaker turns, no timestamps). It is the
+  only model here that **translates** (de→en and ja→en, both accurate and char-identical CPU vs NPU).
+- **MOSS** is the best diarizer by a wide margin: 33 fine segments with timestamps, cleanly splitting
+  the two speakers, coherent, never degenerates.
+- **Granite-Speech** ships three variants — **base** (fastest, cleanest text, CPU==NPU and Q8==F16
+  char-identical), **NAR** (a non-autoregressive editor that runs iterative refinement, so its decode
+  is *bigger* than base's — ~1.4× slower and rougher, not the NPU speedster the name suggests), and
+  **plus** (the diarization variant: 8 coarse speaker turns, no timestamps — coarser than MOSS).
+
+**AR-decode divergence.** Encoder-only offload is bit-faithful (SenseVoice, MOSS, Voxtral CPU==NPU),
+but a model whose decoder cross-attn offloads (Granite) is **not** guaranteed CPU==NPU: the fp16
+cross-attn accumulation perturbs logits and greedy decoding amplifies it. On the hard clip
+Granite-plus even degenerates into a repetition loop on the CPU while staying coherent on the NPU —
+divergence tracks the model's own decode instability, not an NPU fault. Voxtral, by contrast, stays
+char-identical CPU vs NPU throughout.
+
+### MOSS deep-dive — why the best diarizer barely moves on the NPU
+
+MOSS-Transcribe-Diarize (0.9B: Whisper-Medium encoder → 4× temporal merge → VQ adaptor → Qwen3-0.6B
+decoder, audio injected as KV tokens) is the best diarizer but **decode-bound**. Profiled with a
+`TRANSCRIBE_PERF_DEBUG` patch (below), long-clip Q8_0 on the CPU: encode 60.5 s, decode 245.5 s
+(**80% of runtime**) = prefill 23.4 s (1638-token batched audio+prompt, 9.5%) + **713 AR steps ×
+311 ms = 221.6 s (90.5%)**. On the NPU: encode 60.5→36.9 s (**1.64×, offloads**), prefill 23.4→18.8 s
+(**1.25×, partial — dequant-bound**), and the 713 M=1 steps do **not** offload (313 ms NPU ≈ 311 ms
+CPU). Net decode 245.4 vs 247.0 s = **1.00×**. Unlike Granite's cross-attention, MOSS injects audio
+as KV tokens, so generation is inherently M=1 regardless of the long 1500-token context: the merged
+context is not "too short," its prefill offloads, but one-token-at-a-time generation (90% of decode)
+cannot. Measured levers all cap out: a quant re-sweep moves decode ~1.4% (Q8_0 keeps the best WER at
+half F16's RAM → stays default), `--spec-k-drafts` is a no-op (MOSS does not advertise
+`supports_spec_decode`), threads are already A76-pinned. **MOSS has no cheap NPU lever** — the M=1 AR
+wall is irreducible; the only NPU-side headroom is un-dequant-binding the prefill (~1.25×→~2× on 9%
+of decode, i.e. a ~1.10× ceiling). Real fixes are algorithmic (speculative decode, a smaller decoder,
+fewer emitted tokens). **The honest number: against a fair A76-pinned CPU baseline (306 s), MOSS on
+the NPU is 1.08×** (an earlier untuned-CPU comparison overstated it).
+
+**Profiling method.** `TRANSCRIBE_PERF_DEBUG=1` alone prints the per-step timings, step count, and
+`T_enc`/prefill from lightweight `ggml_time_us()` markers; the rich per-op ENCODE/DECODE tables
+install a per-node sched-eval callback that syncs after every op and inflates long-audio decode ~10×
+(unusable past a few seconds). A local RK1 patch to `src/arch/moss/model.cpp` gates just that callback
+behind a second flag, so `TRANSCRIBE_PERF_DEBUG=1` gives real per-step timing at full speed and the
+op tables need `TRANSCRIBE_PERF_DEBUG=1 TRANSCRIBE_OP_PROF=1` (upstream-worthy).
+
+### Build and run
+
+transcribe.cpp needs its CPU backend and the rocket `.so` both discoverable, and one upstream
+one-liner for shared/DL builds:
+
+```sh
+# build transcribe.cpp shared + DL-capable, tuned for the A76 (armv8.2 + dotprod + fp16)
+cmake -B build -DTRANSCRIBE_BUILD_SHARED=ON -DTRANSCRIBE_GGML_BACKEND_DL=ON \
+  -DTRANSCRIBE_VULKAN=OFF -DGGML_CPU_ARM_ARCH=armv8.2-a+dotprod+fp16
+cmake --build build -j
+cp build/bin/libggml-cpu.so build/src/   # backend scan globs build/src; the ARM cpu module lands in build/bin
+# run with the rocket backend loaded
+LD_LIBRARY_PATH=build/ggml/src:build/bin GGML_BACKEND_PATH=/path/to/libggml-rocket.so \
+  sudo -n -E ./build/bin/transcribe-cli -m /path/model.gguf -f audio.wav
+```
+
+Traps worth knowing: a `TRANSCRIBE_GGML_BACKEND_DL` build forces `GGML_NATIVE=OFF`, so without
+`-DGGML_CPU_ARM_ARCH=armv8.2-a+dotprod+fp16` the CPU baseline ships zero dotprod/fp16 kernels (~1.3×
+too slow, inflating the NPU speedup); and `transcribe-cli` only initializes the default backends for
+`--list-devices`, not for transcription — a one-line `main.cpp` patch to call
+`transcribe_init_backends_default()` before model load fixes the shared/DL build (upstream-worthy;
+the default static build compiles the CPU backend in and does not need it).
+
+### Verdict
+
+The `ggml-rocket` drop-in generalizes cleanly from Whisper to the wider STT landscape. The frontier
+it exposes: **SenseVoice** (fastest, lowest quality) → **FunASR** → **Granite-Speech** →
+**Voxtral** (best transcript, only translator) / **MOSS** (best diarizer, slowest). Q8_0 is the
+default across the board — for STT it ties or beats F16 on both CPU and NPU (the models are less
+NPU-matmul-dominated than LLM prefill, so the per-micro-batch dequant tax is small while the CPU-side
+decode is memory-bound and Q8 moves half the bytes) at half the RAM. The NPU's contribution is the
+encoder (and, on long audio, the offloadable decode-prefill); the autoregressive decode that
+dominates the audio-LLMs stays a CPU problem, exactly as for LLM decode.
 
 ## Detection (tflite-rocket)
 
