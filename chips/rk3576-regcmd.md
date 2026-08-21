@@ -603,8 +603,15 @@ sequence out and the emitter takes the window in `conv_params_t` `ih`/`oh` again
 The caller's whole job per task is two byte offsets, and both are plain row strides —
 `iy0*iw*16` into the feature cube and `oy0*ow*16` into the output. The cubes are
 NC1HWC2 with a 16-byte channel atom and the CNA takes the DDR group stride from the
-FULL plane (`0x1094` = `iw*ih_full`), so one base plus a row offset addresses that row
-of EVERY channel group. The vendor's sliced capture is the direct evidence on the
+FULL plane (`0x1094` = `iw*ih_full` by default), so one base plus a row offset addresses
+that row of EVERY channel group. `0x1094` is a quantity the emitter fills rather than a
+derivation the hardware repeats: **the part honours any value at or above the plane**,
+which is what lets a consumer read a producer's surface whose groups are further apart
+than its own plane would put them — bit-exact at `+3`, `+16` and `+64` elements over five
+geometries, one row task and ten, against a control that lays the same padded buffer out
+without setting the register and differs every time. `0x1098` is NOT read as a second DDR
+stride: the padded cases are bit-exact with it left at `round4(iw*fetch_rows)`.
+[HW sweep, H96 MAX M9, `tests/rk3576_surf_stride.c`] The vendor's sliced capture is the direct evidence on the
 feature side: its fourth task reads input rows 111.. and `0x1088` carries exactly that
 row offset.
 
@@ -1919,10 +1926,11 @@ Sweeping the control field at each width isolates the cause to `TASK_NUMBER` alo
 
 So `TASK_COUNT_CLEAR` is not the mechanism — with the field correctly placed the part
 works with every control bit clear, and with it misplaced no control-bit value tried
-helps. The other two per-SoC PC parameters in the vendor config are inert here:
-`rocket` never reads `PC_TASK_STATUS`, so the `0x3c`/`0x48` offset delta cannot bite,
-and the part runs correctly without `pc_dma_ctrl`'s IRQ-locked `PC_DATA_ADDR` write.
-The RK3576-only `state_init` hook is likewise not required.
+helps. Of the other two per-SoC PC parameters in the vendor config, `pc_dma_ctrl`'s
+IRQ-locked `PC_DATA_ADDR` write is not needed and neither is the RK3576-only
+`state_init` hook; `pc_task_status_offset` is real and load-bearing, because the
+register at `0x48` is the live task counter a chained stream's completion has to be
+read from (see "`PC_DONE` is per TASK" below).
 
 Nothing a regcmd can write clears it, which is why the fix had to be a driver patch.
 Sweeping the CNA/CORE/DPU/RDMA `S_POINTER` value over the whole ping-pong field
@@ -2064,7 +2072,7 @@ and the gate's wall is host packing and the per-call power-cycle guard, not subm
 lever is worth `(n-1) * 439 us` per call and nothing else; it pays on the deep planes and
 is invisible on the shallow ones.
 
-`ROCKET_RK3576_BATCH_TASKS=1` turns it on in `librocketnpu`'s int8 convolution path.
+It is DEFAULT-ON in `librocketnpu`'s int8 convolution path (`ROCKET_RK3576_BATCH_TASKS=0` turns it off), and the same layout carries a run of cube-linked LAYERS as one kick — see the cross-layer kick in [rk3576.md](rk3576.md). Note that both trailer fields describe the NEXT segment: the driver programs `PC_BASE_ADDRESS` and `PC_REGISTER_AMOUNTS` from task 0 alone, so a chain of programs that differ in LENGTH must write its successor's count and not its own, which a uniform row-task chain cannot distinguish.
 `rocket_batched_submit_supported()` refuses to self-chain against a kernel that does not
 honour the flag (it reads
 `/sys/module/rocket/parameters/rocket_batch_submit`, else the advertised DRM interface
@@ -2227,6 +2235,54 @@ An earlier reading of the DPU bits as a closed negative — "`DPU_0` is already 
 same poll tick as `PC_DONE`" — was an artifact of the period it was measured at. At
 500 us of detection lag the drain has always finished by the time the poll looks, so the
 two signals cannot be told apart; at 50 us they separate cleanly.
+
+### `PC_DONE` is per TASK, and `PC_TASK_STATUS` is the live task counter
+
+`PC_DONE_0`/`PC_DONE_1` are **two alternating per-task pulses, not one whole-kick
+completion**. On a `TASK_NUMBER = n` kick the two bits swap as the program counter
+retires each program, so the first of them appears a few tens of microseconds into a
+stream that may run for milliseconds and says nothing about the stream being over. They
+are also not latched across tasks: mid-stream the whole `RAW_STATUS` word cycles through
+`0x10000000`, `0x20000000`, `0x30000000` and `0x00000000`, and the per-task block
+completion bits (`0x155` for one ping-pong group, `0x2aa` for the other) appear only
+briefly and are gone again by the next task. Only the LAST task's block bits survive,
+because no task follows to clear them. [HW sweep, H96 MAX M9]
+
+**`PC_TASK_STATUS` is where the kick is.** The register is at **`0x48`** on this part
+(`0x3c` on the RK3588 — the vendor `rknpu` config carries the delta as
+`pc_task_status_offset` and reads the register as its "task counter"), and it holds two
+16-bit counters, **both modulo the programmed `TASK_NUMBER`**:
+
+| bits | field |
+|---|---|
+| 15:0 | tasks **started** |
+| 31:16 | tasks **completed** |
+
+While task `k` (0-based) of `n` is in flight it reads `(k << 16) | (k + 1)`; while the
+last one runs, `started` has wrapped and it reads `(n - 1) << 16`; once every task has
+retired both wrap and it reads **0**, which is also what it reads before the first task
+starts. Confirmed on kicks of 2, 3, 5, 8, 9, 35 and 90 tasks. The RK3588's reported
+`0x0000f000` at IRQ time fits the same model: `& 0xfff == 0` is the completed count
+having wrapped, i.e. the whole job done. [HW sweep, H96 MAX M9]
+
+Mid-stream at least one of the two halves is non-zero, so **`PC_DONE` set together with a
+zero `PC_TASK_STATUS` means the whole kick is over, and nothing else does** — the signal
+a driver needs to place a completion wait on a chained stream. The 35-program cross-layer
+kick of a MobileNetV1-224, traced at a 10 us poll:
+
+```
+t=   12 us   PC_DONE_0,  ts=0x00000001   task 1 of 35 in flight
+t=   31 us   PC_DONE_1,  ts=0x00000001
+ ...         the two bits alternating, once per task
+t= 1911 us   PC_DONE_1,  ts=0x00220000   task 35 of 35 in flight
+t= 1921 us   0x300002aa, ts=0x00000000   the DPU's own completion; the kick is over
+```
+
+**`PC_OPERATION_ENABLE` is a self-clearing GO bit, not a busy flag.** It reads back **0
+at every poll of a kick that is still running** [HW sweep], and the vendor driver writes
+`1` and then `0` to it back to back (`rknpu_job.c`) [source-confirmed]. So a completion
+test of the form `OPERATION_ENABLE == 0 || PC_DONE` is *vacuously true* on this part from
+the first poll onward — which is what any wait built on it is really anchored to.
 
 ### A half-started job pins the NPU runtime-active, and then ONLY the int32 path breaks
 
@@ -3281,6 +3337,35 @@ exactly there as well: an odd window has no tie, so half-to-even and TFLite's ha
 cannot differ, and the int8 rebase is exact because `128*49` is an integer multiple of the
 divisor. [HW sweep, H96 MAX M9]
 
+**PPU_RDMA's SOURCE SURFACE STRIDE is honoured verbatim, including a value that is not a
+multiple of four.** Every vendor pooling program stores `round4(iw*ih) * 16` in
+`R76_PPUR_SRC_SURF`, and a direct convolution's output surface stride is `ow*oh` exactly —
+49 against 52 at a 7x7 plane — so whether the PPU takes the unpadded one is the whole of
+whether a pool can read a convolution's surface as its feature cube without a copy. It
+does: bit-exact at 49, 25 and 9 elements per channel group, over max and average, at zero
+points either side of zero (`rk3576_pool_probe lib`, both strides,
+`ROCKET_RK3576_POOL_PACK_SRC=1` forcing the packed one). A wrong stride there would compute
+a full and plausible surface rather than faulting, which is why it is a gate rather than an
+assumption. `pool_params_rk3576_t.src_surf_elems` carries it; 0 keeps the vendor's `round4`.
+[HW sweep, H96 MAX M9, 2026-07-31]
+
+**A POOLING JOB RAISES NO DPU COMPLETION, and the driver has to be told.** The same
+per-block bitmap that makes `PC_OPERATION_ENABLE` a trap makes this one: a pool enables PPU
+and PPU_RDMA and no DPU stage at all, so the `DPU_0`/`DPU_1` bits
+`patches/rk3576/npu/0012` retires a job on can never set for it and the job falls through
+to the `dpu_grace_us` deadline, paid in full on every submit. Measured through the library
+entry, the wait tracks the parameter count for count — 641 us at 500, 389 at 250, 213 at
+100 — which is what says it is not retiring on a completion at all. The PPU's own bits are
+two positions over in the same register (`PPU_0` `0x400`, `PPU_1` `0x800`, against the DPU's
+`0x100`/`0x200`); `patches/rk3576/npu/0021` adds `DRM_ROCKET_JOB_PPU_DONE` to select them
+per job, and the wait becomes **71 us**. Per job rather than per driver because which class
+a job is in is invisible at `PC_DONE` time and obvious to the userspace that wrote
+`PC_OPERATION_ENABLE`. **Gate the flag on the interface version (>= 1.3)**: the submit ioctl
+REJECTS a flag word it does not recognise, so an older kernel fails the submit rather than
+ignoring the bit. And do NOT set it on a stream that mixes DPU and PPU programs — an
+interior program's PPU bit would retire the job while a later DPU write was still draining.
+[HW sweep, H96 MAX M9, 2026-07-31]
+
 ### The unprivileged double free, and the crashes it was mistaken for
 
 **`rocket_copy_tasks()` frees the submit job's task array twice.** It allocates
@@ -3386,3 +3471,174 @@ open/close, unprivileged and unbounded. `patches/rk3576/npu/0019` keeps the driv
 pointer, frees it after `drm_sched_entity_destroy()` rather than before, checks the
 allocation (it was unchecked) and frees it on the init-failure path too.
 [source-confirmed + HW sweep, H96 MAX M9]
+
+## The DPU's elementwise stage: one operand, requantized
+
+An elementwise op on this part is a program of its own — **DPU + DPU_RDMA only, no CNA
+and no CORE, 89 writes, `PC_OPERATION_ENABLE` `0x18`** — the same shape as the LUT table
+load, but this one computes. It is **not** fused into the producing convolution's
+epilogue: in the vendor's hands a residual block pays a program for its add. (The
+lowering this driver ships does not — see below.)
+
+What it computes, measured on silicon:
+
+```
+out = sat8( ((ew + EW_CVT_OFFSET) * EW_CVT_SCALE >> EW_CVT_SHIFT)
+                                  * OUT_CVT_SCALE >> OUT_CVT_SHIFT )
+```
+
+**ONE operand.** Bit-exact over channel counts 16-320 and planes 1x1 to 28x28, in the
+NC1HWC2 cube the convolution path already packs (`tests/rk3576_add_probe.c gate`, 10
+shapes). The final shift **rounds half to even**, the same rule the direct path's
+OUT_CVT uses — established here independently: against a round-half-up reference every
+disagreement was an exact tie, 25% of elements at a gain of one half and none at unity.
+[HW sweep, H96 MAX M9, 2026-07-31]
+
+The registers that differ from a convolution's DPU half:
+
+| register | add | conv | what it is |
+|---|---|---|---|
+| DPU `0x400C` | `0x00000005` | `0x40000004` | FEATURE_MODE |
+| DPU `0x4030` | `(c-1)<<16 \| 0x0F00` | `… \| 0x0710` | WDMA_SIZE0 |
+| DPU `0x4038` | `0x00100012` | `0x00120080` | NOTCH_CFG |
+| DPU `0x4044` / `0x4050` | 0 / 0 | `0x1` / `0x80011111` | BS stage, off |
+| DPU `0x407C` | `0x8002C0C0` | `0x010041C1` | EW_CFG: bit 0 clear, so the stage is ON |
+| DPU `0x40C0` | `0x04440000` | `0x04440100` | SURFACE_ADD in the RK3588's map |
+| DPU_RDMA `0x501C` | `0x1A` | `0x710` | the operand-source register |
+| DPU_RDMA `0x5034` | `0x40000044` | `0x41` | ERDMA_CFG |
+| DPU_RDMA `0x5038` | the operand base | 0 | EW_BASE_ADDR — the one base that is read |
+| DPU_RDMA `0x5040` | `w*h` | 0 | the operand's channel-group stride |
+| DPU_RDMA `0x5044` | `0x9` | `0x40000010` | FEATURE_MODE |
+
+`MUL` is the same program in four registers (`0x407C` `0x810F4094`, `0x4044` `0x2`,
+`0x4050` `0x00020000`, `0x501C` `0x2`); its arithmetic is not gated.
+
+### A second operand is not reachable through this register set, and the search is exhaustive
+
+The elementwise stage takes **exactly one operand**, and that is now a closed negative
+rather than a lead not yet chased. Six sweeps cover the whole interface:
+
+- **Every register the program leaves at zero, tried as a second base at every output
+  gain.** Seventeen candidates crossed with the full 32-rung OUT_CVT ladder. Nothing
+  reaches the output at any of them except `0x5024`, which injects a constant — it is
+  the DPU shift word, a live per-task operand and not a spare. Crossing the two axes is
+  what makes this conclusive: a placement sweep at one gain and a gain sweep at one
+  placement are both blind to an operand that sits somewhere unexpected AND enters the
+  accumulator unscaled.
+- **Every register the program never writes at all**, appended to the program one at a
+  time — the complement of every other sweep here, and not an empty set, since the
+  register file is not cleared between jobs on this part, so a base the vendor programs
+  in an earlier task would still be standing. Twenty-nine candidates over the DPU and
+  DPU_RDMA blocks, at two gains: nothing carries an operand, and three (`0x5068`,
+  `0x5070`, `0x5074`) stop the write entirely.
+- **The main DMA feed at every gain from 2^14 down to 2^-31.** The program is configured
+  to read one — DPU `0x400C` bit 0 is the NVDLA feature-mode FLYING bit and the add sets
+  it, DPU_RDMA `0x5044` bit 4 is `MRDMA_DISABLE` in the same lineage's map and the add
+  clears it — and it contributes exactly zero at all 64 rungs, with the elementwise
+  operand live as a control at every one.
+- **A joint grid over `EW_CFG` and `BRDMA_CFG`**, and a second over `FEATURE_MODE` and
+  `ERDMA_CFG` driving the `COMB_USE` field the RK3588's own K-accumulation uses to
+  combine two feeds. In both, **only the captured word writes at all** — every other
+  combination leaves the surface untouched.
+- **Destination accumulation, with DPU `0x40C0` swept** over the captured word and 28
+  single-bit variants of it, classified by running each twice over differently
+  pre-filled destinations. It always overwrites. Two bits (`0x00010000`, `0x00020000`)
+  saturate the output; none accumulates. `SURFACE_ADD` in the RK3588's map sits at this
+  offset, and on this part it is not an accumulate mode.
+- **What the program reads, rather than what it was handed.** A single non-zero 16-byte
+  atom walked over an operand buffer eight cubes long, with the base pointed at the
+  middle: the addressed cube's 32 atoms map one to one onto the output and **nothing
+  outside it moves anything**. So the two operands are not one allocation at a fixed
+  offset either, which is how the RK3588's K-accumulation feeds its pair.
+
+What the manufactured captures say the vendor's program does have, which is what makes
+the negative worth stating precisely: **`Sub` compiles to this same program with the
+operand converter's scale NEGATED, and `Sub` with its operands swapped negates it too**
+— so the subtrahend is always the elementwise cube and the other operand rides a feed
+whose weight is fixed at +1, since no register carries a second scale. And **both
+operands share ONE quantization scale**: two graph inputs calibrated 64x apart still
+compile to one converter, with the OUT_CVT gain coming out as the ratio of a single
+shared input scale to the output's.
+
+### The residual add is lowered onto the convolution datapath instead
+
+Concatenate the two operands along the channel axis and convolve with a 1x1 kernel of
+two diagonal blocks — `W[o][o] = w1`, `W[o][C+o] = w2`, zero elsewhere:
+
+```
+out[o] = requant( w1 * (a[o] - a_zp) + w2 * (b[o] - b_zp) )
+```
+
+Bit-exact against a CPU model of the part's own arithmetic over nine MobileNetV2 and
+ResNet-18 residual shapes (channels 24-512, planes 7x7 to 56x56) and within **one count**
+of an exact float residual add at every one (`tests/rk3576_residual_add.c`). Two of its
+properties are better than the vendor's elementwise program, not merely equal to it:
+
+- **The two operands may carry different scales.** The ratio rides in the weights as
+  `w2/w1`, so the pair only has to be representable as two int8s — about one part in 127
+  — where the vendor's one operand converter forces its compiler to quantize both
+  operands to a common scale.
+- **The two zero points ride in the bias, exactly.** The datapath has one input zero
+  point, but `w2 * (a_zp - b_zp)` is a per-output-channel constant, which is what the
+  bias is.
+
+And **it fuses**, measured rather than argued. A block's last convolution takes `C` more
+input channels and an identity block at the **centre tap** of its kernel, and the skip is
+then part of a convolution the network was already paying for — so the add costs **no
+program at all**, against the one program the vendor pays. That is the hardware's own
+idiom: the vendor compiler folds `Add(Conv(x), x)` into exactly this shape, which is why
+that graph is useless as a capture of an add. Bit-exact at MobileNetV2's project
+convolution for every residual width (1x1, `ic` 168 to 1120) and at ResNet-18's second
+convolution (3x3, `ic` 128 to 512).
+
+**Where the fusion stops is the weight-slice rule**, `ic*kh*kw <= 4608`. A 1x1 project
+convolution is nowhere near it. A 3x3 reaches it exactly at `C = 256` (`512*9 = 4608`) and
+is refused at `C = 512` — so ResNet-18's widest stage keeps its add as a standalone
+program, which the same rule caps at `C = 2304`. The standalone form's weight cube is
+`2C*C` bytes, 512 KiB at that stage, paid once as resident weights rather than per
+inference; transiently a standalone add measures 0.6-3.3 ms across the shape table.
+[HW sweep, H96 MAX M9, 2026-07-31]
+
+### Two traps, each of which cost a round of the probe
+
+**Every base left at the capture's stored zero reads IOVA 0, which is a real buffer**
+— per-fd IOVA starts at zero on this stack, so the first BO a probe allocates is what
+those bases read. With the operands allocated first the surface came back a constant
+and the arithmetic looked broken; allocating a **guard BO first** so nothing of ours
+sits at IOVA 0 made the operand pass through exactly. A zero base is not a disabled one.
+
+**DPU `0x40D0` must be the captured `0x0040FFFF` verbatim.** Reading it as a clamp pair
+and writing `0x00407F80` left **exactly half of every 16-channel group unwritten**,
+silently — a write-coverage failure, not a wrong value, and one that reads like a
+channel-budget property of the writer. The clamps are `OUT_CLAMP_MIN`/`MAX`
+(`0x40A4`/`0x40A8`); the no-clamp pair is `INT32_MIN`/`INT32_MAX`.
+
+`OUT_CVT_SCALE` is a **signed** 16-bit field: `32768` reads back as `-32768` and flips
+the output's sign, so the usable maximum is 32767.
+
+### Manufacturing the capture: what the compiler folds away
+
+The captures are built by `tests/data/rk3576-vendor-capture/add/mkadd.py` and read by
+`decode_add.py`. **`Add(Conv(x), x)` is not a capture of an add**: the vendor compiler
+folds an identity skip into the convolution's own kernel — the centre tap of the
+diagonal — so six such ONNX graphs, over four channel counts and three planes, compiled
+to a register program indistinguishable from a plain convolution. `Add(Conv_a(x),
+Conv_b(x))` folds too, and so does a **per-channel broadcast** operand — `Add(Conv(x),
+k)` with `k` of shape `[1, C, 1, 1]` compiles to a plain convolution with `k` in its
+bias. A capture of the op needs an operand the compiler cannot reach: a second graph
+input, a constant tensor of the same shape, or a real MobileNetV2 bottleneck whose skip
+crosses three convolutions. Those three all emit it, identically.
+
+**Two operands at the same scale are unattributable.** Every register that scales an
+operand looks the same for both when both calibrate to the same range, so the two
+converters cannot be assigned. Give the inputs deliberately asymmetric calibration
+amplitudes and the assignment falls out — that, and compiling `Sub` in both operand
+orders, is what named the elementwise cube as the *second* operand and pinned the
+first's weight at unity.
+
+**A capture's container says how many tasks an op costs.** Each `.rknn` carries a table
+of 40-byte task records — `[index][PC_OPERATION_ENABLE][slot size][int mask][int clear]
+[write count][…][program offset]` — and `write count` matched against the program stream
+is what identifies them. It is worth reading before concluding anything about an op's
+structure from the program list alone: a single `Conv` emits four task records over four
+distinct program slots at two different row geometries, so program count is not op count.

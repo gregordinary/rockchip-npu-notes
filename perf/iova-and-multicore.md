@@ -272,6 +272,34 @@ the **submit-overhead-bound** paths this file is about: decode GEMV, the small d
 convs/1×1s, multi-fd contention, and the throughput pool (model 2). See
 [not-mac-bound.md](not-mac-bound.md) §dispatch floor.
 
+### The reset path detaches too, and the order matters
+
+Keeping the domain attached across *jobs* says nothing about `rocket_reset()`, which detaches
+explicitly — and that detach is the one an unprivileged client can reach. `rocket_job_timedout()`
+is its only client-reachable caller, so the group is detached while the core is still wedged
+mid-DMA with an unacknowledged fault in its MMU, and rk_iommu cannot stall a bank in that state:
+two `rk_iommu … Enable stall request timed out` `dev_err`s per faulting job, one per MMU bank
+(the RK3588 NPU MMU has two). `rk_iommu_disable()` swallows that error, but the same handshake
+runs again inside `rk_iommu_enable()` when the IOMMU core puts the group back on its default
+domain (the RK1's default domain type is *Translated*, so an rk_iommu attach really does run),
+and there it is returned — `__iommu_group_set_core_domain()` turns it into a `WARN`, which is a
+taint, a backtrace, and a panic under `panic_on_warn`. `drm_rocket_task.regcmd` is a raw NPU IOVA
+written into the PC block unvalidated and `/dev/accel/accel0` is group `render`, so one field
+pointed at an unmapped address reaches all of it.
+
+**Reset the core before detaching** and the handshake has a quiesced master to stall; the reset
+also wipes the MMU page-table base, which is already why the domain must be dropped.
+`patches/rocket/088-rocket-drv-reset-before-iommu-detach.patch`, which is also where the upstream
+RFC puts the detach. **Measured 2026-07-31 (Turing RK1, 7.1.1, `081`–`087` out-of-tree)** over
+30 client-requested DMA faults per arm (`tests/uapi_regcmd_fault_rocket`, both modes): the same
+30 `NPU job timed out` on either module, **60 stall timeouts without the patch and 0 with it**,
+83/83 `ctest` and the taint word unmoved [HW sweep]. The `WARN` itself is intermittent — it needs
+the *second* handshake to fail as well — and fired in neither arm; what the A/B measures is the
+failing handshake it is downstream of.
+
+The RK3576 reaches the same detach and logs the same stall timeouts but does not `WARN`; the two
+parts differ in the consequence, not in the trigger.
+
 ## Batched submit: one HW kick for many tasks
 
 One large dispatch-floor lever is the number of HW kicks per inference. Mainline
