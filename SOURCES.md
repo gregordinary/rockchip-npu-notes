@@ -51,6 +51,21 @@ driver (see the [README](README.md) evidence tags).
   decoding raw BSP dumps is lower-value than a targeted Teflon capture on the rocket path.
   Independently corroborates the **float-only EW ALU** that kills integer K-accum.
 
+- **Rockchip Hardware Design Guides** — `Rockchip_RK3588_Hardware Design Guide_V1.4_EN.pdf`
+  and `3576_hardware_design_guide.pdf` (V1.1, 2024-05). Board-design documents: no register
+  content, nothing about the regcmd interface or the NPU's internals, so they are useless for
+  encoding work. What they carry is the **platform envelope** each part's NPU numbers must be
+  read against, and the RK3576 differs from the RK3588 on every axis of it: the **DRAM bus
+  width** (32-bit / 2 channels vs 64-bit / 4 channels, at an identical 2112 MHz PHY clock, so
+  exactly half the bandwidth), the **NPU power rails** (the RK3588 has a separate
+  `VDD_NPU_MEM`; the RK3576 has none, so its CBUF and other NPU arrays sit on the logic rail),
+  the **peak operating point** (0.800 V / 4 A / 3.20 W vs 0.850 V / 4 A / 3.40 W, both at
+  1000 MHz) and the **package thermal resistance** (θJA 15.84 vs 8.7 C/W). The DRAM figure is
+  the load-bearing one: it is the mechanism behind the RK3576's DDR-traffic-driven atom drop,
+  its long DPU write drain, and the ceiling on its host cube packing. Both are indexed in
+  [chips/rk3588.md](chips/rk3588.md) and
+  [chips/rk3576.md](chips/rk3576.md). `pdftotext -layout` extracts both cleanly.
+
 - **6.6 BSP kernel `rknpu` driver** — the vendor kernel driver: HW performance
   counters, the devfreq/OPP table, and —
   critically for the clock work — `rknpu_devfreq.c` showing **200 MHz is the literal
@@ -363,6 +378,18 @@ driver (see the [README](README.md) evidence tags).
   the jitter. Independent corroboration of our CPU-side submit/dispatch floor — see
   [perf/not-mac-bound.md](perf/not-mac-bound.md) §Dispatch-floor reducers and
   [perf/clock.md](perf/clock.md). Methodology only; no FOSS-path numbers (it never leaves rknn).
+
+## The NVDLA ancestor
+
+- **NVDLA hardware manual v1** ([nvdla.org](http://nvdla.org/)) — the only authoritative prose
+  about this datapath; Rockchip publishes a register list and no semantics. Which of our
+  questions it answers, which it answers *wrongly* for this silicon, and which it cannot reach
+  is worked through in [nvdla-lineage.md](nvdla-lineage.md), with a per-page reading list. In
+  short: the structure transfers (blocks, the ping-pong register file, CBUF banking and ports,
+  CACC's within-one-layer accumulate, the MCIF/SRAMIF arbiters), the arithmetic details do not
+  always (it specifies round-half-away-from-zero; the part rounds half to even), and the fields
+  that matter most here — `PC`, `DECONV`, the CBUF granule allowance, the per-sign shift word —
+  are Rockchip additions it never had, so its silence about them is not evidence.
 
 ## Compression
 

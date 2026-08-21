@@ -15,13 +15,13 @@ The last stage of the DPU before write-back is the **output converter** (NVDLA S
 accumulator, the converter is purely integer:
 
 ```
-out = (float_or_int)( (acc_i32 * SCALE) >> SHIFT )       (arithmetic >>, truncates toward −∞)
+out = (float_or_int)( round_half_to_even( (acc_i32 * SCALE) >> SHIFT ) )
 ```
 
 - `SCALE` is a **uint16 integer multiplier** — *not* fp16, *not* fixed-point. HW-confirmed by
   the ratio classifier: `SCALE=2 → ×2`, `SCALE=256 → ×256`, exactly.
-- `SHIFT` is an **integer right-shift in the integer domain, applied before any float cast**,
-  so it **truncates** (the `cv≠0` floor-rounding signature: `acc>>1` of an odd `acc`).
+- `SHIFT` is an **integer right-shift in the integer domain, applied before any float cast**.
+  It rounds to nearest; see the tie rule below.
 - `minus_exp` (bits[19:12]) and `cvt_type` are **no-ops on the integer accumulator path** —
   they only matter on the LUT/EW float datapath (below).
 - The **BN-MUL operand** (`DPU_BN_MUL_CFG[31:16]`) is likewise an integer multiply with the
@@ -30,6 +30,39 @@ out = (float_or_int)( (acc_i32 * SCALE) >> SHIFT )       (arithmetic >>, truncat
 This is exactly the QNNPACK **requantization** form (15-bit multiplier + shift + zero-point
 offset → int8/int16). `gen_conv2d_int8_fill(int8_out=1)` uses it to emit requantized int8
 bit-exact vs Teflon.
+
+### The tie rounds to EVEN
+
+`acc*SCALE >> SHIFT` rounds to nearest, and an exact half lands on the **even** side:
+0.5 → 0, 1.5 → 2, −0.5 → 0, −1.5 → −2. Measured over 40 exact ties at two shifts, both
+signs, all four candidate rules discriminated [HW sweep, H96 MAX M9, RK3576,
+`tests/requant_round_probe.c`]. So it is banker's rounding — matching QNNPACK's *precise*
+requantization, whose scale derivation the emitters already copy — and **not** the
+round-half-**away-from-zero** the ancestor IP's documentation specifies
+([nvdla-lineage.md](../nvdla-lineage.md)), nor the round-half-**up** that
+`(x + half) >> shift` gives and that every CPU model in this tree used to spell.
+`tests/requant_model.h` is now the one model and carries the rule.
+
+**Reaching a tie needs a deliberately chosen scale.** The derivation ends in `+1`
+(`MUL = ((bits>>9) & 0x7fff) + 1`, bit 14 forced), so `MUL` is **odd** for every round scale
+including every power of two — and an odd multiplier moves an exact half off the tie in the
+outward direction, so the rounder never sees one. That is why no gate has ever exercised the
+case, and why the probe picks a scale whose top 14 mantissa bits are all ones under an even
+exponent field, which is what makes `MUL` exactly `2^14`.
+
+**How often it matters in practice.** With `MUL` odd, ties are one accumulator residue in
+`2^SHIFT`, and the two rules differ on half of those: about `2^-(SHIFT+1)` of a surface.
+At a typical `SHIFT` of 15–20 that is nothing in a small gate case and tens of elements in a
+large prefill — one count each, sparse, present in every configuration. Exactly the standing
+noise that has made single-element int8 disagreements unreadable.
+
+**Scope.** Measured on the RK3576. The RK3588 is **unmeasured**: its int8 matmul writes a raw
+int32 accumulator and requants on the host, so the only entry with the on-chip requant there
+is the depthwise int8 conv, and `tests/requant_round_probe.c`'s RK3588 arm does not yet drive
+its accumulator (it says so at runtime rather than reporting a rule it has not earned).
+Since the scale derivation, the register triple and the IP are shared, the RK3576 rule is the
+prediction for the RK3588 — but it is a prediction, and this page previously asserted
+truncation there on the strength of a probe that could not have separated the two.
 
 **Float-affine convert (the LUT-activation path).** When the converter's *input* is already a
 Q-format value in the float/EW datapath (e.g. a LUT output `q`), `cvt_type=1` selects

@@ -11,12 +11,12 @@ learned-upsample (ONNX `ConvTranspose`, PyTorch `nn.ConvTranspose2d`, TFLite
 direct scatter-add reference across stride 1/2/3, pad, output_padding, dilation>1,
 asymmetric kernels, multi-group IC/OC, and a tiled 64×64 output (2026-06-22).
 
-## There is no transpose-conv hardware — it lowers onto the forward conv
+## The shipping path lowers onto the forward conv
 
-The CNA is a forward convolution engine; the RK3588 NPU has **no** dedicated
-transposed-conv / deconv mode (and no on-chip layout/scatter engine to build the dilated
-input — consistent with [no on-chip layout conversion](../perf/ppu-pooling-not-detile.md)).
-So a transposed conv is realised by the **standard lowering identity**:
+The CNA is a forward convolution engine and there is no on-chip layout/scatter engine to
+build the dilated input (consistent with
+[no on-chip layout conversion](../perf/ppu-pooling-not-detile.md)), so the transposed conv
+is realised by the **standard lowering identity**:
 
 ```
 ConvTranspose(X; W, stride s, pad p, dil d, opad)
@@ -68,6 +68,52 @@ when `s>1` (must be `< stride`); it appears only in the trailing pad, never the 
   Correctness-first. The perf follow-on is the **sub-pixel / stride² decomposition**: run `s²`
   small *dense* forward convs (one per `(kh mod s, kw mod s)` phase) and interleave their
   outputs — no zero-MACs — which is how efficient deconv is normally done. Not yet built.
+
+## There IS a hardware deconvolution mode, and it is live
+
+The CNA register map carries a transposed-convolution mode nothing in this stack drives:
+**`CNA_CONV_CON1[16]` `DECONV`**, plus **`CNA_CONV_CON3[13:11]` `DECONV_Y_STRIDE`** and
+**`[10:8]` `DECONV_X_STRIDE`** [Mesa `registers.xml`; allbilly `rkt_registers.h` — both name
+all three]. NVDLA has no deconvolution engine at any revision, so this is Rockchip's own
+addition and its ancestor's documentation says nothing about it
+([nvdla-lineage.md](../nvdla-lineage.md)).
+
+It is **live on the RK3588** [HW sweep, Turing RK1, `tests/deconv_mode_probe.c`]. A 32×8×8
+k3 stride-1 fp16 conv, run once plain and once per cell with the mode bit and the two stride
+fields set, every cell run twice and reported only when the two agree:
+
+| `DECONV` | stride field | result |
+|---|---|---|
+| 0 | 0–7 | byte-identical to the forward conv at every value |
+| 1 | 0, 2, 4, 5, 6 | byte-identical to the forward conv |
+| 1 | 1 | 1145 of 1152 elements differ, 49 zero |
+| 1 | 3 | 1118 of 1152 differ, 640 zero |
+| 1 | 7 | 1152 of 1152 differ, 1120 zero — exactly one non-zero per output channel |
+
+Three things are settled by that table. The stride fields are **gated by bit 16** — with the
+bit clear they do nothing at any value, which is the control that makes the rest readable.
+Only field values **1, 3 and 7** are live, i.e. `2^k − 1`, so the field is stride-encoded and
+the mode covers **power-of-two strides only** (the common learned-upsample case). And the
+surfaces get monotonically **sparser** with the field value, ending at one live element per
+channel — the structure a scatter into a stride-dilated grid leaves, and the strongest
+evidence that this is a transposed convolution rather than a corrupted fetch.
+
+**What is not decoded**: whether the field is `s` or `log2(s)` or `s−1`, what output geometry
+the mode produces (the probe drives the forward geometry registers, so its surface is at best
+a window of the real result), and what layout the mode wants the kernel in — in particular
+whether it still needs the 180° flip and the in/out-channel swap that the lowering does on
+the host. Nothing here is a working transposed convolution yet.
+
+**Why it is worth finishing.** The lowering above pays `s²` zero-MACs, so a stride-2 decoder
+layer does 4× the arithmetic it needs; the hardware mode would remove that outright, and it
+would also remove the host-side dilate-and-pad materialisation, which allocates and writes an
+input `s²` times larger. Segmentation heads, depth decoders and FPN upsamples are all stride
+2. The sub-pixel decomposition in the section above is the software alternative to the same
+win — the hardware mode, if its geometry decodes, is strictly better.
+
+**How to drive it**: `ROCKET_CNA_DECONV=1` sets the bit, `ROCKET_CNA_DECONV_X` /
+`ROCKET_CNA_DECONV_Y` write the two 3-bit fields raw. Deliberately env-only and absent from
+`npu_cna_desc` — there is no API for a mode whose semantics are unknown.
 
 ## Validation
 
