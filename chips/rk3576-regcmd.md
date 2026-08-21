@@ -1975,9 +1975,24 @@ own submit path is what placed it in the driver.
 
 ### The cause is the `PC_TASK_CON` field width
 
-`PC_TASK_CON` packs `TASK_NUMBER` in the low bits with the control bits directly above
-it — `TASK_PP_EN`, then `TASK_COUNT_CLEAR`, then a bit the TRM marks reserved. The
-field is 12 bits wide on the RK3588 and **16 on the RK3576**. `rocket` builds the word
+`PC_TASK_CON` packs `TASK_NUMBER` in the low bits with three control bits directly above
+it. The field is 12 bits wide on the RK3588 and **16 on the RK3576**, so all three move
+up by four:
+
+| | `TASK_NUMBER` | `TASK_PP_EN` | `TASK_COUNT_CLEAR` | `TASK_LAST_LAYER_CLEAR` |
+|---|---|---|---|---|
+| RK3588 | `BIT[11:0]` | `BIT(12)` | `BIT(13)` | `BIT(14)` |
+| RK3576 | `BIT[15:0]` | `BIT(16)` | `BIT(17)` | `BIT(18)` |
+
+The RK3588 register description marks the top control reserved; on the RK3576 it is
+`task_last_layer_clear`, and it belongs on every submit alongside the count clear.
+Chaoyi Chen of Rockchip gave the layout on the `linux-rockchip` list
+([message](https://lore.kernel.org/all/4f300b78-d96d-4d98-8819-dc292b0c9b97@rock-chips.com/)),
+which is what makes the naming authoritative rather than inferred — the word itself was
+already fixed here by shifting the whole triple, and `0x70001` is what both derivations
+write. **[source-confirmed]**
+
+`rocket` builds the word
 from the RK3588 field accessors unconditionally, giving `0x7001`, so on this part it
 asks the PC for a **task count of 28673** with all three control bits landing above the
 register's defined fields. The PC starts that 28673-task program, runs the one task it

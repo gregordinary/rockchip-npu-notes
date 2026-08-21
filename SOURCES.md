@@ -190,16 +190,159 @@ driver (see the [README](README.md) evidence tags).
   per-power-session wall, parked 2026-07-10 with the conclusion that the consume-arm is
   internal cold-start sequencer state reachable only from vendor RTL. **They independently
   found and fixed the 16-bit `pc_task_number_bits`** (`WRITEL-AUDIT.md`; patch 0028 writes
-  `(0x7 << 16) | task_count`), so that half is common ground — what still differs is that they
-  dispatch a whole graph as ONE drm job with `TASK_NUMBER = N`, which their own log records as
-  computing nothing at all (`FINDINGS.md`: "even task 0 computes nothing when task_number=29"),
-  where we submit N jobs at `TASK_NUMBER = 1` and chain bit-exactly with no gap. Their ledger
-  also has one structural blind spot worth knowing about: every experiment in it varies the job
-  that comes out empty, never the job BEFORE it — so the wide-output poisoning, which is a
-  property of the preceding submit, is invisible to it however exhaustive it is. Blog moved to
-  `blog.gahingwoo.com/posts/rk3576-npu-mainline/`. Our draft give-back — the four corrections to
-  `RK3576_CNA_MAP.md`, the counterexample, and the two experiments — is
-  `../RK3576-REPORT-FOR-GAHINGWOO.md` (private, unsent).
+  `(0x7 << 16) | task_count`), so that half is common ground — both stacks run n-task jobs in
+  one hardware kick (ours via `DRM_ROCKET_JOB_BATCHED`, `patches/rk3576/npu/0015`-`0016`;
+  theirs in `charsiu` at 32 chained tasks per job). `FINDINGS.md`'s "even task 0 computes
+  nothing when task_number=29" describes that log's own submit path, not a hardware bound.
+  One structural blind spot in the parked ledger is worth knowing when reading it: every
+  experiment in it varies the job that comes out empty, never the job BEFORE it — so the
+  wide-output poisoning, a property of the preceding submit, is invisible to it however
+  exhaustive it is. `charsiu`'s harness does not share the blind spot: its bisects judge a
+  following job run in a separate process (see its entry below). Blog moved to
+  `blog.gahingwoo.com/posts/rk3576-npu-mainline/`. Our draft give-back is
+  `../RK3576-REPORT-FOR-GAHINGWOO.md` (private, unsent); its chaining and OUT_CVT sections
+  are superseded — `charsiu` chains multi-task jobs and places the OUT_CVT triple at
+  `0x40ac/0x40b0/0x40b4` itself — so what remains to send is the `RK3576_CNA_MAP.md`
+  corrections, the wide-output poisoning, and the float-mode three-register condition.
+
+  Their upstream series reached **v7 on 2026-08-12**, 10 patches, `accel/rocket: RK3576 NPU
+  (RKNN) enablement`
+  ([cover](https://patchwork.kernel.org/project/linux-rockchip/cover/20260812094106.1391698-1-gahing@gahingwoo.com/)).
+  It retracts the "the completion interrupt never reaches the GIC" premise its v3-v6 carried and
+  attributes the whole of it to the `PC_TASK_CON` width, so polling, the hrtimer and every
+  alternative completion path are gone and the RK3576 retires on the DPU interrupt like the
+  RK3588 — the open question that reopens for us is in
+  [chips/rk3576-regcmd.md](chips/rk3576-regcmd.md). Two of their patches land on ours: `01/10`
+  is `patches/rocket/090` hunk for hunk, and `08/10`'s `PC_TASK_CON` word is `0x70001`, the same
+  value `rk3576/npu/0008` writes by shifting the triple. Their evidence is one convolution
+  submitted three times, and their Teflon userspace is conv2d-only, so neither the pooling
+  programs nor the wide-output writers that raise no DPU completion at all are reachable from
+  it.
+
+- **gahingwoo `charsiu`** (`github.com/gahingwoo/charsiu`, GPL-2.0-or-later, first commit
+  2026-08-14). An open LLM runtime for the RK3576 on
+  mainline `rocket` — the same architectural bet as `rocket-userspace` + `ggml-rocket` on the
+  sibling part, and it names both plus these notes as its stated starting point. Every number
+  below is theirs (ROCK 4D, their v7-lineage kernel, 2026-08-14/15) and none is reproduced on
+  our board.
+  **The load-bearing instrument is `tools/rkllm_regcmd.py`**: a vendor `.rkllm` carries the
+  register-command streams the closed stack submits, and the script reads the whole dispatch
+  plan out of one offline — no board, no vendor runtime. Its first reading
+  (`docs/vendor-dispatch.md`, Llama-3.2-1B-Instruct-w4a16): 21,532 streams over 1,061 distinct
+  shapes, 8,808 convolutions + 12,724 DPU-only; precision by role — int4 projections all at
+  M=1 (3,752 dispatches), fp16 attention at M=32-48 against 128 precompiled KV-length buckets
+  (one per 32 tokens of context), an int8 LM head as forty 2048x8160 pieces; every projection
+  split across the two cores by output channel; and the FFN down-projection split on BOTH
+  axes at per-piece K=4096 — inside the 4608 slice bound measured here, and the vendor's own
+  route around a K that does not fit one slice (the shape class our matmul entry refuses at
+  K>4608).
+  **Where it lands on our findings:** M=1/2/3 exact through the open driver (seven 1x1 convs
+  at projection shapes) independently corroborates the no-M-constraint fact in
+  `rocket_matmul_rk3576.c`; 32-task chained jobs at ~26.3 us/task marginal (~172 us/submit
+  removed) corroborate the one-kick mechanism `patches/rk3576/npu/0015`-`0016` ship; and
+  their fitted cost `us/task = 26.3 + weight_MB * 84.3` (11.9 GB/s, M nearly free, a second
+  core ~5% WORSE at these shapes) is the weight-fetch-bound reading the platform envelope
+  here predicts.
+  **What it claims that is unmeasured here:** NPU decode is viable on this part — the vendor
+  ships M=1 decode (~13 tok/s on that board and model), their arithmetic projects 11.8 tok/s
+  int8 / 22.7 int4 for Llama-3.2-1B, and their stated deciding measurement is one projection,
+  NPU against four A72 cores, at M=1 and M=32. That challenges the decode-on-CPU default this
+  stack inherited from the RK3588 [their measurement + projection, untested here].
+  **Their open defects, and what bears on them:** w4a16/int4 does not compute — their probes
+  fit the output as `((int16)fp16bits(w) * (int16)fp16bits(a)) >> 16`, 18/18 measured points
+  exact, i.e. the fp16 bit patterns multiplied as signed integers — consistent with a
+  partially-set float mode, which on this part is three registers moving together
+  ([chips/rk3576-regcmd.md](chips/rk3576-regcmd.md)) [expected, unverified against their
+  stream]. And a w4a16 job carrying the vendor's values in RDMA `0x5034`/`0x5044` leaves the
+  next job timing out — a next-submit hazard with a different signature from the wide-output
+  poisoning, recorded beside it in [chips/rk3576.md](chips/rk3576.md).
+  **The reader run here on a SECOND model** (Qwen3-0.6B-Base-rk3576-w4a16-grq v1.2.3,
+  725 MB, HF `MichaelAndrewFischer`, 2026-08-18) separates model shape from runtime policy:
+  23,540 streams (19,380 conv + 4,160 DPU-only), M again in {1, 32, 64, 96, 128} with M=1
+  dominating (14,280), and the M=32-128 program counts nearly identical to Llama-3.2-1B's
+  (1108/820/732/676 against 1108/856/728/672) — so the KV-bucketed attention-program
+  population is CONVERTER POLICY, not model shape. Qwen3's FFN down-projection (K=3072,
+  inside the 4608 slice bound measured here) dispatches WHOLE with only the two-core
+  output-channel split — the vendor K-splits only when forced past its slice bound.
+  **A THIRD model read settles the split policy and the combine mechanism**
+  (Qwen3-1.7B-Base-rk3576-w4a16-grq v1.2.3, 1.6 GB, same HF author, read 2026-08-18,
+  offline, both files re-fetched): 28,804 streams (22,740 conv + 6,064 DPU-only). The
+  1.7B's FFN-down (K=6144) never dispatches whole — every instance is a 4096-piece plus a
+  2048-piece, oc-halved (`blk.N.ffn_down.weight_rkllm_spilt_0/1` in the file's own tensor
+  names) — so the vendor's per-dispatch K bound is exactly **4096, greedy chunks**: the
+  one rule that fits Llama-1B's 8192 = 4096+4096, this 6144 = 4096+2048 (not 3072+3072),
+  and the 0.6B's 3072 whole.
+  **The combine is ON-NPU: a dedicated DPU-only elementwise program, one per split pair.**
+  At M=1 every `[4096-piece][2048-piece]` pair is followed by exactly one (1344 of 1344);
+  prefill sites carry the same program in pixel-bucket variants. Its primary operand comes
+  from memory (`0x400c = 5` where a conv carries `0x40000004`), its second through
+  DPU_RDMA (`0x5xxx` words live — including the exact `0x5034 = 4000004c` /
+  `0x5044 = 000280a1` values of the w4a16 next-job hazard in
+  [chips/rk3576.md](chips/rk3576.md)), both at the pair's output geometry (oc-half x M
+  pixels), and its `0x4010` input width code is **5** — the 32-bit code the
+  coefficient-A fp32 readback anchored — where the attention-interior EW program carries
+  2. So the partials are FLOAT, separately scaled (`ffn_down` is the only projection with
+  a `_C_secondary` coefficient group, one multiplier set per K-piece), and nothing in the
+  mechanism touches int32: no integer GEMM in any of the three read models exceeds K=4096
+  (the int8 LM head is K=2048, whole). The split pieces' conv programs are
+  register-identical to never-split projections outside pure geometry — the combine is
+  invisible to a per-register diff and was read from the program sequence and counts. The
+  program type is not exclusively the combine: ~16 instances in each file follow a
+  `2176x32` fp16 op, so a count test alone would misattribute — adjacency separated the
+  uses.
+  **Both former decode frontiers are read.** The weight-bits-0 streams are chained
+  no-weight-fetch DELTA task programs: a prefill M bucket is pixel-chunked (0.6B:
+  53+53+22 = 128; 1.7B: 40+40+16 = 96) and the last chunk restates neither the weight
+  registers nor the full geometry, which the reader's bits formula misparses — 228 on the
+  0.6B, 340 on the 1.7B, every one adjacent to same-`ic` full programs whose pixel counts
+  it completes (the 1.7B's 672-count "bits 4096" class is the same thing with a weight
+  fetch: trailing K-pieces as delta programs). And the DPU-only share collapse (59% of
+  Llama's streams to 18-21% on both Qwen3 files) is CONVERTER/RUNTIME POLICY, not
+  architecture: the attention-interior EW population is identical across the two Qwen3
+  files (4120+24 of kind `0x4010=40000002`, KV-bucketed), Llama's dominant per-projection
+  EW kind (`a0000002`/`00023333`, 8268 streams) has no counterpart in either — the Qwen3
+  files' conv programs carry those same two values inline, and the files hold no norm
+  tensors at all, so the decode path's norm/residual/activation work is off-NPU in
+  v1.2.3. Qwen3 needs MORE norm work than Llama (QK-norm), so architecture cannot explain
+  the disappearance; the Llama file's converter version is unstamped, so this is argued
+  from that direction, not read off a version field.
+
+- **gahingwoo `kiln`** (`github.com/gahingwoo/kiln`, GPL-2.0). The VENDOR RKLLM/RKNN stack run
+  on a mainline kernel (7.1.3+): the GPL `rknpu` driver built out of tree plus a small kernel
+  patch set, an installer, and an OpenAI-compatible server. `charsiu`'s measuring stick, and
+  the live-capture harness (`capture/rknpu-regcmd-dump.patch`) that complements the offline
+  `.rkllm` reader. Two of its kernel-side facts land here, read against our own DTS
+  (2026-08-18): **(1) The "two IOMMUs / four MMU banks, mainline drives one" claim is about
+  the vendor `rknpu` AGGREGATE node** — one device listing both iommus, the second left
+  unattached, so the second core reads IOVAs as physical addresses. It does not transfer to
+  `rocket` as-is: the RK3576 NPU is two iommu instances of two banks each (`rknn_mmu_0` at
+  `0x27702000`+`0x27702100`, `rknn_mmu_1` at `0x2770a000`+`0x2770a100` — our
+  `patches/rk3576/npu/0007` DTS), each core device carries its own, and mainline
+  `rockchip-iommu` iterates every bank of an attached instance — so single-core `rocket`
+  already manages both banks of core 0, and this mechanism is NOT a candidate for the
+  two-jobs-in-flight corruption there. **(2) Their `0007`/`0008` iommu patches (authored by
+  Jiaxing Hu, the RK3576 RFC author) name a mechanism whose symptom we log**: a bank left by
+  firmware with `PAGE_FAULT_ACTIVE & !STALL_ACTIVE & IDLE` silently drops
+  `CMD_ENABLE_STALL` and delays the other banks past the poll timeout — the recurring
+  `rk_iommu ... Enable stall request timed out` on the H96 during long probe runs matches
+  that failure path exactly [symptom match; the orphaned-fault status bits unverified on our
+  board]. The two patches sit in shared `rockchip-iommu` code and are candidates for
+  `patches/rk3576/npu` evaluation.
+
+- **gahingwoo `mesa-rk3576`** (`github.com/gahingwoo/mesa-rk3576`, `rk3576` branch on Mesa
+  25.3.0). Their Teflon/`rocket` RK3576 driver as a maintained Mesa fork (~104 branch
+  commits, active 2026-08): conv paths, depthwise in 64-channel groups, CBUF
+  allocation/reuse, DPU `0x4044`/`0x4050` handling, a `ROCKET_REG_SET` late-override knob. A
+  second independent RK3576 encoder to diff against beyond the register maps in
+  `github.com/gahingwoo/linux-rk3576-npu` — for the RK3576 what Mesa's `rkt_regcmd.c` is for the
+  RK3588. Not checked out; fetch on demand.
+
+- **Chaoyi Chen (Rockchip), `PC_TASK_CON` bit assignment** —
+  [lore.kernel.org](https://lore.kernel.org/all/4f300b78-d96d-4d98-8819-dc292b0c9b97@rock-chips.com/).
+  A vendor engineer's reply on `linux-rockchip` giving the RK3576 field layout, including the
+  name of the control the RK3588 description marks reserved: `BIT(18) task_last_layer_clear`.
+  The only authoritative statement of that register we have; everything else about it here was
+  read off the silicon. See [chips/rk3576-regcmd.md](chips/rk3576-regcmd.md).
 
 ## Userspace stacks we learned from
 
