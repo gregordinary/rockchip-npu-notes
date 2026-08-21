@@ -151,6 +151,24 @@ driver (see the [README](README.md) evidence tags).
   FC mode (no separate GEMM unit) and reports the per-power-session "cold-start consume-arm" wall
   it read as a hardware arm. Reproducing that on our own encoder and submit path placed it in the
   driver instead — see [chips/rk3576-regcmd.md](chips/rk3576-regcmd.md).
+  The repo has since grown well past the register maps and is worth re-reading as a whole: a
+  28-patch kernel series, a Mesa fork carrying an RK3576 Teflon conv2d, a `replay/`
+  capture-and-replay harness that runs the same regcmd through both `rknpu` and `rocket`, and
+  `FINDINGS.md` — a 2900-line chronological RE log that keeps its own reversed verdicts.
+  `CHAINED-CMAC-STOPPING-POINT.md` is the falsification-ledger writeup of the same
+  per-power-session wall, parked 2026-07-10 with the conclusion that the consume-arm is
+  internal cold-start sequencer state reachable only from vendor RTL. **They independently
+  found and fixed the 16-bit `pc_task_number_bits`** (`WRITEL-AUDIT.md`; patch 0028 writes
+  `(0x7 << 16) | task_count`), so that half is common ground — what still differs is that they
+  dispatch a whole graph as ONE drm job with `TASK_NUMBER = N`, which their own log records as
+  computing nothing at all (`FINDINGS.md`: "even task 0 computes nothing when task_number=29"),
+  where we submit N jobs at `TASK_NUMBER = 1` and chain bit-exactly with no gap. Their ledger
+  also has one structural blind spot worth knowing about: every experiment in it varies the job
+  that comes out empty, never the job BEFORE it — so the wide-output poisoning, which is a
+  property of the preceding submit, is invisible to it however exhaustive it is. Blog moved to
+  `blog.gahingwoo.com/posts/rk3576-npu-mainline/`. Our draft give-back — the four corrections to
+  `RK3576_CNA_MAP.md`, the counterexample, and the two experiments — is
+  `../RK3576-REPORT-FOR-GAHINGWOO.md` (private, unsent).
 
 ## Userspace stacks we learned from
 
