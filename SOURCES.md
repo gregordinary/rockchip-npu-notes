@@ -17,12 +17,28 @@ driver (see the [README](README.md) evidence tags).
   `rkt_task.c` (NVDLA-style tiling/split). INT8-only (TFLite delegate), so it does
   not show the fp16/int4 paths — but it is ground truth for the format.
 
-- **allbilly/rk3588** (`allbilly-npu`), esp.
+- **allbilly/npu** (`allbilly-npu`), esp.
   `include/rknnops.h`. A higher-level op generator (conv1d/2d, matmul, activations,
   LUTs) using the same Mesa regcmd encoding. Its `float16_alu_op(ALU_ALGO_ADD)`
   encodings are what cracked the **fp16 DPU-EW K-accumulation**; its int-EW
   `EW_OP_TYPE` bit is what we tested (and ruled out) for int32 K-accum. Broader op
   coverage than Mesa — the reference for going beyond matmul.
+
+- **allbilly/rk3588** (`allbilly-rk3588`) — the same author's Python successor to the
+  above, and a different kind of source: it carries no register definitions of its own
+  (`experimental/registers.xml` and `include/rkt_registers.h` are Mesa's), but
+  `conv_expt/capture_harness/decoded/` holds **83 vendor RK3588 conv register programs
+  decoded to named CNA/CORE/DPU fields** — multi-task, ic 16-1280, planes to 150, oc
+  12-1024, pointwise and depthwise. That is a vendor oracle for the RK3588 conv geometry
+  words of the kind `tests/data/rk3576-vendor-capture/` is for the RK3576; the address
+  registers are one session's IOVAs and only the geometry is comparable. Its capture
+  route is a gdb harness on the vendor BSP runtime (`experimental/rknn/trace_librknnc_*.gdb`,
+  `conv_expt/capture_harness/rknn_prefix_capture.gdb`, which patches the rknpu submit
+  struct down to a one-task prefix) — a weaker instrument than the offline
+  compile-and-decode used for the RK3576 captures, since it needs a vendor-BSP board and
+  captures only what the vendor compiler chose to emit. RK3588 only; nothing in it
+  addresses the RK3576 encoding. Neither allbilly repo carries a LICENSE file, so treat
+  both as readable facts rather than as code or data to vendor.
 
 - **RKNN-Toolkit2** (`github.com/airockchip/rknn-toolkit2`) — the vendor's proprietary
   compile-and-run stack; this project is a mainline alternative to it. Its offline compiler
