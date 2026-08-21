@@ -310,14 +310,51 @@ plane over its allowance still writes a full surface. Use the measured rungs
 (0, 256, 512, 1024, 2048) and round a deficit up to one. The cost is a little weight
 headroom the plane did not need. [HW sweep, H96 MAX M9]
 
-**And 256 and 512 deliver only at `kh == 1`.** The table above was characterised on a
-k=1 plane. Give the same granule total a kernel with vertical extent and those two rungs
-deliver **4096 granules — the F=0 budget** — so a task the planner puts on one of them
-overruns its allowance and writes a full surface with a wrong tail. 0, 1024 and 2048 are
-unaffected; the vendor's own windowed depthwise capture is a k=3 program at F=1024.
+**And 256 and 512 deliver conditionally.** Where they do not, each delivers **4096
+granules — the F=0 budget** — so a task the planner puts on one of them overruns its
+allowance and writes a full, correctly sized surface with a wrong tail: every output row
+past `4096 / entries`. 0, 1024 and 2048 are unaffected at every footprint tried on either
+path; the vendor's own windowed depthwise capture is a k=3 program at F=1024.
 
-The kernel is the only variable in the measurement. At one granule total of 4352,
-`ic=32`, across five plane widths chosen to hold it constant:
+**THE FAILURE IS A BAND, NOT A CEILING, AND THAT IS WHAT MAKES IT HARD TO SEE.** The
+allowance is a ladder and the planner takes the smallest rung that covers the window, so
+as the window grows the surface is exact (F=0 still covers it), then WRONG across the
+band of windows that select an unhonoured rung, then exact again (the next rung up
+delivers). Walked one task per height at 160x160 ic = oc = 32 k3 depthwise, 80 granules a
+row: exact 45-51, wrong 52-57, exact 58-76. **A probe that bisects the window reports
+whichever edge it walks into** — a bisection is justified by "a smaller window is never
+worse", which is what a capacity bound means and this is not one. Read the map.
+
+**The condition differs by PATH, and on the depthwise one no footprint threshold fits.**
+Forcing each rung under one fixed window that F=0 does not buy:
+
+| path | kernel | oc | resident footprint | F=256 / F=512 |
+|---|---|---|---|---|
+| direct | 1x1 | 32 | 1024 B = 16 granules | deliver |
+| direct | 1x1 | 64 | 2048 B = 32 granules | fall back |
+| depthwise | 1x1 | 32 | 64 B = 1 granule | deliver |
+| depthwise | 1x1 | 256 | 512 B = 8 granules | deliver |
+| depthwise | 1x1 | 1024 | 2048 B = 32 granules | deliver |
+| depthwise | 2x2 | 32 | 256 B = 4 granules | fall back |
+| depthwise | 3x3 | 32 | 576 B = 9 granules | fall back |
+| depthwise | 5x5 | 32 | 1600 B = 25 granules | fall back |
+
+Depthwise 4 granules is dead where 32 is live, which refutes a threshold in both
+directions. What survives the eight cells is the TAP COUNT — single-tap delivers at three
+channel counts spanning 32x, multi-tap never does — and a 64-channel-group footprint
+(`R76_DW_W_GROUP_INT8`) against the direct path's 16-granule threshold fits k1, k3 and k5
+and is refuted by the 2x2 cell, which is why that cell is in the probe. So the emitter
+declines the low rungs on the depthwise path rather than gating them on a fitted quantity;
+it costs nothing, since the fallback rung is strictly larger and always live.
+[HW sweep, H96 MAX M9, `tests/rk3576_conv_lib_gate.c rowmap`]
+
+**The DIRECT path's own condition is the resident weight footprint, under 1 KiB**, and
+the rest of this section is that measurement.
+
+**The kernel is NOT the axis, and a square-kernel sweep cannot say so.** The first
+characterisation held `ic` at 32 and moved the kernel — at one granule total of 4352,
+across five plane widths chosen to hold it constant, k=1 exact everywhere and k=3 and
+k=5 wrong everywhere:
 
 | plane | entries/row | rows | k=1 | k=3 | k=5 |
 |---|---|---|---|---|---|
@@ -327,21 +364,58 @@ The kernel is the only variable in the measurement. At one granule total of 4352
 | 128 x 68 | 64 | 68 | exact | wrong | — |
 | 272 x 32 | 136 | 32 | exact | wrong | — |
 
-The F=0 controls one row below are exact at k=3, so the kernel does not itself consume
-rows the model omits — it is the rung. **What the rung delivers backs out to the row**
-from the surviving prefix: the last correct output row is in every case the one fed by
-input row `4096 / entries`, at widths 16, 64, 128 and 272 and at k=5 as well, which is
+That reads as "the rung needs `kh == 1`" and it is what shipped. **Crossing the axes says
+otherwise**: at the same 4352-granule total and the same k1x1, the same (row size, row
+count) is bit-exact at `ic` 32 and WRONG at `ic` 64 and 128 — 68 rows of 64 granules,
+wrong from output row 64 in both, with the F=0 control at 64 rows exact and the same
+plane forced under the boundary exact.
+
+| 4352 granules, k1x1 | entries/row | rows | result |
+|---|---|---|---|
+| iw 16, ic 32 | 8 | 544 | exact |
+| iw 32, ic 32 | 16 | 272 | exact |
+| iw 64, ic 32 | 32 | 136 | exact |
+| iw 128, ic 32 | 64 | 68 | exact |
+| iw 64, **ic 64** | 64 | 68 | **wrong from row 64** |
+| iw 32, **ic 128** | 64 | 68 | **wrong from row 64** |
+
+So `ic` at a fixed kernel and the kernel at a fixed `ic` move the same quantity,
+`32*ic*kh*kw` — the resident weight slice, which is what `r76_weight_slice_cap()` is
+already stated over. Live at 16 granules (`ic` 32, k=1); dead at 32 (`ic` 64), 64
+(`ic` 128), 144 (`ic` 32, k=3) and 400 (`ic` 32, k=5).
+
+**What the rung delivers backs out to the row** from the surviving prefix: the last
+correct output row is in every case the one fed by input row `4096 / entries`, which is
 what makes 4096 a measurement rather than a reading of a graded corruption.
 
-So an emitter offers those two rungs to a `kh == 1` task only — which is where a matmul
-lives, and where they were measured good. Everything else rounds up to 1024. The cost is
-the next rung, which is the same CBUF and no extra submits, or — when the weight slice
-leaves no room for 1024 — a shorter row window, one more task and not a wrong answer.
+**The quantity is one output-channel group's SLICE, not the whole resident cube.** Every
+cell that had ever reached a rung carried `oc` 32 — one group, where the two are the same
+number — so the emitter charges the cube, the smaller envelope. Holding the slice at the
+measured-live 16 granules and raising the group count separates them: at `oc` 64 and 96,
+cubes of 32 and 48 granules, **F=256 and F=512 both still deliver**. So the shipped rule is
+conservative rather than wrong, and it stays that way because relaxing it buys nothing — the
+rung it declines to use is replaced by a strictly larger one that also delivers, at the same
+CBUF and with no extra submit. [HW sweep, H96 MAX M9, `rk3576_conv_lib_gate rowmap`]
+
+**The threshold between 16 and 32 granules is still bracketed, not measured**, and the
+harness cannot narrow it: `ic` is padded to a multiple of 32 on the direct path, so
+`32*ic*kh*kw` moves in 1024-byte steps at every shape that can be built with a square kernel
+and a whole `ic`. A non-square kernel is what would land between them.
+
+Everything past the threshold rounds up to 1024. The cost is the next rung, which is the same
+CBUF and no extra submits, or — when the weight path leaves no room for 1024 — a shorter row
+window, one more task and not a wrong answer.
 
 Nothing in the correctness envelope reached this before a whole network did: every
 direct shape in the table sits at F=0, and so did every depthwise one until a MobileNet
-asked for a 3x3 over a 112-row plane. [HW sweep, H96 MAX M9,
-`tests/rk3576_conv_lib_gate.c` groups `rung256` and `dwbig`]
+asked for a 3x3 over a 112-row plane. And nothing reaches the ic axis today either — a
+direct rung is programmed only where the plane is 4097-4608 granules AND the weights are
+under 1 KiB, and the matmul's own row planner is past that at every K it runs. **The
+packed-image path keeps the direct rule and has never been driven at a rung**: the widest
+stem in the corpus, Inception V3's 299x299, stages 5681 granules and lands on F=2048, and a
+224x224 one sits at F=0 — so that axis is unverified rather than verified. [HW sweep, H96
+MAX M9, `tests/rk3576_conv_sym.c rung` and `rk3576_conv_lib_gate rowmap`, with
+`tests/rk3576_conv_lib_gate.c` groups `rung256` and `dwbig` for the original kernel reading]
 
 The two values the captures carry are therefore two points on that scale, not a
 constant and a variant: `0x10000000` (F=0) buys 4096 granules and `0x14000000`
@@ -390,7 +464,8 @@ test of it: a slice of exactly 192 KiB (6 banks, what the model leaves beside F=
 computes bit-exactly at ic=1536 k=2, and 196 KiB at ic=1568 breaks. [HW sweep]
 
 **The emitter plans F per task**, in `rocket_rk3576_cbuf_f()` — the lowest LIVE rung
-whose budget covers the plane (256 and 512 counting as live only at `kh == 1`, per
+whose budget covers the plane (256 and 512 counting as live on the DIRECT path only where
+the resident weight cube is at most 16 granules, and never on the depthwise one, per
 above), refusing the task when the plane needs more than the data cap
 or when the rung would starve the weight path, because the recourse (a shorter row
 window, an ic split) is the caller's to choose. `rocket_rk3576_max_task_rows()` is the
@@ -1941,6 +2016,40 @@ forcing `POINTER=1` makes **every** job write nothing, so the bit is live and se
 producer register group — and the fact that job 2 still fails with `POINTER` held at 0
 means the consumer is not advancing behind us, which rules the ping-pong groups out.
 [HW sweep, H96 MAX M9]
+
+**Read back, the `POINTER` field is not the driver's to write while `PP_MODE` is set.**
+A second party reports, on a Radxa ROCK 4D: bit 0 written as 0 reads back as 1, on every
+job, for the rest of the session; flipping it per submit — in the direct register writes
+*and* in all four `S_POINTER` entries of the regcmd — moves neither the readback nor the
+result; selecting a bank the way the vendor's `state_init` does, with the `PP` bits clear,
+stops the units arming at all; and pulsing `POINTER_PP_CLEAR`, with or without
+`EXECUTER_PP_CLEAR`, moves nothing. A 20 KB read snapshot of `pc`, `cna`, `core`, `dpu`
+and `rdma` taken at the same point in a job that computed and one that did not differs in
+exactly one word, `OPERATION_ENABLE`. [linux-rockchip RFC v4 4/6 cover and code comments,
+Jiaxing Hu, 2026-08-03 — their measurement, not reproduced here]
+
+So the field is hardware-owned under `PP_MODE`, which is consistent with the sweep above
+finding no `S_POINTER` value that changes a second submit's fate. It does **disagree** with
+one half of it: forcing `POINTER=1` from inside the regcmd kills every job here, where they
+report flipping it changes nothing. Two candidate reasons, neither settled — the writes go
+in from different places (a regcmd the PC is fetching against a slave-mode register write),
+and the **posted** series carries no equivalent of `0008`, still emitting mainline's
+`PC_TASK_CON_TASK_NUMBER(1)` against the RK3588's 12-bit accessor. Whether the tree the
+experiments actually ran on carried it is not knowable from the posting, and their public
+repo has had its own 16-bit fix since at least 2026-07-26, so do not state which.
+
+That caveat is what to carry forward, because it is a **method** trap rather than a
+register fact: on a driver still programming the RK3588's 12-bit `PC_TASK_CON` word, the
+second submit of every power session writes nothing for a reason that has nothing to do
+with the register under test. Every arm of a ping-pong sweep then reads "no change", and
+the ledger is uninformative by construction however exhaustive it is. Establish that job 2
+can compute *at all* before attributing anything to a configuration difference between job
+1 and job 2 — and stamp the output BO with a sentinel first, since a repeated configuration
+reading a stale surface is byte-exact for the wrong reason, which is exactly the shape "one
+configuration is byte exact forever, a different one computes nothing" produces. A fresh
+BO's zeros cannot separate "never ran" from "ran and wrote zeros"; see the write guard in
+[rk3576.md](rk3576.md), and fill through a `PREP_BO`/`FINI_BO` bracket rather than a bare
+`memset`, or the dirty lines race the DMA.
 
 For reference, the three per-SoC parameters the vendor `rknpu` config carries and
 mainline `rocket` hardcodes at the RK3588 value; only the first is load-bearing:
