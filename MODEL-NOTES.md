@@ -59,7 +59,7 @@ The knobs every NPU run wants:
   micro-batch, so the llama.cpp default `-ub 512` roughly halves NPU prefill.
 - **Confirm the NPU actually ran the prefill:** prepend `ROCKET_MM_PROFILE=1` and look for
   a `ROCKET profile total(ms):` line on stderr, plus no `failed to load` at startup.
-- Models are staged on the RK1 under `/mnt/nvdata/` (the eMMC root and `/tmp` are small).
+- Stage models on external storage: an eMMC root and a `/tmp` tmpfs are usually too small.
 
 To validate a model against question (1) above:
 
@@ -67,10 +67,10 @@ To validate a model against question (1) above:
 P="Summarize the following in one sentence: <... a few hundred tokens ...>"
 # NPU
 sudo -E GGML_BACKEND_PATH=/path/to/ggml-rocket/build-dl/libggml-rocket.so ROCKET_KACC=1 \
-  taskset 0xf0 /path/to/llama-cli -m /mnt/nvdata/<model>.gguf -p "$P" -n 200 \
+  taskset 0xf0 /path/to/llama-cli -m /path/to/models/<model>.gguf -p "$P" -n 200 \
   --temp 0 --seed 1 -no-cnv > npu.txt 2>/dev/null
 # CPU (drop GGML_BACKEND_PATH)
-taskset 0xf0 /path/to/llama-cli -m /mnt/nvdata/<model>.gguf -p "$P" -n 200 \
+taskset 0xf0 /path/to/llama-cli -m /path/to/models/<model>.gguf -p "$P" -n 200 \
   --temp 0 --seed 1 -no-cnv > cpu.txt 2>/dev/null
 diff npu.txt cpu.txt && echo IDENTICAL || echo DIVERGED
 ```

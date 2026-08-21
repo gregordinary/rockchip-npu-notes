@@ -291,8 +291,7 @@ them (they are on). The actionable rows are the first five.
 The flag *defaults* are model-independent, so the recipes above hold, but the **per-model paired
 default-vs-tuned A/B** has only been run on a subset. Treat a per-model number the recipe implies but that
 is not in [perf/benchmarks.md](perf/benchmarks.md) as a projection, not a datum. The gaps — and the plan to
-close them into a full model × use-case × flag matrix — are tracked in
-[../NPU_TODO.md](../NPU_TODO.md) under the tuning-guide effort. The largest ones:
+close them into a full model × use-case × flag matrix — remain open. The largest ones:
 
 - `ROCKET_MM_ASYM` / `ROCKET_KACC` / DATA_REUSE isolation exists only on a few models (mostly Gemma-4-12B,
   Qwen3.5); every other model inherits the default silently.

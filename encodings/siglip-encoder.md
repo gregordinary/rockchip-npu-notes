@@ -211,9 +211,9 @@ Remaining (deferred, lib-level):
 ## Reproduce
 
 ```
-# on the RK1 (venv with torch+transformers; model + artifacts on /mnt/nvdata):
-python tools/siglip_reference.py --out /mnt/nvdata/siglip/artifacts          # fp32 oracle
-python tools/siglip_extract.py   --out /mnt/nvdata/siglip/artifacts/siglip_weights.f16
+# on the RK1 (venv with torch+transformers; model + artifacts on external storage):
+python tools/siglip_reference.py --out /path/to/siglip/artifacts          # fp32 oracle
+python tools/siglip_extract.py   --out /path/to/siglip/artifacts/siglip_weights.f16
 ctest --test-dir build_nv -R siglip_rocket                                   # fidelity gate
 sudo rocket-userspace/tools/npu_perf_governor.sh performance                 # REQUIRED for representative latency
 ROCKET_KACC=1 ROCKET_SIGLIP_BENCH=12 taskset 0xf0 ./build_nv/siglip_rocket   # +resident bench

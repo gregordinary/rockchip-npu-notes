@@ -144,6 +144,13 @@ driver (see the [README](README.md) evidence tags).
   RK3588 negative**, it confirms the sibling asymmetry. Net: strong independent validation of the
   shared NVDLA-derived IP, plus two transferable scripts; little is usable *as-is* (RK3576 register
   map is shifted/re-packed, different clock/power tree).
+  The load-bearing documents in it are the CNA and CORE/DPU maps and the closed-form `predict.py`;
+  `vendor_regcmd_full.txt`, a **complete 139-entry vendor register program** (CNA + CORE + DPU +
+  RDMA) that an RK3576 emitter can be diffed against off-device; `FINDINGS-FLOATSURFACE.md`; and
+  `MATMUL-PIPELINE-ANALYSIS.md`, which confirms RK3576 matmul is the same CNA→CSC→CMAC pipeline in
+  FC mode (no separate GEMM unit) and reports the per-power-session "cold-start consume-arm" wall
+  it read as a hardware arm. Reproducing that on our own encoder and submit path placed it in the
+  driver instead — see [chips/rk3576-regcmd.md](chips/rk3576-regcmd.md).
 
 ## Userspace stacks we learned from
 

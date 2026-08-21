@@ -9,6 +9,12 @@ The documents in rockchip-npu-notes were authored by AI, primarily Claude Code (
 These are subsystem-organized, project-independent notes on the Rockchip RK3588
 NPU as driven through the mainline `rocket` DRM-accel driver.
 
+Most of what is here is IP-inherent — true of the rknpu/NVDLA-derived block on any
+Rockchip SoC that carries it. The values that vary per chip (machine parameters, the
+register offset map, SoC integration) are collected in the per-SoC sheets under
+[chips/](chips/); the RK3588 is the hardware-validated reference, with the RK3576 and
+RK3566 tracked there.
+
 They were established by reverse-engineering the hardware on a real device (Turing
 RK1, 32 GB, mainline kernel ~7.1) while building a FOSS inference stack on top of
 `rocket`: a userspace matmul library, a ggml backend, an NPU-clock patch, and a
@@ -41,6 +47,7 @@ ones — they were the most expensive to learn.
 
 | Doc | Subsystem | The fact |
 |---|---|---|
+| [chips/](chips/) | per-SoC | machine parameters + register offset map + SoC integration, one sheet per chip (RK3588 validated; RK3576 / RK3566 tracked) |
 | [hardware-overview.md](hardware-overview.md) | whole NPU | NVDLA lineage, 3 cores, CBUF 12×32 KB, the precision menu, TOPS vs reality |
 | [datatypes.md](datatypes.md) | whole NPU | the datatype capability matrix — precision field, output type, MAC rate, and use, per dtype |
 | [matmul-as-conv.md](matmul-as-conv.md) | CNA/CORE/DPU | how a matmul is run as a 1×1 convolution; tiling; the data flow; the alignment rules + the feature-height-<4 (M==1 GEMV) break |
