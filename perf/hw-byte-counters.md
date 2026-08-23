@@ -96,6 +96,31 @@ register map) that **reads 0 regardless of traffic — not counters** on rk3588.
 block itself only exposes *configuration* (outstanding limits, arbitration weights) and a
 coarse `IDEL` status bit — no bytes-moved counter.
 
+### A second witness disagrees on both pages, and the likely variable is power state
+
+An independent RK3588 probe (poad42/opennpu_rk3588, `docs/ref/NPU_REGISTER_INVESTIGATION.md`;
+kernel module, `ioremap(0xfdab0000)`, vendor `rknpu` on a 6.1 BSP kernel) reports the opposite
+severities on both pages: `0x2210`-`0x223c` raising a **contained kernel oops** (DECERR, board
+survives) where the probe above hard-locked, and `0x8000`-`0x803c` **hanging the bus** until the
+watchdog rebooted, where the probe above read it cleanly.
+
+The `0x8000` half is the tractable one, because both probes resolve to the same physical address
+(`0xfdab8000` — their BSP 64 KB window at offset 0x8000, this one via `rocket`'s DDMA domain) and
+this one is validated semantically rather than merely non-fatal: structured values matching the
+Mesa DDMA bitfields, `CFG_STATUS.IDEL` correctly reading idle, and every field unchanged across a
+320-job `512x3840x4096` matmul. A floating bus does not produce that. **The variable most likely
+to separate the two is the NPU domain's power/clock state at read time** — the probe here is
+`pm_runtime`-guarded with domains powered, and a *clock*-gated AXI slave stalls a read forever
+rather than returning data, which is the exact signature they describe. [hypothesis — the
+reconciliation has not been tested by re-running either probe against the other's power state]
+
+Two things follow for anyone retrying this. **Power state is part of the probe design, not a
+detail** — §6's guard exists for this. And the disagreement strengthens rather than weakens §3's
+caveat: an independent DECERR from a different kernel on the `0x2xxx` page is further evidence it
+is genuinely undecoded rather than power-gated, since a gated slave hangs where an undecoded one
+aborts. Until someone re-runs it with power state controlled, treat **both** pages as unsafe on
+either path; the cheapest wrong guess costs a cold power-cycle.
+
 ## 5. Conclusion & the fallback
 
 - **No HW DMA byte counters via `rocket` on rk3588.** The real `0x22xx`/`0x24xx`
@@ -158,3 +183,5 @@ WDMA/DPU registers returns the programmed output *shape*, not traffic.
 - Register map: Mesa `rocket/registers.xml` (`DDMA` domain @ 0x8000), our `npu_hw.h`
 - RK3576 lead (§7): gahingwoo's mainline-`rocket` RK3576 bring-up
   (`https://www.reddit.com/r/embedded/comments/1ub5npg/`)
+- Second witness (§4): poad42/opennpu_rk3588 `docs/ref/NPU_REGISTER_INVESTIGATION.md` — vendor `rknpu` on a 6.1 BSP kernel, so a different driver and
+  a different power-management path; see [SOURCES.md](../SOURCES.md)

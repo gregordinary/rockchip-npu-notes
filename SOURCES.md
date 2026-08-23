@@ -17,6 +17,16 @@ driver (see the [README](README.md) evidence tags).
   `rkt_task.c` (NVDLA-style tiling/split). INT8-only (TFLite delegate), so it does
   not show the fp16/int4 paths — but it is ground truth for the format.
 
+- **RK3588 TRM + datasheets**. "Rockchip RK3588 TRM
+  V1.0-Part1-20220309" holds the NPU register chapter — `RKNN_pc_*` `0x0xxx`, `RKNN_cna_*`
+  `0x1xxx`, CORE `0x3xxx`, DPU `0x4xxx`, DPU_RDMA `0x5xxx` — and `pdftotext` works on it. Listed
+  as an external Rockchip reference others may consult: the register facts these notes rely on
+  are established independently by HW sweep plus the Mesa driver, not derived from it, which is
+  why a TRM statement that contradicts a sweep loses. The RK3576 TRM (Part1/Part2 V1.2) is on
+  disk beside it but is **not** cited by [chips/rk3576-regcmd.md](chips/rk3576-regcmd.md) — that
+  part's register map was established from other sources, so treat the RK3576 TRM as unmined
+  rather than as agreeing.
+
 - **allbilly/npu** (`allbilly-npu`), esp.
   `include/rknnops.h`. A higher-level op generator (conv1d/2d, matmul, activations,
   LUTs) using the same Mesa regcmd encoding. Its `float16_alu_op(ALU_ALGO_ADD)`
@@ -48,6 +58,20 @@ driver (see the [README](README.md) evidence tags).
   format (method in [ppu-rknn-capture/](ppu-rknn-capture/); no vendor artifacts are
   redistributed). Every other encoding here comes from the FOSS Mesa driver plus HW sweep.
   RKNN3 (targeting RK1820 / RK3572) is a different NPU generation, out of scope.
+
+- **RKNN-Toolkit2 SDK docs** (`github.com/airockchip/rknn-toolkit2/doc`, V2.3.2) — the vendor's own documentation, an **external cross-reference**
+  rather than RE input. User Guide **§3.5.4**'s high-performance layout table covers the A/B/C
+  tile-layout matrix and the same-A/B-dtype-only constraint (cf.
+  [encodings/tile-layouts.md](encodings/tile-layouts.md)); **§6** the quant path (INT8-only,
+  per-channel weights / per-tensor activations, range solvers, hybrid FP16 fallback — cf.
+  [datatypes.md](datatypes.md)); **§5.3.3** the multi-core split op list and the IRQ-affinity tip
+  (cf. [perf/iova-and-multicore.md](perf/iova-and-multicore.md)). The runtime header
+  `rknn_api.h` carries the perf/mem query structs — `rknn_mem_size` is allocations, and
+  per-frame bytes are an analytical string in `rknn_perf_detail` rather than a hardware counter,
+  which is one more reason [perf/hw-byte-counters.md](perf/hw-byte-counters.md) had to go to the
+  silicon. The `OP_Support` / Compiler-Operator-List docs are the op-coverage reference for the
+  delegate roadmap. Not the same as RKNN3, which targets RK1820 / RK3572 — a different NPU
+  generation, out of scope here.
 
 - **`rknpu-reverse-engineering`** (phhusson / Tomeu lineage) — early-stage,
   STT/TTS-focused, on the **BSP `rknpu`/`/dev/dri/card1` path** (not rocket). Its
@@ -148,6 +172,34 @@ driver (see the [README](README.md) evidence tags).
   - **OP_ENABLE offset** (from the v2 thread): the per-sub-unit `OPERATION_ENABLE` is `0x_008` on
     RK3588 (what we emit: `0xf008` + per-block `0x1008/0x3008/0x4008…`) vs `0x_00c` on RK3568 — a
     regcmd delta for any RK3568 port (not restated in v4's cover letter; verify against Mesa).
+
+- **NetVar1337/linux-rk3576-rocket** — "[PATCH RFC 0/4] accel/rocket: add support for the RK3576"
+  (VoidChecksum / Markus Kvam, 2026-06-11, against `torvalds/master`): binding, a
+  clocks-by-name fix, per-SoC match data with PC_DONE polling, and the `rk3576.dtsi` core
+  nodes. An independent mainline-targeted implementation of **gahingwoo**'s bring-up (below),
+  which it credits throughout. **Compile-tested only — the author has no RK3576 hardware** and
+  asks for testing reports. It covers what `patches/rk3576/npu/0001`, `0006` and `0007` do and
+  nothing else, so it is a subset of the series here; three things about it are still worth
+  knowing.
+  - **Its central premise is refuted by measurement here.** Patch 3 states that the `PC_DONE`
+    bits "are read-only in `INTERRUPT_MASK`, so completion cannot be routed to the GIC", and
+    builds a 1 ms hrtimer poll on it. That was established about `PC_DONE` and **never covered
+    the DPU pair**: `DPU_0`/`DPU_1` (bits 8-9) mask normally and the interrupt reaches the GIC
+    [HW sweep, see [chips/rk3576.md](chips/rk3576.md)]. The poll is a driver choice with a
+    price — retiring on the DPU bit at a 50 us period instead of `PC_DONE` at 500 us took the
+    submit floor from 1065 to 439 us. Their 1 ms period is slower again. Two task classes do
+    raise no DPU completion — pooling, and any output element wider than one byte — so a poll
+    or a grace still has to survive as the fallback for those.
+  - **Its patch 2 is the same fix as `patches/rocket/089`** (`clk_bulk_data.id` never set, so
+    all four entries resolve to the node's first clock). Independently found, thinner
+    rationale, and neither posting has landed.
+  - **Its device tree has core 1 right**: `0x27708000` with the IOMMU at `0x2770a000`,
+    cross-checked against the vendor BSP DT, which is what live silicon reads here. The
+    `0x27710000` placement recorded in these notes as wrong belongs to the gahingwoo series,
+    not this one — with two RK3576 RFCs now in circulation, "the RFC" needs qualifying.
+  Its stated open items — the NPU power-domain chain status never asserting after power-off,
+  whether the RKNN BIU resets belong to the power domain, and the boot firmware's orphaned
+  IOMMU page fault — are the ones `patches/rk3576/npu/0002`-`0005` already address.
 
 - **gahingwoo "Mainlining the RK3576 NPU"** (blog `gahingwoo.github.io/posts/rk3576-npu-mainline/`
   + repo `github.com/gahingwoo/linux-rk3576-npu`: `notes/provenance.md`, `notes/rk3576-npu-values.md`,
@@ -363,6 +415,132 @@ driver (see the [README](README.md) evidence tags).
   most complete register config to start from — but it targets the **proprietary
   rknpu ioctls** (5.10 BSP), so driving it through `rocket` requires swapping the shim
   and adding the DPU-RDMA block it omits.
+
+- **poad42/opennpu_rk3588** (MIT, first commit 2026-08-02) — an ONNX/JAX-to-RK3588 compiler
+  and runtime whose PJRT plugin makes the NPU a first-class JAX device
+  (`jax.devices()` → `[npu:0]`). It drives the **vendor `rknpu` BSP driver** on a 6.1 vendor
+  kernel (`/dev/dri/card1`; `MEM_CREATE`/`MEM_MAP`/`MEM_SYNC`/`SUBMIT`/`ACTION`), so its
+  runtime, ioctl layer and kernel patches do not transfer to the mainline `rocket` path — the
+  register encoding does. Same author as **poad42/smolvlm_rk3588_full_npu_native** below.
+  The useful subset is docs, `cna_matmul.c`, `lm_forward.c`, and the four kernel patches.
+
+  **It is two stacks and only one is worth reading.** `pjrt_c/cna_matmul.c` emits the CNA
+  descriptor **by formula** — 112 `uint64` entries computed from M/K/N, plus a weight cache
+  that preloads all 144 GPT-2 matrices at init. `matmul_tmpl.h` (1.0 MB), `tanh_tmpl.h`
+  (384 KB) and `relu_tmpl.h` are **captured vendor programs replayed with the DMA addresses
+  patched**, which is why their op table reads "MatMul supports 5 GPT-2 shapes."
+  `docs/ARCHITECTURE.md` says the templates were "captured once from vendor toolkits via
+  ioctl tracing", while the README's provenance section says no proprietary code was involved.
+
+  **The formula path agrees with ours register for register** [source-confirmed, read from
+  `cna_matmul.c`]. Entry encoding `(op << 48) | (val << 16) | reg`, block tags `0x0201` /
+  `0x0801` / `0x1001` for CNA / CORE / DPU, and CNA `0x100C`, `0x1010`, `0x1014`, `0x1020`,
+  `0x1024`, `0x1030`, `0x1040`, `0x1070`, `0x1084`, `0x1088`, `0x1110` with DPU `0x4020` as
+  the destination base. Their `0x1040` leaves bits [10:8] zero — an independent instance of
+  the `FC_DATA_BANK` = 0 rule in [encodings/cbuf-reuse.md](encodings/cbuf-reuse.md) — and
+  they write the `FC_DATA_SIZE0/1` pair as `(1<<16)|M` and `K`, as `npu_regcmd.c` does.
+  Three machine facts match. **`M % 4`**: their guide states "M=1, 2, 3 produce completely
+  wrong results" and `npu_cna_cache_run_m()` pads to `M4 = 4` before every submit — the same
+  trap and the same workaround as [matmul-as-conv.md](matmul-as-conv.md), and a second RK3588
+  witness for the row in [chips/porting-patterns.md](chips/porting-patterns.md) where the
+  RK3576 carries no M constraint. **CBUF = 12 banks × 32768 B.** And `nbuf_size=0` with
+  `CONFIG_ROCKCHIP_RKNPU_SRAM` unset. Their host weight scatter (`weight_fp16_off`, 16
+  outputs per group, 32 inputs per group) and feature scatter (`feature_data_off`, C2=8 fp16
+  input, C2=4 fp32 output) are a second independent statement of the native cube layout, and
+  that they scatter on the host at all corroborates the no-on-chip-layout-conversion finding:
+  the README's "reads W directly as fp16 — no reordering" describes the absence of
+  quantization, not of tiling.
+
+  **Their bank split allocates no slack bank** — `fd_banks = ceil(M·K·2 / 32768)`,
+  `wt_banks = 12 - fd_banks` — so that path is exposed to the feature-DMA overread that reads
+  one CBUF bank past the allocation here [expected; not observed on their driver].
+
+  **Three stated impossibilities are bounds of their harness, not of the silicon.**
+  "Multi-core model-parallel matmul is impossible" follows from a position-locked 28 KB
+  template block and a ~3.5 MB scratch DMA window; this stack runs 3-core per-fd. "K > 768
+  requires tiling" is their bank split's own consequence — `cna_matmul.c` clamps `Kt` to 768
+  and accumulates the tiles on the host. And "w8a8 … 16% error, 256 levels insufficient for
+  768-wide" is the per-tensor-scale wall that a Hadamard rotation plus a per-output-channel
+  requant closes.
+
+  **Their DMA ceiling belongs to that path.** `ARCHITECTURE.md` fits
+  `t = 0.08 ms + bytes / ~1000 MB/s` and calls 1 GB/s "the NPU internal DMA engine's hardware
+  limit"; the README's results table says 3.0 GB/s. The two do not reconcile with each other,
+  and both sit far under what the regcmd path here sustains.
+
+  **The decode claim, and why it is the weaker of the two on record.** GPT-2 124M at
+  **28 ms/token (36 tok/s)**, KV-cached, tabled as "NPU 1.4×" — nominally a second challenge
+  to the decode-on-CPU default after the RK3576 vendor's M=1 decode. Its comparison column is
+  **RKLLM at 33 ms/token**, which is Rockchip's NPU runtime rather than a CPU measurement; the
+  timing (84 matmuls × 0.32 ms = 21 ms/token) closes only at 3 GB/s, where their own 1 GB/s
+  model puts a 236 ms floor under GPT-2's 144 matmuls; and `lm_forward.c` keeps the KV cache,
+  attention, softmax, LayerNorm and GELU on the CPU, offloading only the four per-layer
+  projections, at a padded M=4. [their claim, internally inconsistent, untested here]
+
+  **What it has that nothing else here does:** a working **PJRT plugin** (`pjrt_c_api.h`
+  v0.112 pinned to jaxlib 0.10.2) — a frontend shape none of `ggml-rocket`, `tflite-rocket` or
+  `ort-rocket` covers. Its four kernel patches — batch submit, an IOMMU lock-free domain fast
+  path, a `kmem_cache` for job structs, and fence fds — are an independent rediscovery of
+  three of the dispatch-floor levers in `patches/rocket`, reached on the other driver.
+
+  **The four patches are levers worth knowing and code worth not copying** [read from the
+  series]. They are plain `diff -u` against `drivers/rknpu/` on the vendor `develop-6.1` tree,
+  so none of it applies here; what transfers is that a second effort, on the other driver,
+  converged on batch submit and an IOMMU domain fast path. Four defects sit in the two that
+  matter. `rknpu_batch_submit()`'s `err_iommu` unwind puts the domain once per *allocated* job
+  rather than once per *acquired* one, so a failure at job k of n underflows the refcount by
+  n-k. Its `core = ffs(core_mask) - 1` takes only the lowest set bit while `run_count` still
+  counts the whole mask, so a multi-core mask queues on one core, decrements once and never
+  commits -- a silent hang, and nothing validates the mask. It publishes `sd->job` under
+  `irq_lock` and then commits to hardware with no lock held, leaving a window in which the IRQ
+  handler sees a job the hardware has not been programmed for -- the same driver-state-versus-
+  hardware-state divergence as the RK3576 two-jobs-in-flight hazard. And 0002's fast path reads
+  the refcount and then increments it non-atomically where `atomic_inc_not_zero()` is the
+  primitive, with `iommu_domain_id` read outside the atomic besides; it is safe only because one
+  domain is ever used. Two smaller ones: `rknpu_batch_submit` gets no prototype in any patched
+  header though 0003 calls it, and the README's `patch -p1` from `drivers/rknpu/` cannot apply
+  paths rooted at `a/drivers/rknpu/`. Their 0003 also carries a `dma_buf` leak fix on fd close
+  (bare `vunmap` to `dma_buf_vunmap` + `unmap_attachment` + `detach`) -- the same BO-lifetime
+  class as `patches/rocket` 0013/0014, present in the vendor driver too.
+
+  **The one lever here we have never tried is SoC-level AXI QoS, and it is a device-tree change**
+  [their measurement, untested here]. `docs/ref/QOS_TEST_RESULTS.md` notes the vendor driver
+  leaves `bw_priority_addr = 0x0`, so the NPU's bus QoS is never programmed at all, and sets
+  `priority-init=7` / `mode-init=0` on all five NPU QoS nodes (`qos_npu0_mwr` `0xfdf72000`,
+  `qos_npu0_mro` `0xfdf72200`, `qos_npu1` `0xfdf70000`, `qos_npu2` `0xfdf71000`, `qos_mcu_npu`
+  `0xfdf72400`) through the `pm_domains` driver's own DT path. Measured there: **2x on ~200 KB
+  matmuls** (`[64x768x64]` 0.658 -> 0.322 ms, `[64x64x768]` 0.416 -> 0.228 ms) and **nothing
+  past 1 MB** (1.00x, 0.96x, 1.00x on three shapes), with GPT-2's 144 large matmuls unchanged at
+  235 vs 237 ms. This sits upstream of the driver entirely, so unlike the rest of that repo it
+  should port to `rocket` unchanged. It is a different layer from the MCIF per-client 2-bit QoS
+  at `0x8000` in [nvdla-lineage.md](nvdla-lineage.md), and neither layer has been measured here.
+  Their reading of it -- that the null result at 1 MB "definitively proves" the ceiling is the
+  internal DMA engine's -- is not supported by the test: a null result at one priority bounds bus
+  arbitration, not the engine, and the 1 GB/s ceiling it argues for is the figure their own
+  README contradicts at 3.0 GB/s.
+
+  **`docs/ref/NPU_REGISTER_INVESTIGATION.md` is a second witness on the counter page, and it
+  disagrees with ours about which offsets are fatal.** Probing core 0 by kernel-module
+  `ioremap(0xfdab0000)`, they report `0x2210`-`0x223c` raising a *contained* kernel oops (DECERR,
+  board survives) and `0x8000`-`0x803c` **hanging the bus** hard enough for the watchdog to
+  reboot -- where [perf/hw-byte-counters.md](perf/hw-byte-counters.md) has the `0x2xxx` read
+  hard-locking the SoC and the legacy `0x80xx` offsets reading 0 as mapped DDMA space. Both
+  probes are kernel-side `ioremap` + `readl`, so the split is not obviously an access-path
+  artifact. Treat **both pages as unsafe to read on either path** until someone re-runs it; the
+  cheapest wrong guess here costs a cold power-cycle. What the disagreement does settle is that
+  file's own caveat -- an independent DECERR on a different kernel is further evidence the
+  `0x2xxx` page is undecoded rather than merely power-gated. Two register facts there are new
+  here: `0x1004` bit 4 accepts a write on the RK3576 (`state_init` 0x1e) and **is not writable on
+  the RK3588** (0x1e reads back 0x0e), a plausible internal-memory enable and a third independent
+  statement that the two parts are different revisions
+  ([chips/porting-patterns.md](chips/porting-patterns.md)); and `VERSION` at `0x0` reads
+  `0x46495245`, "FIRE".
+
+  Vision numbers, for comparison rather than transfer: SigLIP ViT at 995 ms/image on one core
+  against a ~2500 ms CPU baseline, 370 ms/image across three, cosine 0.9999 against the
+  HuggingFace reference, with all 48 matmuls on the NPU and attention / GELU / LayerNorm on
+  the CPU under OpenMP — against cosine 0.999998 for the full block on the FOSS path
+  ([encodings/siglip-encoder.md](encodings/siglip-encoder.md)).
 
 - **Mesa Teflon on `rocket`**
   (rpardini/mesa-teflon-etnaviv-rocket-docker; BredOS wiki `NPU/rocket.md`). Upstream
