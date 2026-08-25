@@ -59,7 +59,8 @@ driver (see the [README](README.md) evidence tags).
   redistributed). Every other encoding here comes from the FOSS Mesa driver plus HW sweep.
   RKNN3 (targeting RK1820 / RK3572) is a different NPU generation, out of scope.
 
-- **RKNN-Toolkit2 SDK docs** (`github.com/airockchip/rknn-toolkit2/doc`, V2.3.2) — the vendor's own documentation, an **external cross-reference**
+- **RKNN-Toolkit2 SDK docs** (`github.com/airockchip/rknn-toolkit2/doc`, V2.3.2) — the
+  vendor's own documentation, an **external cross-reference**
   rather than RE input. User Guide **§3.5.4**'s high-performance layout table covers the A/B/C
   tile-layout matrix and the same-A/B-dtype-only constraint (cf.
   [encodings/tile-layouts.md](encodings/tile-layouts.md)); **§6** the quant path (INT8-only,
@@ -251,10 +252,11 @@ driver (see the [README](README.md) evidence tags).
   wide-output poisoning, a property of the preceding submit, is invisible to it however
   exhaustive it is. `charsiu`'s harness does not share the blind spot: its bisects judge a
   following job run in a separate process (see its entry below). Blog moved to
-  `blog.gahingwoo.com/posts/rk3576-npu-mainline/`. `charsiu` chains multi-task jobs and
-  places the OUT_CVT triple at `0x40ac/0x40b0/0x40b4` itself; what these notes still
-  correct against that work is the `RK3576_CNA_MAP.md` register set, the wide-output
-  poisoning, and the float-mode three-register condition.
+  `blog.gahingwoo.com/posts/rk3576-npu-mainline/`. Our draft give-back is
+  `../RK3576-REPORT-FOR-GAHINGWOO.md` (private, unsent); its chaining and OUT_CVT sections
+  are superseded — `charsiu` chains multi-task jobs and places the OUT_CVT triple at
+  `0x40ac/0x40b0/0x40b4` itself — so what remains to send is the `RK3576_CNA_MAP.md`
+  corrections, the wide-output poisoning, and the float-mode three-register condition.
 
   Their upstream series reached **v7 on 2026-08-12**, 10 patches, `accel/rocket: RK3576 NPU
   (RKNN) enablement`
@@ -384,9 +386,8 @@ driver (see the [README](README.md) evidence tags).
   25.3.0). Their Teflon/`rocket` RK3576 driver as a maintained Mesa fork (~104 branch
   commits, active 2026-08): conv paths, depthwise in 64-channel groups, CBUF
   allocation/reuse, DPU `0x4044`/`0x4050` handling, a `ROCKET_REG_SET` late-override knob. A
-  second independent RK3576 encoder to diff against beyond the register maps in
-  `github.com/gahingwoo/linux-rk3576-npu` — for the RK3576 what Mesa's `rkt_regcmd.c` is for the
-  RK3588. Not checked out; fetch on demand.
+  second independent RK3576 encoder to diff against beyond its register maps — for the
+  RK3576 what Mesa's `rkt_regcmd.c` is for the RK3588.
 
 - **Chaoyi Chen (Rockchip), `PC_TASK_CON` bit assignment** —
   [lore.kernel.org](https://lore.kernel.org/all/4f300b78-d96d-4d98-8819-dc292b0c9b97@rock-chips.com/).
@@ -421,7 +422,7 @@ driver (see the [README](README.md) evidence tags).
   kernel (`/dev/dri/card1`; `MEM_CREATE`/`MEM_MAP`/`MEM_SYNC`/`SUBMIT`/`ACTION`), so its
   runtime, ioctl layer and kernel patches do not transfer to the mainline `rocket` path — the
   register encoding does. Same author as **poad42/smolvlm_rk3588_full_npu_native** below.
-  The useful subset is docs, `cna_matmul.c`, `lm_forward.c`, and the four kernel patches.
+  The useful subset is its docs, `cna_matmul.c`, `lm_forward.c` and the four kernel patches.
 
   **It is two stacks and only one is worth reading.** `pjrt_c/cna_matmul.c` emits the CNA
   descriptor **by formula** — 112 `uint64` entries computed from M/K/N, plus a weight cache

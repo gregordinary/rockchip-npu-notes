@@ -183,5 +183,6 @@ WDMA/DPU registers returns the programmed output *shape*, not traffic.
 - Register map: Mesa `rocket/registers.xml` (`DDMA` domain @ 0x8000), our `npu_hw.h`
 - RK3576 lead (§7): gahingwoo's mainline-`rocket` RK3576 bring-up
   (`https://www.reddit.com/r/embedded/comments/1ub5npg/`)
-- Second witness (§4): poad42/opennpu_rk3588 `docs/ref/NPU_REGISTER_INVESTIGATION.md` — vendor `rknpu` on a 6.1 BSP kernel, so a different driver and
+- Second witness (§4): poad42/opennpu_rk3588 `docs/ref/NPU_REGISTER_INVESTIGATION.md` —
+  vendor `rknpu` on a 6.1 BSP kernel, so a different driver and
   a different power-management path; see [SOURCES.md](../SOURCES.md)

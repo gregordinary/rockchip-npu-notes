@@ -11,6 +11,28 @@ NPUOP(OP_40, 0, 0)
 NPUOP(OP_ENABLE, 0x1D, PC_OPERATION_ENABLE)   # 0x1D = bits 0,2,3,4 -> fires PC+CNA+DPU+DPU_RDMA
 ```
 
+**`PC_OPERATION_ENABLE` is a per-block participation bitmap, and the TRM says otherwise**
+[HW sweep, RK3588, 2026-08-24]. `RKNN_pc_operation_enable` (offset 0x0008) is documented as
+`31:1 RO reserved` with a single `op_en` at bit 0 ("1'd1: Enable PC module to fetch register
+for each task"), and Mesa's `registers.xml` models it the same way — one `OP_EN`, bits 1-31
+`RESERVED_0`. Both are wrong about the upper bits on this silicon.
+
+The trailer word selects which blocks run: a convolution's `0x1D` is bits 0,2,3,4
+(PC/CNA/DPU/DPU_RDMA) and a pool's `0x60` is bits 5,6 (PPU/PPU_RDMA). The two are disjoint,
+and **`0x60` does not set bit 0 at all** — so under the documented reading a pooling program
+would enable nothing and never start. Pools run.
+
+Measured both ways rather than argued: substituting the convolution's `0x1D` into the pooling
+generator's trailer and changing nothing else leaves the output buffer **untouched**
+(`got=0.0000` on every element, against a reference the same binary reproduces at
+`max_abs=0.00024` with `0x60`). So bit 0 is neither sufficient (a conv word starts no pool)
+nor necessary (a pool word carries it clear and runs), which is only consistent with a
+bitmap. Treat the "reserved" span as undocumented-but-live, and read a program's trailer as
+the list of blocks it fires.
+
+Do not read a readback as a contradiction: the register self-clears, so polling it returns 0
+whatever was written. What the bits MEAN and what a readback SHOWS are different questions.
+
 Each task also opens with `DPU_S_POINTER = 0xE` / `DPU_RDMA_S_POINTER = 0xE`
 (`POINTER_PP_MODE | EXECUTER_PP_EN | POINTER_PP_EN`) = the NVDLA-style **ping-pong dual
 register groups**. A full matmul task is ~126 NPUOP words.

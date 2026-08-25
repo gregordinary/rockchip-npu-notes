@@ -1,7 +1,7 @@
 # IOVA windows and multicore (kernel / DMA)
 
 Two facts about how `rocket` maps memory and dispatches work that you must design
-around.
+around, and how the vendor `rknpu` BSP driver differs on the first of them.
 
 ## IOVA is per-fd, 4 GB each
 
@@ -24,6 +24,28 @@ A probe (`iova_ceiling_rocket.c`) opening 2 fds saw both independently climb
   smaller/quantized model.
 - BO allocation is **lazy**: reserving 8 GB of IOVA left RAM flat (~595 MB) — only the
   data you actually pack commits physical RAM.
+
+**Per-fd is a property of `rocket`, not of the silicon, and the multi-fd strategy above does
+not transfer to the vendor `rknpu` BSP driver.** That driver maps every buffer through **one
+IOMMU domain shared across the whole process**, so a second fd buys no address space and two
+processes spend the same budget. Freshly booted it serves about the same total — ~3.9 GB in
+buffers of any size from 16 MB to 256 MB, against `rocket`'s 4.00 — so the two start
+equivalent and diverge only in how that budget is shared and in what happens next.
+
+**On that driver the window also fragments with the board's uptime, and it does not recover.**
+One board a day into its uptime served 35 buffers of 16 MB, **one** of 128 MB and **none** of
+192 MB, with the addresses it did hand out scattered across the whole range — so the binding
+constraint is fragmentation, not an aperture. Because the domain outlives every process that
+used it, a reboot is the only reset; detaching and re-attaching the device (the driver's own
+soft reset) re-uses the same domain object and does not rebuild the allocator. What consumes it
+is not identified: a full gate suite, individual successful workloads, a process killed
+mid-submit, and a synthetic mixed-size allocate/free cycle each cost it nothing measurable.
+
+Two consequences for anyone driving that path. A large allocation failure there is **transient
+rather than structural** — retrying at a smaller size is usually served, which is what
+`librocketnpu` does for the chained attention path. And **a board's uptime is a variable in any
+allocation-sensitive measurement**: take a fresh-boot control before recording a number as a
+property of the driver. [HW sweep, RK3588, `rknpu` 0.9.8 vs mainline `rocket` 1.1.0]
 
 This is why a "`ROCKET_CACHE_MB=12000` exceeds 32 bits" crash is **not** a 4 GB
 wall — it is per-tensor *scratch bloat* (each resident weight carrying its own

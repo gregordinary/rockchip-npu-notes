@@ -211,7 +211,7 @@ Remaining (deferred, lib-level):
 ## Reproduce
 
 ```
-# on the RK1 (venv with torch+transformers; model + artifacts on external storage):
+# on the board (venv with torch+transformers; model + artifacts on external storage):
 python tools/siglip_reference.py --out /path/to/siglip/artifacts          # fp32 oracle
 python tools/siglip_extract.py   --out /path/to/siglip/artifacts/siglip_weights.f16
 ctest --test-dir build_nv -R siglip_rocket                                   # fidelity gate

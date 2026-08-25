@@ -19,6 +19,45 @@ The accumulation order is preserved either way, so the result is **bit-identical
 the no-reuse path (standalone gate: both modes `max_abs=0.000`; composes cleanly with
 the fp16 EW K-accum).
 
+## "One job" is a precondition, not a description
+
+*Tasks batched into one job* above is load-bearing, and it is a claim about the
+**driver**, not about the tile order. The bit says "the operand you want is still in
+CBUF"; anything else that runs on that core in between makes that false. A driver is
+free to schedule another context's job between two submits, so the reuse bit is only
+sound while the whole run of tiles is one uninterrupted job.
+
+Mainline `rocket` gives that for nothing: `rocket_job_handle_irq()` programs the next
+task of the **same** job and only signals the done fence once `next_task_idx` reaches
+`task_count`, so `core->in_flight_job` holds the core for the whole sequence
+[source-confirmed, v7.1]. Nothing in userspace has to ask.
+
+The vendor BSP `rknpu` driver does not, and that is where this was measured. Its job
+carries **one** program address (`rknpu_job_commit()` programs `PC_DATA_ADDR` from
+`first_task->regcmd_addr` and never reads tasks 1..n-1's), so *n* unchained programs can
+only be *n* submits, hence *n* jobs, and `rknpu_job_next()` takes the next entry off
+`subcore_data->todo_list` the instant the previous one retires. Measured on one
+128×1024×1024 fp16 matmul at 3-way fan-out, RK3588, `rknpu 0.9.8` [HW sweep]:
+
+| arm | corrupt runs |
+|---|---|
+| unchained submit, reuse on | 29 of 120 |
+| unchained submit, reuse off | 0 of 120 |
+| chained submit (one kick), reuse on | 0 of 80 |
+
+**What it looks like when it goes wrong.** A full, correctly sized, entirely plausible
+output surface whose value moves between runs — never an error, never a hang. The damage
+is one whole N-tile of one worker's column slice (128 columns at `Nt=128`), filled with
+valid-looking numbers rather than zeros, because the tile really did compute — against
+whatever operand the interleaving job left in CBUF. Three independent **single-threaded
+processes** corrupt each other, which is what places the fault below any one process.
+
+**Two traps around measuring it.** A gate whose inputs are *periodic* cannot see it: with
+a period-11 column pattern and 128-wide tiles the wrong operand's bytes match the right
+one's, and the multicore gate that had run for months reported `max_abs=0.000` on every
+run. And a single run is not a measurement — the event fired on roughly a quarter of
+runs, so an arm needs tens of repeats and the two arms need to be interleaved.
+
 ## You can only use one bit at a time
 
 A 1-D task order makes only **one** operand "the same as the previous task." You
