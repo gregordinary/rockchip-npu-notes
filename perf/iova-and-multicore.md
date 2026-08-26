@@ -32,20 +32,33 @@ processes spend the same budget. Freshly booted it serves about the same total �
 buffers of any size from 16 MB to 256 MB, against `rocket`'s 4.00 — so the two start
 equivalent and diverge only in how that budget is shared and in what happens next.
 
-**On that driver the window also fragments with the board's uptime, and it does not recover.**
-One board a day into its uptime served 35 buffers of 16 MB, **one** of 128 MB and **none** of
-192 MB, with the addresses it did hand out scattered across the whole range — so the binding
-constraint is fragmentation, not an aperture. Because the domain outlives every process that
-used it, a reboot is the only reset; detaching and re-attaching the device (the driver's own
-soft reset) re-uses the same domain object and does not rebuild the allocator. What consumes it
-is not identified: a full gate suite, individual successful workloads, a process killed
-mid-submit, and a synthetic mixed-size allocate/free cycle each cost it nothing measurable.
+**On that driver the window is consumed permanently by workloads that map through the kernel's
+generic path, and it does not recover.** The consumer is the mapping route, not elapsed time:
+one `llama.cpp` 2048-token prefill (Llama-3.2-3B F16) run with `RKNPU_MEM_IOMMU_LIMIT_IOVA_ALIGNMENT`
+**clear** costs the shared domain 5–11 of its 31 128 MB buffers in 153 s, and the loss outlives
+the process. With that flag **set** — the `librocketnpu` provider's default — the identical run
+costs **zero**: four such arms interleaved around the leaking ones left all four size counts
+byte-identical [HW sweep, RK3588, `rknpu` 0.9.8, 2026-08-25]. Because the domain outlives every
+process that used it, a reboot is the only reset; detaching and re-attaching the device (the
+driver's own soft reset) re-uses the same domain object and does not rebuild the allocator.
+
+**The mechanism is not identified, and no static probe distinguishes the two routes.** Allocating
+one size until refusal returns identical counts *and identical addresses* on both routes at 16, 32,
+32.03, 48, 64, 128 and 192 MB, so the difference lives in the real workload's allocation pattern
+rather than in the allocator's steady-state behaviour. Nor is it the error path: every one of five
+prefill runs across both routes reported **zero** kernel allocation failures. Synthetic instruments
+do not reproduce it — a mixed-size allocate/free cycle on either route, ten rounds of processes
+alternating the flag, three concurrent overlapping processes mixing it, a full gate suite, and a
+process killed mid-submit each cost the domain nothing measurable. Only the real workload moves it.
 
 Two consequences for anyone driving that path. A large allocation failure there is **transient
 rather than structural** — retrying at a smaller size is usually served, which is what
-`librocketnpu` does for the chained attention path. And **a board's uptime is a variable in any
-allocation-sensitive measurement**: take a fresh-boot control before recording a number as a
-property of the driver. [HW sweep, RK3588, `rknpu` 0.9.8 vs mainline `rocket` 1.1.0]
+`librocketnpu` does for the chained attention path. And **a board's allocation history, not its
+uptime, is the variable in any allocation-sensitive measurement**: a board 1 day 4 h into its
+uptime carrying a full day of NPU work under the tight route still measured the fresh-boot row
+(255 / 63 / 31 / 21 buffers at 16 / 64 / 128 / 192 MB), while one 153 s run on the generic route
+moved it. Probe the domain before recording a number as a property of the driver.
+[HW sweep, RK3588, `rknpu` 0.9.8 vs mainline `rocket` 1.1.0]
 
 This is why a "`ROCKET_CACHE_MB=12000` exceeds 32 bits" crash is **not** a 4 GB
 wall — it is per-tensor *scratch bloat* (each resident weight carrying its own

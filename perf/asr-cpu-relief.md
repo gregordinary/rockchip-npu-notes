@@ -100,6 +100,27 @@ only the smaller one is a dispatch-cost property. **The knob accounts for everyt
 about 10 s; below that the win is genuinely gone** — at 3 s neither floor offloads usefully and
 both arms are within 3%.
 
+### A ROW floor is the right shape for it, and the weight size cancels
+
+The temptation is to express the floor against the weight it is guarding — a quantized weight
+costs more to decode, so a bigger weight should need more rows. It should not, and the profile
+says why: the dequant a pass pays is **fixed in the row count**. SenseVoice offloads 279 GEMMs
+and spends 250-293 ms decoding their weights whether the clip is 10 s or 120 s [HW sweep].
+
+Write the criterion out. Offloading one GEMM wins when `M*K*N*Δ > K*N*d + F`, where `d` is the
+per-element decode cost, `Δ` the per-MAC advantage over the CPU and `F` the fixed per-call
+dispatch. Divide by `K*N`: **`M > d/Δ + F/(Δ*K*N)`**. The weight size divides out of the term
+the floor exists to amortize, leaving a constant in `M` plus a correction that *shrinks* as the
+weight grows. So a floor of the form `K*N*sizeof(weight)/M` would scale the threshold the wrong
+way; a row floor is the right primary shape, and the shape-aware refinement available is to let
+a LARGE `K*N` clear a slightly lower floor, not a higher one.
+
+What is genuinely per-model is the constant, and it is not only about amortization — `Δ` itself
+falls at small `M`, where the NPU underuses its array. Parakeet at 10 s clears the 128 floor on
+24 of its 217 offloadable GEMMs and buys 6.2% relief; at 30 s all 217 clear it and it buys
+43.9%. That is the measurement a candidate model needs, and it is why the knob is documented
+per workload rather than re-defaulted.
+
 ## Thread count moves the wall and not the CPU
 
 The host work is the same work whatever it is spread across, so the thread count trades realtime
@@ -189,9 +210,43 @@ The host cost that *does* dominate is the per-worker input load — for `base.en
 rest being the per-worker copy of the input cube.
 
 **This cap is F16-only, and that is not incidental**: with F16 weights `weight_dequant` is 0 by
-construction. A Q8_0 host pays it on every call — 254 ms in one SenseVoice 60 s profile against a
-1756 ms pack — and a resident cache would remove the dequant and the scatter together. That is a
-different term with a different share and nothing here measures it.
+construction. A Q8_0 host pays it on every call, and a resident cache would remove the dequant
+and the scatter together. That is a different term with a different share, and it is measured
+below.
+
+## On a Q8_0 host the cache's term is real, fixed per pass, and only reachable across utterances
+
+The removable term is `weight_dequant` + `packB`, and on a quantized host it is an order of
+magnitude larger a share than the F16 cap above — at the short end. Two Q8_0 CTC encoders
+through `transcribe.cpp`, NPU arm at `ROCKET_MIN_M_QUANT=128` (the floor that actually offloads
+for this workload), medians of two interleaved reps with a warm-up discarded, A76-pinned, CPU
+governor `performance` [HW sweep 2026-08-26, vendor RK1]:
+
+| model | clip | CPU arm core-s | NPU arm core-s | relief | dequant | packB | GEMM calls | cache cap (of NPU arm) |
+|---|---|---:|---:|---:|---:|---:|---:|---:|
+| SenseVoiceSmall-Q8_0 | 10 s | 4.57 | 3.54 | 22.6% | 293 ms | 138 ms | 279 | **12.2%** |
+| | 30 s | 13.59 | 8.01 | 41.1% | 264 ms | 152 ms | 279 | 5.2% |
+| | 60 s | 32.12 | 18.41 | 42.7% | 246 ms | 173 ms | 279 | 2.3% |
+| | 120 s | 86.74 | 54.28 | 37.4% | 249 ms | 160 ms | 279 | 0.8% |
+| parakeet-ctc-0.6b-Q8_0 | 10 s | 8.97 | 8.41 | 6.2% | 29 ms | 27 ms | 24 | 0.7% |
+| | 30 s | 25.62 | 14.36 | 43.9% | 584 ms | 538 ms | 217 | **7.8%** |
+| | 60 s | 56.09 | 30.11 | 46.3% | 580 ms | 527 ms | 217 | 3.7% |
+| | 120 s | 136.07 | 72.11 | 47.0% | 578 ms | 582 ms | 217 | 1.6% |
+
+**The term is fixed per forward pass**, which is what the call column says: SenseVoice offloads
+279 GEMMs whether the clip is 10 s or 120 s, and its dequant stays within 250-293 ms across a
+12x range of audio. Parakeet is the same from 30 s up at 217. So the share falls with clip
+length — 12.2% down to 0.8% — and the lever is a **short-utterance** one.
+
+**Within one utterance there is nothing to cache.** Those 279 calls are 279 distinct GEMMs, each
+dequantizing its own weight once; the count does not grow with audio length, so a single-clip run
+has no reuse to exploit. The saving exists only across utterances in a process that keeps the
+model loaded — which is the steady-state regime the per-utterance table above measures, and the
+regime a streaming service is in. A one-shot CLI invocation would gain nothing.
+
+**The cap is per model, not per family.** Parakeet at 10 s offloads 24 GEMMs rather than 217
+and buys 6.2% relief, because most of its layers sit under the floor at that length; its cache
+cap there is 0.7%. Measure the candidate model at the candidate utterance length.
 
 ## The clock does not park mid-encode on the vendor driver
 
