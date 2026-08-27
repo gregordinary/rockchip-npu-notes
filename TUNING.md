@@ -31,8 +31,11 @@ almost nothing:
   2. **`ROCKET_QUANT_RESIDENT=auto`** — a quantized GGUF, **if the model's fp16 size fits RAM**.
      Lifts quant prefill to fp16 parity (~1.5×).
   3. **`ROCKET_F16_RESIDENT=auto`** — an F16 model that **fits ~2× in RAM**. Single-digit-percent gain.
-  4. **`ROCKET_MOE=1`** — a mixture-of-experts model, **if nearly the whole expert stack fits RAM**.
-     Up to 2.16× on gpt-oss-20b; a net loss if it does not fit.
+  4. **Nothing** for a mixture-of-experts model — the routed-expert offload is **on by default**
+     since 2026-08-27 and gates itself (it claims a stack only where it can reserve the whole thing
+     up front and the per-expert GEMM pays for its own dispatch). Worth ~2.4× the CPU at pp2048 on
+     gpt-oss-20b. `ROCKET_MOE=1` overrides both checks and is **faster where the stack nearly fits,
+     unsafe where it does not** — an A/B arm, not a recommendation.
 - **Precision (`ROCKET_INT4` / `ROCKET_INT8` / a `Q4_K_M` GGUF)** is a **RAM / model-fit** lever,
   not a speed lever — quantization does not speed prefill at this operating point
   ([perf/not-mac-bound.md](perf/not-mac-bound.md)). Choose it to make a model fit or to speed
@@ -109,7 +112,8 @@ the fixed setup cost of residency amortizes across turns.
 - **F16 with RAM to spare:** `ROCKET_F16_RESIDENT=auto`.
 - **Attention offload is automatic** and pays once the context passes ~2K
   ([perf/attention-offload-crossover.md](perf/attention-offload-crossover.md)); nothing to set.
-- **MoE model:** add `ROCKET_MOE=1` only if the expert stack fits (below).
+- **MoE model:** nothing to set — the expert offload is on by default and declines itself where it
+  would not pay (below).
 
 ### RAG / long-context / document processing (large one-shot prefill)
 
@@ -167,7 +171,7 @@ also speeds decode. Sizes are the fp16 footprint the residency levers need.
 | **Quantized GGUF** | medium / long | `-b 2048 -ub 2048` | ~2.1× over the `-ub 512` default; per-µbatch dequant amortized |
 | **Quantized GGUF, fp16 fits RAM** | agentic / RAG | `-b 2048 -ub 2048` + `ROCKET_QUANT_RESIDENT=auto` | Dequant once → fp16 parity (~1.5×); costs the full fp16 footprint |
 | **Any, short prompts** | interactive chat | pick `Q4_K_M` for decode; no NPU flags | Prefill is below the offload floor; the turn is decode-bound |
-| **MoE (gpt-oss, DeepSeek, …)** | medium / long | `-b 2048 -ub 2048` `+ ROCKET_MOE=1` **iff experts fit** | 2.16× if ~99% resident; a loss below ~82% |
+| **MoE (gpt-oss, DeepSeek, …)** | medium / long | `-b 2048 -ub 2048` — the expert offload needs no flag | ~2.4× the CPU at pp2048 on gpt-oss-20b, default-on and self-gating. Eligibility is per architecture, not universal: gpt-oss offloads from `-ub 512` up, DeepSeek-V2-Lite only past ~1250 tokens in a micro-batch |
 | **Model too big for RAM at F16** | any | a `Q4_K_M` GGUF, or `ROCKET_INT4=1` from an F16 GGUF | Footprint, not speed — see below |
 
 ## The opt-ins in detail
@@ -217,27 +221,62 @@ The F16 sibling of the above: pack the all-K F16 weights once and reuse across m
   shared packA for another ≈+5.7% on top — see
   [perf/weight-residency-fusion.md](perf/weight-residency-fusion.md) for the mechanism and the A/B.
 
-### `ROCKET_MOE=1` — MoE routed experts on the NPU
+### MoE routed experts on the NPU — default-on, and self-gating
 
 Routes the mixture-of-experts FFNs (`MUL_MAT_ID`) to the NPU. A quantized expert takes the native-int8
-resident route by default (`ROCKET_MOE_NATIVE`), ingesting each expert **once** into int8 codes — this
-is what removes the per-µbatch host dequant that makes the naive fp16 expert route a loss.
+resident route (`ROCKET_MOE_NATIVE`), ingesting each expert **once** into int8 codes — this is what
+removes the per-µbatch host dequant that makes the naive fp16 expert route a loss.
 
-- **When:** a MoE model where **nearly the whole expert stack fits RAM**. This is the one opt-in whose
-  sign flips on the machine, which is why it is opt-in.
-- **RAM math:** the experts must be ~99% resident. gpt-oss-20b holds ~14 GB of int8 codes on the NPU,
-  and the GGUF source must coexist (MoE decode reads the active experts from it every token), so ~21 GB
-  is charged — it fits a 31 GB board. Below ~82% resident it **loses** (pp512 12.19 < the 14.11 you get
-  leaving experts on the CPU). Disk: the GGUF. Time: a one-time ~70 s expert ingest inside the first
-  prefill. Raise `ROCKET_MOE_CACHE_MB` if the RAM is there.
-- **Delta:** gpt-oss-20b MXFP4 at `-b 2048 -ub 2048`: **1.34× / 1.88× / 2.16× the CPU** at pp512 /
-  pp1024 / pp2048 (and 1.93× the NPU-default at pp2048) [HW sweep]. Wins at every prefill length **when
-  resident**.
+- **When: nothing to set.** It is on by default since 2026-08-27 and decides per expert stack. What
+  made it opt-in was that its sign depended on the host's RAM; a **residency pre-flight** now removes
+  that dependence instead of documenting it — the stack's resident cost is knowable from its tensor
+  alone, so the placement gate reserves the whole stack *before* the first ingest and leaves on the CPU
+  what it cannot reserve. A declined stack costs nothing at the seam (this backend's buffer type *is*
+  the CPU buffer type), so the default is bounded below by the experts-on-CPU baseline at any RAM size.
+- **Eligibility is per ARCHITECTURE, not universal.** Two size floors gate each op: the tile granule
+  (`ROCKET_MOE_M_BUCKET`) and the work one dispatch carries (`ROCKET_MOE_MIN_WORK`, in mega-MACs of
+  `M_e · K · N` where `M_e` = `n_tokens · n_used / n_expert`). gpt-oss-20b routes 4-of-32 over a
+  2880×2880 expert and clears both from `-ub 512` up; DeepSeek-V2-Lite routes 6-of-64 over a 2048×1408
+  expert — **2.88× less work per dispatch at the same row count** — and clears them only past ~1250
+  tokens in a micro-batch. Do not read one MoE's ratio across to another.
+- **RAM math:** gpt-oss-20b holds ~13.4 GB of int8 codes on the NPU, and the GGUF source must coexist
+  (MoE decode reads the active experts from it every token), so ~21 GB is charged against a budget of
+  `MemAvailable` − 6 GiB. On a 31 GB board that admits 63 of its 72 expert stacks; the remaining 9 stay
+  on the CPU, which is a partial offload and not a loss. Time: a one-time expert ingest inside the
+  first prefill, per `llama_context` — **~36 s** on gpt-oss-20b, ~32 s on DeepSeek-V2-Lite, dominated
+  by an NPU-BO pack that is bytes-bound at ~500–545 MB/s rather than per-expert.
+- **Delta:** gpt-oss-20b MXFP4 at `-b 2048 -ub 2048`: **1.81× / 2.38× the CPU** at pp512 / pp2048, and
+  1.64× → 2.08× over the experts-on-CPU arm across pp512–pp2048 [HW sweep 2026-08-27, 600 MHz pinned].
+  At the llama.cpp default `-ub 512` it is ~1.6×/1.7× over experts-on-CPU — **no collapse**; that tax
+  belonged to the fp16 route.
+- **`ROCKET_MOE=1` is the A/B arm, not a recommendation.** It claims every op the handler can compute,
+  reserving nothing and ignoring both size floors. Where the stack nearly fits that is faster than the
+  default — **6–13% at pp512 and 18–21% at pp2048** — and where it does not it reads **below** the
+  experts-on-CPU baseline (0.97× at pp512 on an induced 12 GB budget). **Raise
+  `ROCKET_MOE_CACHE_MB` instead**: it buys most of that back while keeping both the zero-streamed
+  property and the sign guarantee.
+- **The measured budget ladder, gpt-oss-20b on a 31 GiB board** [HW sweep 2026-08-27, 600 MHz,
+  behind a `drop_caches`, every arm 0 streamed]:
+
+  | setting | budget | stacks | pp512 | pp2048 | vs default |
+  |---|---|---:|---:|---:|---|
+  | default (auto) | 24672 MB | 63 of 72 | 21.96 | 26.51 | — |
+  | `ROCKET_MOE_CACHE_MB=26000` | 26000 MB | 66 | 22.90 | 27.85 | +4.3% / +5.1% |
+  | **`ROCKET_MOE_CACHE_MB=28000`** | 28000 MB | **71** | 23.79 | 30.25 | **+8.3% / +14.1%** |
+  | `ROCKET_MOE=1` (the ceiling) | none | 72 | 23.34 | 31.27 | +6.3% / +18.0% |
+
+  **28000 is the setting worth knowing**: 71 of 72 stacks, 79% of the pp2048 ceiling, and above the
+  forced arm at pp512 — with the pre-flight still guaranteeing the sign. But it leaves only ~2.8 GB
+  of the headroom the 6 GiB auto reserve exists for (KV cache, activations), so it is a knob for a
+  **known working set**, not a new default. The pp512 column is inside a ±1.4–2.1 spread and should
+  not be read finely. `ROCKET_MOE=0` leaves the experts on the CPU.
 - **Negative results — do not chase these:** the **fp16** expert route (`ROCKET_MOE_NATIVE=0`) is a net
-  loss (re-dequantizes every expert every µbatch). On **DeepSeek-V2-Lite** the whole `ROCKET_MOE=1` path
-  is a loss (0.25–0.59× CPU) — leave its experts on the CPU (the default). `ROCKET_MOE=1` helps gpt-oss
-  and only where residency holds.
-- **Confirm:** `ROCKET_LOG_STDERR=1` prints the resident/streamed expert split at teardown.
+  loss on both models, re-dequantizing every expert every µbatch — the default never takes it. And a
+  per-expert ROW count is the wrong handle for the floor: `M_e` = 96 is 1.77× on gpt-oss and ~parity on
+  DeepSeek, so no row threshold separates them.
+- **Confirm:** `ROCKET_LOG_STDERR=1` prints the resident/streamed expert split at teardown. Under the
+  default that split should read **100% resident** — a nonzero streamed count means a limit the
+  pre-flight could not see ahead of the ingest, most likely an exhausted NPU IOVA window.
 
 ### Native int8 / int4 / bf16 — RAM and model-fit, not speed
 
@@ -279,26 +318,27 @@ llama.cpp/stack defaults leave real speed on the table:
 | Quant micro-batch | `-ub 512` | `-b 2048 -ub 2048` | ~2.1× | Qwen3.5-9B `Q4_K`, 27B `Q4_K` [HW sweep] |
 | Quant residency | streaming | `ROCKET_QUANT_RESIDENT=auto` | ~1.5× (→ fp16 parity) | Qwen3.5-0.8B, 9B [HW sweep] |
 | F16 residency | re-pack per turn | `ROCKET_F16_RESIDENT=auto` | ≈+6–9% | 3B F16 [HW sweep] |
-| MoE experts | on CPU | `ROCKET_MOE=1` (resident) | up to 2.16× / 1.93× the NPU-default | gpt-oss-20b [HW sweep] |
+| MoE experts | (now default-on) | — | 1.64× → 2.08× over experts-on-CPU, pp512→pp2048 | gpt-oss-20b [HW sweep] |
 | Asymmetric tiling | (now default-on) | `ROCKET_MM_ASYM=1` | +6–9% F16 | Qwen3.5-9B, Gemma-4-12B [HW sweep] |
 | fp16 K-accumulation | (now default-on) | `ROCKET_KACC=1` | +19% (+7% more from DATA_REUSE) | Gemma-4-12B [HW sweep] |
 
-The last two are shown as deltas over a hypothetical no-lever baseline to size the win; you do not set
-them (they are on). The actionable rows are the first five.
+The last three are shown as deltas over a hypothetical no-lever baseline to size the win; you do not
+set them (they are on). The actionable rows are the first four.
 
 ## What is not yet measured
 
 The flag *defaults* are model-independent, so the recipes above hold, but the **per-model paired
 default-vs-tuned A/B** has only been run on a subset. Treat a per-model number the recipe implies but that
 is not in [perf/benchmarks.md](perf/benchmarks.md) as a projection, not a datum. The gaps — and the plan to
-close them into a full model × use-case × flag matrix — are tracked separately. The largest
-ones:
+close them into a full model × use-case × flag matrix — are tracked in
+the project's own open-work tracker, which is not part of this repo. The largest ones:
 
 - `ROCKET_MM_ASYM` / `ROCKET_KACC` / DATA_REUSE isolation exists only on a few models (mostly Gemma-4-12B,
   Qwen3.5); every other model inherits the default silently.
 - `ROCKET_QUANT_RESIDENT` is measured only on Qwen3.5-0.8B/9B — untested whether a 12B+ fp16 resident even
   fits, or its delta.
-- `ROCKET_MOE` is measured on gpt-oss-20b (win) and DeepSeek-V2-Lite (loss) only; no `ROCKET_MOE_CACHE_MB`
+- `ROCKET_MOE` is measured on gpt-oss-20b and DeepSeek-V2-Lite only, and the two disagree about which
+  shapes are eligible, so a third MoE architecture is where the size floors get tested; no `ROCKET_MOE_CACHE_MB`
   residency sweep beyond the gpt-oss observation.
 - The SmolVLM2 resident `rocket_siglip_encoder` vision path is described but has no end-to-end benchmark;
   the generic clip drop-in is the only measured multimodal-vision number (1.19×).

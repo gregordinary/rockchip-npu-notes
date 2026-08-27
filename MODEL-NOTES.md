@@ -126,15 +126,25 @@ The mixture-of-experts model, and the one whose settings pull against each other
 32 experts with 4 active; attention alternates windowed (128) and full, so **half its layers
 are full-attention**.
 
-- **Recommended flags:** `-b 2048 -ub 2048` **and** `ROCKET_MOE=1` on a 31 GB board (the ~14 GB
-  int8 expert stack plus the mmapped GGUF fit at ~99% resident → 2.16× at pp2048). On a smaller
-  board where the experts do not fit, leave `ROCKET_MOE` off — below ~82% resident it loses. The
-  `-ub` and residency detail below.
-- **Stack status:** prefill is faithful — greedy output matches the CPU reference, on both the
-  default route and the native-quant expert route. It is a **reasoning** model (harmony
-  format), so **wikitext PPL is not a valid quality metric**; evaluate by greedy-match and a
-  cosine probe. Decode stays on the CPU as always (~7.2 t/s, brisk for 20B because only ~3.6 B
-  params are active per token).
+- **Recommended flags:** `-b 2048 -ub 2048`. **Nothing for the experts** — the routed-expert
+  offload is on by default since 2026-08-27 and gates itself, reserving a whole expert stack before
+  it claims that stack's op and leaving on the CPU what it cannot reserve. On this board that admits
+  63 of 72 stacks at 100% residency → **2.38× the CPU** at pp2048. The `-ub` and residency detail
+  below.
+- **Stack status: prefill runs coherently, and greedy output does NOT match the CPU reference on
+  any NPU arm — including the one with the experts left on the CPU.** On a ~1400-token passage at
+  `--temp 0 --seed 1`, the experts-on-CPU arm first diverges at **word 16** of the generation and
+  every arm carrying the expert offload at **word 10** [HW sweep 2026-08-27]. All continuations stay
+  coherent and on-topic, which is the criterion that matters here — MODEL-NOTES' own rule is that
+  only *early **and large*** divergence points at our stack, and an fp16 prefill against an fp32 CPU
+  reference flips greedy boundaries as a matter of course. What the expert route adds is **about six
+  words earlier**, and a single 48-token generation cannot separate that from one more flip in the
+  same cascade. It is a **reasoning** model (harmony format), so **wikitext PPL is not a valid
+  quality metric**; the quantitative gates for this model are the per-matmul cosine probe
+  (`ROCKET_MOE_COSINE=1`, real weights and real activations against an fp64 CPU reference —
+  **mean 0.999815, min 0.998976 over 55 expert GEMMs** on the shipped placement) and
+  `test-rocket-moe`, not the greedy match. Decode stays on the CPU as always (~7.2 t/s, brisk for
+  20B because only ~3.6 B params are active per token).
 - **The `-ub` setting pulls two ways, and you must choose deliberately.**
   - **Run the MoE expert route at `-b 2048 -ub 2048`** — every number here was measured there,
     and two mechanisms say a smaller micro-batch costs it. First, the **dense** MXFP4 weights
@@ -145,25 +155,32 @@ are full-attention**.
     (dispatch, row gather, scatter, M-bucket padding) does not shrink with the row count, so a
     quarter of the rows buys close to the same overhead. `ROCKET_MOE_MIN_TOKENS` (default 512)
     also sits right at `-ub 512`, so offload barely qualifies.
-    **Not measured at `-ub 512` on the native route** — that is a prediction from the two
-    mechanisms, not a datum. (The often-quoted "`-ub 512` collapses MoE to ~0.42×" is the
-    **fp16 streaming** route, whose per-expert dequant *is* what `-ub` multiplies. Native-quant
-    ingests each expert once and deletes exactly that cost, so the old reasoning does not
-    transfer to it.)
+    **Now measured at `-ub 512`**: 22.2 / 22.5 t/s at pp512 / pp2048 against 14.13 / 13.53 with the
+    experts on the CPU — about 1.6× / 1.7×, against 22.0 / 28.1 at `-ub 2048`. So the two mechanisms
+    together cost ~20% at pp2048 and nothing at pp512, and there is **no collapse**. (The
+    often-quoted "`-ub 512` collapses MoE to ~0.42×" is the **fp16 streaming** route, whose
+    per-expert dequant *is* what `-ub` multiplies. Native-quant ingests each expert once and deletes
+    exactly that cost, so the old reasoning never transferred to it.)
   - But **`-ub 2048` makes the *dense* graph slower on this model** — NPU-default reads 13.11
     t/s at `-ub 512` against 11.31 at `-ub 2048` (pp2048). The CPU does not care either way.
   - So there is no single best `-ub` here: it depends on whether the experts are on the NPU.
     **Never compare a `-ub 512` number against a `-ub 2048` one** — that mistake is what made
     an earlier session chase a nonexistent regression.
-- **Routed experts: `ROCKET_MOE=1` is worth 2.16× the CPU, and it is opt-in for a reason.**
-  Prefill **17.57 / 24.38 / 26.78 t/s** at pp512 / pp1024 / pp2048 (**1.34× / 1.88× / 2.16×** the
-  CPU) with the experts held resident on the NPU as native int8. The *fp16* expert route is a net
-  **loss** (4.59 / 10.18) — it re-dequantizes every expert every micro-batch, ~75 ms each,
-  *independent of the row count*. The native route ingests each expert **once** and deletes that
-  tax, at a one-time **~70 s** ingest inside the first prefill.
-  **It is opt-in because the win is conditional on residency:** 99% resident wins, **82% resident
-  loses** at pp512 (12.19, below the 14.11 you get leaving the experts on the CPU). Check the split
-  with `ROCKET_LOG_STDERR=1`; raise `ROCKET_MOE_CACHE_MB` if the RAM is there.
+- **Routed experts: worth 2.38× the CPU, and on by default.** Prefill **22.0 / 28.1 t/s** at
+  pp512 / pp2048 (**1.81× / 2.38×** the CPU; 1.64× → 2.08× over the experts-on-CPU arm across
+  pp512–pp2048) with the experts held resident on the NPU as native int8. The *fp16* expert route is
+  a net **loss** (4.59 / 10.18) — it re-dequantizes every expert every micro-batch, ~75 ms each,
+  *independent of the row count*. The native route ingests each expert **once** and deletes that tax,
+  at a one-time **~36 s** ingest inside the first prefill, per `llama_context`.
+  **What made it opt-in was that its sign depended on the host's RAM**, and a residency pre-flight now
+  removes that dependence: a stack it cannot reserve is left on the CPU whole rather than
+  half-ingested into the partial-residency loss (82% resident read 12.19 at pp512, below the 14.11 you
+  get leaving the experts on the CPU). Check the split with `ROCKET_LOG_STDERR=1` — under the default
+  it should read **100% resident**. `ROCKET_MOE=1` overrides the pre-flight and both size floors: it
+  is *faster* where the stack nearly fits and **below the experts-on-CPU baseline where it does not**,
+  so it is the A/B arm, not a setting. With RAM to spare, raise `ROCKET_MOE_CACHE_MB` instead.
+  **This model clears the size floors at every prefill length; DeepSeek-V2-Lite does not** — see its
+  section, and do not read this ratio across to another MoE.
 - **Its attention stays on the CPU, and must.** gpt-oss carries a learned **attention sink** per
   head, and the NPU FLASH_ATTN handler has no sink term — so the offload is declined for it. It had
   been silently *accepted*, computing a sink-less (wrong) softmax past the `n_kv` floor of 1024.
@@ -171,6 +188,39 @@ are full-attention**.
   *collapses past ~1K context but is fine below it*, suspect this class of bug.
 - **Best use:** the MoE showcase, and the residency stress case — its expert stack only just fits a
   31 GiB board alongside its own GGUF, so it is where partial residency gets exercised.
+
+### DeepSeek-V2-Lite (Q4_K_M, MoE + MLA)
+
+The second MoE, and the one that shows expert-offload eligibility is a property of the
+**architecture**, not of the flag. 27 blocks (block 0 dense), **64 routed experts with 6 active**
+plus 2 always-on shared, MLA attention, ~2.4 B of 15.7 B params active per token. A **base** model,
+so unlike gpt-oss its wikitext PPL is a valid quality metric.
+
+- **Recommended flags:** `-b 2048 -ub 2048`, nothing else. The expert offload is on by default and
+  decides per micro-batch.
+- **Its experts offload only past ~1250 tokens in a micro-batch, and that is correct.** Two size
+  floors gate each op, and the binding one here is the work a dispatch carries, `M_e · K · N` where
+  `M_e` = `n_tokens · n_used / n_expert`. DeepSeek's 6-of-64 routing over a **2048×1408** expert
+  carries **2.88× less work per dispatch** than gpt-oss's 4-of-32 over a 2880×2880 one at the same row
+  count — so at `M_e` = 72 the offload measures **0.95× the experts-on-CPU arm**, a real loss, while
+  gpt-oss at `M_e` = 64 measures **1.64×**. Past the floor it wins: **1.22× at `M_e` = 144 and 1.31×
+  at `M_e` = 192** [HW sweep 2026-08-27, 600 MHz pinned]. Whole-model prefill under the default:
+  **25.9 → 28.1 t/s** at pp512 → pp2048, i.e. 1.33× → 1.52× the CPU.
+- **Do not read gpt-oss's MoE ratio across to this model, or this one's across to a third.** A
+  per-expert ROW count cannot separate them — `M_e` = 96 is 1.77× on gpt-oss and roughly parity here.
+- **Its attention (MLA) stays on the CPU.** The FLASH_ATTN gate accepts DK≠DV and the primitive is
+  bit-faithful for MLA, but the DeepSeek path is not yet exercised on-device, so attention is CPU-side
+  here. What does reach the NPU below the expert floor: the large MLA projections, the 2 shared
+  experts, and `lm_head` — a modest but real win on its own.
+- **Faithfulness on the shipped placement:** differential wikitext PPL at `-c 2048` (which puts
+  `M_e` = 192, so the expert route is **active** — 4800 experts resident, 0 streamed). CPU 5.3063,
+  `ROCKET_MOE=0` 5.2906, default 5.2842. **Isolate the expert route by differencing the two NPU
+  arms**, not the default against the CPU: that reads **−0.121%, 8 paired chunks, 1.20 se —
+  indistinguishable from zero**, where default-vs-CPU (−0.416%) would credit the experts with the
+  dense fp16 path's own −0.296%. Read the paired per-chunk difference, never the finals: the
+  absolute error bar is ±2.5% and resolves nothing. Absolute PPL is not comparable to the archived
+  8.24, which was `-c 512`.
+- **Best use:** the second MoE architecture, and the one to re-run whenever the placement floors move.
 
 ### Speech-to-text models (transcribe.cpp, not llama.cpp)
 

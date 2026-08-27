@@ -34,18 +34,26 @@ prefill) where F16 fits a board, else the top precision that runs (tagged). Deco
 | Qwen3.5-9B | 9.0B | 25.9 → 24.9 | 3.6× → 3.5× | 3.6 | 5.3 | +0.05% |
 | Gemma-4-12B | 11.9B | 17.4 → 15.0 | 3.6× → 3.2× | 2.5 | 6.9 | −0.81% |
 | Phi-4 (14B) | 14.7B | 10.3 → 11.8 (Q4) | 2.9× → 3.5× | 2.2 | 8.3 | −0.31% |
-| DeepSeek-V2-Lite (MoE+MLA) | 15.7B | 24.0 → 23.9 (Q4) | 1.18× → 1.26× | 7.8 | 9.7 | −0.26% |
-| gpt-oss-20b (MoE) | 20.9B | 17.6 → 26.8 (MXFP4) | 1.34× → 2.16× | 7.2 | 11.3 | greedy-match |
+| DeepSeek-V2-Lite (MoE+MLA) | 15.7B | 26.0 → 28.4 (Q4) | 1.33× → 1.53× | 7.8 | 9.7 | −0.42% |
+| gpt-oss-20b (MoE) | 20.9B | 22.0 → 28.1 (MXFP4) | 1.81× → 2.38× | 7.2 | 11.3 | cosine 0.9998 † |
 | Qwen3.6-27B (hybrid) | 27.3B | 5.4 → 7.8 (Q4) | 3.0× → 4.4× | 1.1 | 15.9 | −0.26% |
+
+† gpt-oss is a reasoning model, so wikitext PPL is not a valid metric for it; its faithfulness is
+carried by the per-matmul cosine against an fp64 reference and by `test-rocket-moe`, not by a greedy
+match — see "The accept boundary" and the MoE gate table below for why the greedy comparison has no
+resolution here.
 
 The prefill × grows with model size — to Qwen3.6-27B's **4.4× at pp2048, the largest here** —
 because the CPU baseline degrades faster than the NPU as the matmuls grow. The exceptions are
-architectural: the **MoE expert FFNs** of gpt-oss-20b and DeepSeek-V2-Lite (1.26×) route through
-`MUL_MAT_ID` and stay on the CPU by default. gpt-oss's are the one case now measured with them
-**on** the NPU: `ROCKET_MOE=1` holds each quantized expert resident as native int8, which deletes
-the per-micro-batch host dequant that makes the naive expert offload a loss, and takes it to
-**2.16×** at pp2048 (the table row) from 1.12× with the experts on the CPU. It is opt-in because
-the win is conditional on nearly the whole expert stack fitting RAM. DeepSeek adds
+architectural: the **MoE expert FFNs** of gpt-oss-20b and DeepSeek-V2-Lite route through
+`MUL_MAT_ID`, which holds each quantized expert resident as native int8 and deletes the
+per-micro-batch host dequant that makes the naive expert offload a loss. It is **default-on** since
+2026-08-27 and takes gpt-oss to **2.38×** at pp2048 from 1.15× with the experts on the CPU. The
+default claims an expert op only where a residency **pre-flight** can reserve the whole stack before
+ingesting it *and* the per-expert GEMM carries enough work to pay for its own dispatch
+(`M_e · K · N`, where `M_e` = `n_tokens · n_used / n_expert`) — so DeepSeek's 6-of-64 routing over a
+2048×1408 expert keeps its experts on the CPU at short prefill and moves them onto the NPU past
+~1250 tokens. DeepSeek adds
 **MLA** attention (the FA gate accepts DK≠DV and is bit-faithful, but its DeepSeek FA path is not
 yet exercised on-device, so attention stays on the CPU here). Qwen3.6-27B's
 **Gated-DeltaNet** hybrid keeps its linear-attention layers on the CPU but they do not gate the
@@ -222,32 +230,154 @@ This is the MoE model, and the whole question it asks is what to do with the exp
 routes them through `GGML_OP_MUL_MAT_ID`, and they are the bulk of prefill FLOPs (~75%); the dense
 attention projections and `lm_head` are the rest.
 
-> **`-ub` is not a free choice on this model, and mixing it is the classic trap.** Every number
-> below is `-b 2048 -ub 2048`, and that is the setting to run the expert route at. Two mechanisms
-> make a smaller micro-batch cost it, and **neither is the per-expert dequant** — native-quant
-> ingests each expert once and deletes that. (a) The **dense** MXFP4 weights are not in the expert
-> cache and still re-dequantize per micro-batch, so `-ub 512` decodes them four times over.
-> (b) Each expert receives only `n_tokens · n_used / n_expert` rows — 64 at `-ub 512` vs 256 at
-> `-ub 2048` — while the per-expert dispatch, gather, scatter and bucket padding around the GEMM
-> stay flat, so a quarter of the rows buys nearly the same overhead. **The native route was not
-> measured at `-ub 512`**; the familiar "`-ub 512` collapses MoE" figure belongs to the fp16
-> streaming route. Meanwhile `-ub 2048` makes the *dense* graph slower here, and the CPU does not
-> care either way — so there is no single best `-ub`, only a per-configuration one. An earlier
-> `-ub 512` NPU-default figure of 13.11 t/s at pp2048 circulated as a baseline and caused a
-> nonexistent "regression" to be chased: the like-for-like `-ub 2048` figure was always ~11.
+> **`-ub` costs this model something, but it does not collapse it, and mixing `-ub` between arms
+> is the classic trap.** The headline table is `-b 2048 -ub 2048`, which is the setting to run the
+> expert route at. Two mechanisms make a smaller micro-batch cost it, and **neither is the
+> per-expert dequant** — native-quant ingests each expert once and deletes that. (a) The **dense**
+> MXFP4 weights are not in the expert cache and still re-dequantize per micro-batch, so `-ub 512`
+> decodes them four times over. (b) Each expert receives only `n_tokens · n_used / n_expert` rows —
+> 64 at `-ub 512` vs 256 at `-ub 2048` — while the per-expert dispatch, gather, scatter and bucket
+> padding around the GEMM stay flat.
+>
+> **Now measured at `-ub 512`** [HW sweep 2026-08-27, 600 MHz]: **22.2 (21.7-22.7) / 22.5 (22.4-22.8)**
+> at pp512 / pp2048 against **14.13 / 13.53** with the experts on the CPU — about **1.6× / 1.7×**,
+> against 22.0 / 28.1 at `-ub 2048`. So the two mechanisms together cost ~20% at pp2048 and nothing at pp512, and the
+> route is a clear win at the llama.cpp default micro-batch. **Do not quote the "`-ub 512` collapses
+> MoE" figure at it** — that ~0.42× belongs to the fp16 streaming route, whose per-micro-batch
+> dequant is exactly what a smaller `-ub` multiplies and which the native route does not pay.
+> Meanwhile `-ub 2048` makes the *dense* graph slower here, and the CPU does not care either way —
+> so there is no single best `-ub`, only a per-configuration one. An earlier `-ub 512` NPU-default
+> figure of 13.11 t/s at pp2048 circulated as a baseline and caused a nonexistent "regression" to be
+> chased: the like-for-like `-ub 2048` figure was always ~11.
 
-**Prefill — prompt processing, t/s (MXFP4, `-b 2048 -ub 2048`).**
+**Prefill — prompt processing, t/s (MXFP4, `-b 2048 -ub 2048`).** The expert route is
+**default-on** as of 2026-08-27, behind a residency pre-flight; `ROCKET_MOE=1` additionally claims
+what the pre-flight declines. [HW sweep 2026-08-27, 600 MHz, governor `performance`, one board, one
+`.so`, llama.cpp 171974745.]
 
-| test | CPU | NPU, experts on CPU | **NPU, native-quant experts** (`ROCKET_MOE=1`) |
-|---|---:|---:|---:|
-| pp512  | 13.09 | 14.11 (1.08×) | **17.57 (1.34×)** |
-| pp1024 | 12.99 | 14.29 (1.10×) | **24.38 (1.88×)** |
-| pp2048 | 12.40 | 13.89 (1.12×) | **26.78 (2.16×)** |
+| test | CPU | NPU, `ROCKET_MOE=0` | **NPU, default** | NPU, `ROCKET_MOE=1` |
+|---|---:|---:|---:|---:|
+| pp512  | 12.17 | 14.08 (1.16×) | **22.0 (1.81×)** | 24.81 (2.04×) |
+| pp2048 | 11.80 | 13.62 (1.15×) | **28.1 (2.38×)** | 34.01 (2.88×) |
+
+**The default column is a mean of six runs, and that is deliberate.** Its spread is 20.5–22.8 at
+pp512 and 26.9–28.7 at pp2048, at *identical* placement every time (63 of 72 stacks, 1656 experts,
+0 streamed). One run landed at the bottom of it directly after a rebuild and read as a 10% regression;
+the discriminator was the `ROCKET_MOE=0` control, which returned **13.63 at pp2048 on every binary and
+every repetition** — so the board had not drifted and the spread belongs to this arm. A single sample
+of the offloaded arm is not a measurement of it; the control is what says so.
+
+The earlier session's matrix — CPU 13.09 / 12.40, experts-on-CPU 14.11 / 13.89, experts-on-NPU
+17.57 / 26.78 at pp512 / pp2048 [HW sweep 2026-07-14, llama.cpp a646006f0] — is a **different
+llama.cpp and a different driver build**, so the two are not row-comparable; each is internally
+consistent and the ratios agree in direction.
 
 **The expert route is the model's whole story.** Holding the routed experts on the NPU as native int8
-is **1.93× the NPU-default** and **2.16× the CPU** at pp2048, and it wins at every prefill length. CPU
-prefill is itself unusually fast here (~12–13 t/s, vs ~7 for a dense 8B) because only ~3.6 B params
-are active per token — so 2.16× is against a strong baseline.
+is **2.06× the experts-on-CPU arm** and **2.38× the CPU** at pp2048, and it wins at every prefill
+length. CPU prefill is itself unusually fast here (~12 t/s, vs ~7 for a dense 8B) because only ~3.6 B
+params are active per token — so that is against a strong baseline.
+
+**The default is deliberately not the peak.** The pre-flight reserves a whole expert stack before
+claiming its op, and reserving charges all `n_expert` experts where the lazy admission it front-runs
+charges only the ~82% the router exercises — so the default takes 63 of 72 stacks (100% resident, **0
+streamed**) where `ROCKET_MOE=1` takes all 72. That costs 8% at pp512 and 16% at pp2048. What it buys
+is the **sign**: on a board that does not fit the stack the default is still above the experts-on-CPU
+baseline, where `ROCKET_MOE=1` is **below** it — at an induced 12 GB budget the forced arm falls to
+52% resident and reads **13.63 at pp512 against 14.08**, while the default's 30 fully-resident stacks
+read **17.02 (1.21×)**. A user with RAM to spare buys the peak back with `ROCKET_MOE_CACHE_MB`, which
+keeps the zero-streamed property, rather than with `ROCKET_MOE=1`, which does not.
+
+**"Any streaming is a cliff" is too strong**, and it was the premise the pre-flight was designed
+against. **91% resident was the fastest arm measured.** The crossover sits between **52% and 82%**;
+no run has bracketed it more tightly.
+
+### The accept boundary, and why the per-expert ROW count is the wrong handle
+
+The gate that keeps a small expert GEMM on the CPU first sat at the tile granule — 64 rows, the
+smallest tile the resident path can run — placed there **by mechanism rather than measured as the
+edge**. Mapping `M_e` = `n_tokens · n_used / n_expert` against `default ÷ ROCKET_MOE=0` over
+`-p 512,768,1024,1536,2048` on both MoE models says the granule is not where the sign changes, and
+says something stronger: **`M_e` is not a quantity a single threshold can be put on.**
+[HW sweep 2026-08-27, RK1, 600 MHz pinned, governor `performance`, `-b 2048 -ub 2048`, `-r 3`,
+one board and one `.so`; 100% resident and 0 streamed in every offloaded cell, so nothing here is
+a residency effect.]
+
+| | `M_e` | work per dispatch | `ROCKET_MOE=0` | default | ratio |
+|---|---:|---:|---:|---:|---:|
+| **gpt-oss-20b**, 4-of-32, expert GEMM 2880×2880 | 64 | 5.31e8 | 14.08 | 23.08 | **1.64×** |
+| | 96 | 7.96e8 | 14.22 | 25.13 | **1.77×** |
+| | 128 | 1.06e9 | 14.10 | 26.92 | **1.91×** |
+| | 192 | 1.59e9 | 13.88 | 28.38 | **2.05×** |
+| | 256 | 2.12e9 | 13.64 | 28.30 | **2.08×** |
+| **DeepSeek-V2-Lite**, 6-of-64, expert GEMM 2048×1408 | 48 | 1.38e8 | 25.94 | 26.03 | 1.00 (declined) |
+| | 72 | 2.08e8 | 26.35 | 24.86 | **0.94×** |
+| | 96 | 2.77e8 | 23.06 | 24.18 | 1.049× *(marginal)* |
+| | 144 | 4.15e8 | 22.33 | 27.20 | **1.22×** |
+| | 192 | 5.54e8 | 21.60 | 28.37 | **1.31×** |
+
+**How many pairs each cell got is set by its distance from 1.00, not by the cell.** The offloaded
+arm varies ~15% run to run on DeepSeek, so a cell a few percent from parity needs repeats and one
+at 1.6–2.1× does not. `M_e` = 72 and 144 are means of **four** adjacent pairs; `M_e` = 96 is
+**eight**, because it is the cell that decides where the threshold goes; `M_e` = 192 is two, taken
+either side of the rebuild; every gpt-oss cell is a single pair, its margin an order of magnitude
+outside the same spread.
+
+**The `M_e` = 96 cell is why that budget was spent.** One of its eight pairs read **0.936** and the
+other seven read **1.019–1.076** — all eight placement-identical (4767 resident, 0 streamed, the
+same ingest profile), so nothing but variance separates them and there is no mechanistic ground to
+drop the low one. Pooled it is **1.049**; over the seven repeats alone, 1.065. Either way it is
+marginal, and marginal is the verdict that matters.
+
+The `M_e` = 48 row is the null cell: the shipped floor declines it, so both arms are the same
+placement, and they agree to 0.3% — which is what says the harness is measuring the gate and not
+the weather.
+
+**gpt-oss wins 1.64× at `M_e` = 64 while DeepSeek loses 5–6% at `M_e` = 72** — four pairs, every one
+under 1.00, none above 0.970 — so any row floor low enough to admit the first admits the second. No
+value of a row floor separates them. And the loss at `M_e` = 72 belongs to the **route**, not the
+gate: AUTO admits every DeepSeek stack at every prefill length, so `ROCKET_MOE=1` is the same
+placement there, and it reads 25.55 against the same 26.35 control.
+
+**What the floor is actually amortising is a per-DISPATCH cost.** One gather, one per-`(row, K-group)`
+activation quantize, one submit, one fence, one scatter, per `(op, expert-with-rows)`. The work a
+dispatch carries is `M_e · K · N`, so the NPU beats the CPU on that expert when
+`fixed_dispatch < M_e · K · N · (1/rate_cpu − 1/rate_npu)` — a threshold on the **product**, for
+which `M_e` is a proxy only while `K · N` is held constant. It is not: gpt-oss's expert GEMM is
+**2.88× larger** than DeepSeek's at the same row count, which is the whole of the discrepancy above.
+Against that quantity the cells sort with no overlap on two architectures at once: the one clear
+loser sits at **2.08e8** MACs, the boundary cell at **2.77e8** is a marginal **1.049×** (eight pairs,
+0.94–1.08) that does not repay its own ingest, and every materially winning cell is at or over
+**4.15e8**. The shipped threshold is the geometric midpoint of that last gap, **340 mega-MACs**.
+
+**The rival the map sets aside.** The bucket ladder rounds `M_e` up (64, 96, 128, 192, 256…), so
+DeepSeek's points alternate 33% padding (72 → 96, 144 → 192) with none (96 → 96, 192 → 192) — and
+padding predicts a **sawtooth**, each step onto an unpadded rung steeper than the step off one. The
+measured curve is monotone and **saturating** instead: per-row slopes of **0.0042, 0.0037, 0.0018**
+across `M_e` 72 → 96 → 144 → 192, so one step agrees with the sawtooth and the next contradicts it,
+while a falling slope is exactly what amortising a fixed per-dispatch cost looks like. Padding is
+capped at ~33% by construction and is not the term that flips the sign.
+
+**The floor is a materiality bar, not `> 1.00`, and the ingest is why.** The one-time expert ingest
+(~32 s per `llama_context` on DeepSeek, ~36 s on gpt-oss) is charged **only if the gate accepts**, so
+the gate is the one place it can be avoided. An offload at ratio `r` saves `1 − 1/r` of prefill wall,
+so the ingest breaks even after:
+
+| cell | ratio | saves | breaks even after |
+|---|---:|---:|---:|
+| DeepSeek `M_e` = 96 | 1.05× | 4.8% | ~16 300 tokens of prefill at that shape |
+| DeepSeek `M_e` = 144 | 1.22× | 18.0% | ~4 800 tokens |
+| DeepSeek `M_e` = 192 | 1.31× | 23.7% | ~3 800 tokens |
+| gpt-oss `M_e` = 64 | 1.64× | 39.0% | ~2 100 tokens |
+
+A cell a few percent above parity therefore costs a short session more than it saves, which is what
+makes a bar above 1.00 the correct default rather than a cautious one.
+
+**Scope.** The form is derived; the threshold is **fitted on two architectures** and should be read as
+a measured boundary rather than a bound. What the form does not carry is `rate_cpu` — gpt-oss at
+5.31e8 wins 1.64× where DeepSeek at 5.54e8 wins 1.31×, same work per dispatch and a different margin,
+because their CPU kernels differ (MXFP4 against Q4_K). A third MoE architecture is where the number
+gets tested, and it will move placement there: a 128-expert/8-used model with a 2048×768 expert sits
+at 201 MMAC at `M_e` = 128, which a row floor accepts and this one declines.
 
 **Why it works, and why the obvious alternative does not.** A quantized expert on the *streaming*
 route is dequantized to fp16 on the host **every micro-batch**, and that decode is **independent of
@@ -318,31 +448,53 @@ passed while the bug was live, which is exactly what happened before.
 
 | gate | result |
 |---|---|
-| **per-matmul cosine** vs an fp64 CPU reference, on **real weights and real activations** (one expert per `MUL_MAT_ID` op, rotating across every layer / projection / expert) | **mean 0.999821, min 0.998980** over 50 expert GEMMs |
-| **greedy match** vs the CPU (`--temp 0`, same seed, 48 tokens) | native-quant experts diverge at token ~35 — **no earlier and no worse than the experts-on-CPU NPU path**, which diverges identically |
+| **per-matmul cosine** vs an fp64 CPU reference, on **real weights and real activations** (one expert per `MUL_MAT_ID` op, rotating across every layer / projection / expert) | **mean 0.999821, min 0.998980** over 50 expert GEMMs under `ROCKET_MOE=1`; **mean 0.999815, min 0.998976** over 55 on the **shipped** placement [2026-08-27] — the two placements are numerically the same |
+| **greedy match** vs the CPU (`--temp 0`, same seed, 48 tokens) | *see below — this gate has no resolution* |
 | synthetic route gate (`test-rocket-moe`, 7/7, outlier-channel activations) | MXFP4 0.9999 / Q4_K 0.9999 / Q8_0 0.9999 |
+| **differential PPL on the SHIPPED placement**, DeepSeek-V2-Lite, `-c 2048` (`M_e` = 192, route active) | **−0.121% against the experts-on-CPU arm**, 8 paired chunks, 1.20 se — indistinguishable from zero |
 
-Read the greedy row carefully: the NPU path *without any MoE offload* diverges from the CPU in the
-same place, so that divergence is the known fp16-prefill vs fp32-CPU greedy-boundary flip — late,
-coherent, and expected — **not** the expert route. And the cosine number is the one that matters for
-the int8 question: it is above the synthetic prediction (0.9994) and far above the **0.98** that
-already proved token-identical for int4+Hadamard, so int8 **activations** survive the real
-outlier-channel distribution with no Hadamard rotation.
+The **cosine** is the number that matters for the int8 question: it is above the synthetic
+prediction (0.9994) and far above the **0.98** that already proved token-identical for
+int4+Hadamard, so int8 **activations** survive the real outlier-channel distribution with no
+Hadamard rotation.
+
+**The greedy row was retired, and how it failed is worth keeping.** It originally read "the
+native-quant arm diverges at token ~35 — no earlier and no worse than the experts-on-CPU path,
+which diverges identically", and that equality was taken as evidence the expert route adds nothing.
+Re-run on a later binary against the shipped placement, the two arms diverge at **word 16 and word
+10**: they do not track each other, and one prompt could never have shown that they do. The
+mechanism says why — a 0.9998 cosine is excellent and is still enough to flip an argmax wherever the
+top two logits are close, at a position nothing controls. **"Which arm flips first" is a weighted
+coin, not a faithfulness measure.** What the greedy comparison can still see is whether the text
+stays coherent (it does, on every arm) and whether divergence is *early and large* rather than early
+and small. The quantitative legs — the cosine and the differential PPL — are what carry this now.
+
+**The differential PPL is the leg that gates composition, and it must be read paired.** The absolute
+error bar at 8 chunks is ±2.5% and resolves nothing; pairing on the same chunks cancels the variance
+both arms share and gives ~0.10% in PPL terms. Isolating the expert route means differencing the two
+**NPU** arms, not the default against the CPU — both carry the same dense fp16 offload, and the
+dense path is itself −0.296% (3.74 se, all eight chunks negative), which would otherwise be credited
+to the experts.
 
 **Verdict.** The `MUL_MAT_ID` handler closes the op-coverage gap, and with the experts held resident on
-the NPU as **native int8** it is a **2.16× prefill win** at pp2048 (1.34× at pp512 — it wins at every
-length). The **fp16 streaming** expert route still loses (4.59 / 10.18), and that is the finding the
+the NPU as **native int8** it is a **2.38× prefill win** at pp2048 (1.81× at pp512 — it wins at every
+length on this model; eligibility on another is per architecture, see "The accept boundary"). The **fp16 streaming** expert route still loses (4.59 / 10.18), and that is the finding the
 earlier verdict recorded: the datatype was never the blocker (MXFP4 dequants fine); the blocker is that
 streaming per-expert dequant costs more than the small-`M_e` GEMM saves, which the CPU's fused quant
 kernel sidesteps. **The native-quant route removes that dequant entirely, which is the whole win** —
 quantization here buys residency, and residency buys the speed.
 
-`ROCKET_MOE` remains **opt-in**, but for a new reason: the win is conditional on nearly the whole
-expert stack fitting RAM (99% resident wins; 82% resident *loses* at short prefill), so its **sign
-depends on the host's memory** — and a default whose sign depends on the machine is not a default. A
-pre-flight residency check in `supports_op` would make it unconditional; until then the backend warns
-when residency lands under ~95%. Recommended invocation on a 31 GiB board: `ROCKET_MOE=1` with
-`-b 2048 -ub 2048`, and expect a one-time ~70 s expert ingest at the first prefill.
+`ROCKET_MOE` is **default-on** as of 2026-08-27. What made it opt-in was that its sign depended on the
+host's memory, and the **residency pre-flight** removes that dependence rather than documenting it: an
+expert stack's resident cost is knowable from its tensor alone, so `supports_op` reserves the whole
+stack before the first ingest and leaves on the CPU what it cannot reserve. The result is bounded
+below by the experts-on-CPU baseline at every budget. Two things the flip cost, both measured rather
+than assumed: the reservation is more conservative than the lazy admission it front-runs, so the
+default gives up **6–13% at pp512 and 18–21% at pp2048** against `ROCKET_MOE=1` on a board that
+nearly fits, most of which `ROCKET_MOE_CACHE_MB` buys back without giving up the sign guarantee; and the flip as first
+written **regressed DeepSeek-V2-Lite 27% at pp512** at 100% residency, which is what added the
+per-expert size floors. Recommended invocation on a 31 GiB board: the default, with `-b 2048 -ub 2048`,
+and expect a one-time expert ingest at the first prefill, per `llama_context`: **~36 s** here (9.5–10.4 s MXFP4→int8 decode, 26.0–27.1 s NPU-BO pack, five samples). The pack half is **bytes-bound at ~505 MB/s**, not per-expert — DeepSeek-V2-Lite pays the same ~27 s for 2.9× as many experts holding the same ~14 GB.
 
 ### Qwen3.5-9B
 
@@ -851,11 +1003,12 @@ dense models' 3×+, because attention (MLA, on the CPU here) and the routed expe
 the graph — stay on the CPU. CPU prefill is itself brisk (~19–20 t/s for a 16 B model, same-session CPU
 20.40 / 19.93 / 18.99) because only ~2.4 B params are active per token.
 
-**Offloading the routed experts (`ROCKET_MOE=1`) — measured, kept opt-in.** As on gpt-oss, enabling the
-`MUL_MAT_ID` handler *drops* prefill, and here the loss is **larger** — DeepSeek's CPU is faster and its
-default NPU already wins, so there is more to give up (`-ub 2048`, same-session):
+**Offloading the routed experts — the fp16 streaming route, which is the negative that closed.** On
+that route the `MUL_MAT_ID` handler *drops* prefill, and here the loss is **larger** than gpt-oss's —
+DeepSeek's CPU is faster and its default NPU already wins, so there is more to give up (`-ub 2048`,
+same-session, `ROCKET_MOE=1 ROCKET_MOE_NATIVE=0` in today's spelling):
 
-| test | CPU | NPU (`ROCKET_MOE=1`) |
+| test | CPU | NPU (fp16 expert route) |
 |---|---|---|
 | pp512  | 20.40 | 5.05 (0.25×) |
 | pp1024 | 19.93 | 7.82 (0.39×) |
@@ -864,7 +1017,32 @@ default NPU already wins, so there is more to give up (`-ub 2048`, same-session)
 Same dequant-bound cause as gpt-oss (each of the 64 routed experts' Q4_K weights dequantized to fp16 on
 the host every micro-batch, amortized over only `M_e ≈ n_tokens·6/64` rows), and worse here because the
 routed experts are smaller (K=2048, N=1408) and more numerous, so the per-expert dequant + dispatch
-overhead is a larger share. So the handler stays off by default; the routed experts run faithfully on
+overhead is a larger share.
+
+**The native-quant route on DeepSeek — measured, and it is PREFILL-LENGTH-DEPENDENT.** This is the
+model that showed a residency-independent failure mode, so read it before assuming the gpt-oss result
+ports. [HW sweep 2026-08-27, 600 MHz, governor `performance`, one board, one `.so`.]
+
+| test | CPU | NPU, `ROCKET_MOE=0` | NPU, experts on the NPU |
+|---|---:|---:|---:|
+| pp512  | 19.54 | **26.04** | 19.09 (**0.73× the experts-on-CPU arm**) |
+| pp2048 | 18.50 | 21.63 | **27.9 (1.29×)** |
+
+The pp512 row is a **27% regression at 100% residency, 0 streamed** — so it is not the partial-residency
+mechanism at all. The rows an expert receives are `n_tokens · n_used / n_expert`, which is an
+**architecture** property and not a prompt one: DeepSeek routes **6 of 64**, so 512 tokens give each
+expert ~**48** rows — *below* the 64-row granule its GEMM is then padded up to, and the padded rows are
+computed and read back in full. gpt-oss routes 4 of 32, so the same token count gives it 64 rows, at
+the granule, and it wins. At pp2048 DeepSeek gets `M_e` ≈ 192, clears the floor, and wins 1.28×.
+
+The backend's default gate therefore requires `M_e ≥ ROCKET_MOE_M_BUCKET`, which declines DeepSeek's
+experts at short prefill and takes them at long — the same model, placed differently by length.
+Confirmed on device: with the floor in place DeepSeek pp512 reads **25.9**, i.e. the experts-on-CPU
+number restored. **A residency check alone would not have caught this**, which is the transferable
+lesson: `MUL_MAT_ID` placement has two independent failure modes, and one of them is invisible to the
+residency instrument.
+
+On the fp16 route the routed experts run faithfully on
 the CPU.
 
 **Decode — generation, t/s (CPU-bound on both, LPDDR-bandwidth-limited).**
@@ -906,14 +1084,15 @@ rate — MLA decode cost grows with the filled latent KV cache), so the **RAG** 
 per-chunk stderr — the default offloads and the `MUL_MAT_ID` **expert** offload (−0.29%) are both
 faithful. The handler's problem is purely speed, not accuracy (matching `test-rocket-moe` cos = 1.000000).
 
-**Verdict.** DeepSeek-V2-Lite stacks **MLA attention** and **MoE** in one model; both gaps now have op-level
-handlers, but neither is a default win. MLA's asymmetric head dims (DK=192 ≠ DV=128) once failed the
+**Verdict.** DeepSeek-V2-Lite stacks **MLA attention** and **MoE** in one model; both gaps now have
+op-level handlers, and the MoE one is a default win **at long prefill only**. MLA's asymmetric head dims (DK=192 ≠ DV=128) once failed the
 FLASH_ATTN `DK==DV` contract; the gate is now **relaxed to accept DK≠DV** (bit-faithful primitive), so
 the MLA FA primitive is ready — but the DeepSeek DL-backend FA path is not yet exercised on-device, and
-it is dispatch-bound and pp-neutral at these lengths, so attention stays on the CPU. The routed experts have a `MUL_MAT_ID` handler, but offloading the quantized
-experts **loses harder than gpt-oss** (0.25×→0.59× the CPU; DeepSeek's faster CPU and winning default NPU
-leave more to give up), so it too is opt-in. By default, then, the MLA projections + 2 shared experts +
-`lm_head` offload for a **modest, real 1.18–1.26×** prefill — larger than gpt-oss's ~1.04× (bigger dense
+it is dispatch-bound and pp-neutral at these lengths, so attention stays on the CPU. The routed experts
+take the **native-quant** route by default at pp2048 (1.31× over the experts-on-CPU arm) and stay on the
+CPU below the per-dispatch work floor; the old **fp16** expert route loses harder here than on gpt-oss
+(0.25×→0.59× the CPU) and is never taken by default. Below the floor, then, the MLA projections +
+2 shared experts + `lm_head` offload for a **modest, real 1.18–1.26×** prefill — larger than gpt-oss's ~1.04× (bigger dense
 projections), below the dense models' 3×+ — faithful. The remaining moves are a **default** MoE win
 (native-quant experts / resident caching) and engaging MLA at the long context where it pays.
 

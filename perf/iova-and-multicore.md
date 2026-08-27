@@ -32,8 +32,9 @@ processes spend the same budget. Freshly booted it serves about the same total �
 buffers of any size from 16 MB to 256 MB, against `rocket`'s 4.00 — so the two start
 equivalent and diverge only in how that budget is shared and in what happens next.
 
-**On that driver the window is consumed permanently by workloads that map through the kernel's
-generic path, and it does not recover.** The consumer is the mapping route, not elapsed time:
+**On that driver the window is consumed by workloads that map through the kernel's generic
+path, and nothing in normal operation gives it back.** The consumer is the mapping route, not
+elapsed time:
 one `llama.cpp` 2048-token prefill (Llama-3.2-3B F16) run with `RKNPU_MEM_IOMMU_LIMIT_IOVA_ALIGNMENT`
 **clear** costs the shared domain 5–11 of its 31 128 MB buffers in 153 s, and the loss outlives
 the process. With that flag **set** — the `librocketnpu` provider's default — the identical run
@@ -42,14 +43,87 @@ byte-identical [HW sweep, RK3588, `rknpu` 0.9.8, 2026-08-25]. Because the domain
 process that used it, a reboot is the only reset; detaching and re-attaching the device (the
 driver's own soft reset) re-uses the same domain object and does not rebuild the allocator.
 
-**The mechanism is not identified, and no static probe distinguishes the two routes.** Allocating
-one size until refusal returns identical counts *and identical addresses* on both routes at 16, 32,
-32.03, 48, 64, 128 and 192 MB, so the difference lives in the real workload's allocation pattern
-rather than in the allocator's steady-state behaviour. Nor is it the error path: every one of five
-prefill runs across both routes reported **zero** kernel allocation failures. Synthetic instruments
-do not reproduce it — a mixed-size allocate/free cycle on either route, ten rounds of processes
-alternating the flag, three concurrent overlapping processes mixing it, a full gate suite, and a
-process killed mid-submit each cost the domain nothing measurable. Only the real workload moves it.
+**The mechanism is the kernel's IOVA rcache, and the driver reaches it by mixing two
+allocators on one domain.** The two routes do not differ in size rounding or in placement — they
+differ in which allocator they use, and therefore in where a *freed* range goes. With the flag set
+the driver calls `alloc_iova()` / `free_iova()`, which are the rbtree directly. With it clear the
+mapping falls to the generic `dma_map_sg()`, hence `alloc_iova_fast()` / `free_iova_fast()`, which
+go through the per-CPU IOVA **rcache**. `free_iova_fast()` parks the range in a per-CPU magazine or
+the global depot and only falls through to `free_iova()` when that fails, and **`alloc_iova()` never
+consults the rcache** — so address space freed on the generic route becomes unreachable to the
+driver's own route. The rcache belongs to the `iova_domain`, which here is one domain shared
+process-wide, which is why the loss outlives the process that caused it. Mixing the two allocators
+on a single domain is the defect; either one used consistently is sound.
+
+`iova_rcache_insert()` accepts only sizes up to `2^(IOVA_RANGE_CACHE_MAX_SIZE-1)` = 32 pages =
+**128 KB**, and that bound is what makes the effect reproducible and what hid it for three
+attempts. Churning 4400 buffers through the generic route and freeing every one
+[HW sweep, RK3588, `rknpu` 0.9.8, 2026-08-26, fresh domain per arm, capacity measured on the
+tight route]:
+
+| churn size | route | 16 MB | 64 MB | 128 MB | 192 MB | consumed |
+|---|---|---|---|---|---|---|
+| fresh | — | 255 | 63 | 31 | 21 | — |
+| **128 KB** | generic | 221 | 55 | **27** | 18 | **34 / 8 / 4 / 3** |
+| 256 KB | generic | 255 | 63 | 31 | 21 | 0 |
+| **132 KB** (one page over) | generic | 255 | 63 | 31 | 21 | **0** |
+| 128 KB | tight | 255 | 63 | 31 | 21 | 0 |
+
+The effect is route-selective and size-selective **at exactly the 32-page boundary** — one page
+over and it vanishes, while twice the address space at 256 KB costs nothing. Three quantitative
+checks agree: the 34 x 16 MB lost is 544 MB against the 540 MB a single-threaded run can park
+(one CPU's two magazines plus the 32-magazine depot, 4318 ranges x 128 KB); a second identical
+churn costs only 3 more and a third only 1, because the cache is already at its ceiling; and
+spreading the churn over 8 CPUs and all six cached orders costs **10 of 31** 128 MB buffers,
+against the **11** one real 153 s prefill costs. The synthetic now reproduces the workload.
+
+**This is why every earlier probe read zero.** `iova_probe` allocates 16-192 MB and the
+mixed-size fragmenter cycles 1-23 MB; every size either of them frees is far above the 128 KB
+rcache bound, so none of their frees could enter the cache at any flag value. A probe that
+allocates one size also cannot separate the routes at all — on an empty domain both return
+identical counts *and* identical addresses at 16, 32, 32.03, 48, 64, 128 and 192 MB. Nor is it
+the error path: every one of five prefill runs across both routes reported **zero** kernel
+allocation failures.
+
+**The kernel's safety valve exists, it works, and it hangs off the wrong allocator.**
+`alloc_iova_fast()` flushes every online CPU's magazines and the whole depot when it cannot
+satisfy a request, then retries — so the route that fills the cache can always empty it again,
+and allocating to refusal on the generic route **repairs the domain outright**
+[HW sweep, RK3588, `rknpu` 0.9.8, 2026-08-26, one boot, addresses recorded]:
+
+| step | measuring route | 128 MB BOs | address span |
+|---|---|---|---|
+| fresh | tight | 31 | `0x8000000`–`0xffffffff` |
+| fresh | generic | 31 | same |
+| after a 128 KB generic churn | tight | **27** | `0x5a00000`–`0xdd9fffff` |
+| same domain | **generic** | **31** | `0x8000000`–`0xffffffff` |
+| after that generic pass | tight | **31** | recovered |
+
+The 550 MB the degraded tight route cannot reach sits in one block above `0xdda00000` — the
+rcache ceiling to the megabyte — and comes back whole. The workload-shaped churn behaves the
+same: 8 CPUs across all six cached orders take 255/63/31/21 to 213/53/26/17, and one generic
+pass restores **255/63/31/21**.
+
+`alloc_iova()` has no such path, and `free_cpu_cached_iovas()` / `free_global_cached_iovas()`
+are **static to `iova.c`** and unexported — so a driver allocating that way cannot ask for the
+parked space back at all. It returns `-ENOMEM` with hundreds of megabytes sitting in a cache it
+has no way to see or drain. **That, rather than "mixing allocators leaks", is the precise
+defect**: the leaking route can always clean up after itself, and the route that never leaks is
+the one that pays.
+
+Two things about measuring this. A route that **repairs** the domain and a route that is
+**blind** to the loss return the same number, so separating them takes a third measurement —
+re-read on the route that showed the loss, after the other route has run. Without that step a
+repair is recorded as blindness. And two fixed route properties read as degradation if the
+routes are mixed inside one before/after comparison: the generic route allocates size-**aligned**,
+so a fresh domain serves it **15** buffers of 192 MB against the tight route's 21 (192 MB rounds
+its alignment to 256 MB), and the tight route packs below the generic route's first address.
+Take both halves of any comparison on one route.
+
+**The leaking route is the vendor default.** `RKNPU_MEM_IOMMU_LIMIT_IOVA_ALIGNMENT` is an opt-in
+bit at buffer creation, so a userspace that does not set it — which is the stock path — takes the
+generic route and leaks. `librocketnpu`'s provider sets it by default, which is the whole reason
+the tight route is the default there.
 
 Two consequences for anyone driving that path. A large allocation failure there is **transient
 rather than structural** — retrying at a smaller size is usually served, which is what

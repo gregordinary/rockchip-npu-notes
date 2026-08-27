@@ -98,22 +98,79 @@ surfaces get monotonically **sparser** with the field value, ending at one live 
 channel — the structure a scatter into a stride-dilated grid leaves, and the strongest
 evidence that this is a transposed convolution rather than a corrupted fetch.
 
-**What is not decoded**: whether the field is `s` or `log2(s)` or `s−1`, what output geometry
-the mode produces (the probe drives the forward geometry registers, so its surface is at best
-a window of the real result), and what layout the mode wants the kernel in — in particular
-whether it still needs the 180° flip and the in/out-channel swap that the lowering does on
-the host. Nothing here is a working transposed convolution yet.
+### The geometry, decoded
 
-**Why it is worth finishing.** The lowering above pays `s²` zero-MACs, so a stride-2 decoder
-layer does 4× the arithmetic it needs; the hardware mode would remove that outright, and it
-would also remove the host-side dilate-and-pad materialisation, which allocates and writes an
-input `s²` times larger. Segmentation heads, depth decoders and FPN upsamples are all stride
-2. The sub-pixel decomposition in the section above is the software alternative to the same
-win — the hardware mode, if its geometry decodes, is strictly better.
+**The field is `s−1`, and the mode is a hardware INTERIOR DILATION of the input**
+[HW sweep, Turing RK1 at 600 MHz, `tests/deconv_geometry_probe.c` +
+`tests/deconv_arith_probe.c`].
+
+The instrument is an **impulse**: one non-zero input element at `(r,c)`, one non-zero filter
+`(oc0,ic0)` holding 1..9, everything else zero. Output channel 0 then holds exactly one copy
+of the kernel and its ADDRESS is the measurement — a count of differing elements, which is
+all the table above has, cannot say where the mode puts its result.
+
+| field | box start, impulse row 2 | impulse row 3 | step |
+|---|---|---|---|
+| 0 | 0 | 1 | 1 |
+| 1 | 2 | 4 | 2 |
+| 3 | 6 | 10 | 4 |
+| 7 | 14 | (off the 22-row canvas) | 8 |
+
+So the box starts at **`s·r − (k−1)` with `s = field + 1`**, and the kernel arrives
+**FLIPPED** — the same orientation the plain forward correlation gives. Placement at `s·r`
+with a flipped kernel and a `−(k−1)` offset is exactly a forward correlation over an input
+interior-dilated by `s`, which is the textbook transposed-convolution identity
+`ConvTranspose(x,W,s,p) == Conv(dilate_s(x), flip(W), 1, k−1−p)`.
+
+**Confirmed on dense data against the independent oracle**: driving the undilated input, a
+180°-flipped kernel and the `[OC][IC] ← [IC][OC]` channel transpose gives a result
+**bit-exact** against `rocket_conv_transpose2d_ref_fp16` — 1568 elements at `s=2` and 5408 at
+`s=4`, zero mismatches. An impulse alone could not have shown this: it never exercises the
+accumulation where two scattered copies overlap.
+
+**The caller still owes both host-side transforms.** The spatial 180° flip and the in/out
+channel transpose are NOT done by the mode; only the dilation is. Getting either wrong
+computes a full, correctly-sized, entirely plausible surface, which is this datapath's
+signature failure.
+
+### The pad reaches the dilated surface, and the pad field is 4 bits
+
+`CNA_PAD_CON0`'s `PAD_TOP`/`PAD_LEFT` are 4-bit fields, so the usable pad is **0–15** and
+**pad 16 behaves exactly as pad 0, 17 as 1, 18 as 2** — measured, not read off the map, by
+sweeping past the claimed ceiling [HW sweep, `tests/deconv_pad_probe.c`].
+
+Within that range the pad lands on the **dilated** surface: the result matches the oracle at
+offset `(k−1) − P`, identically at `s=2` and `s=4`. Had the pad been applied before dilation
+the offset would have scaled with `s`; it does not.
+
+**The output extent is NOT enlarged by the mode.** The CORE/DPU geometry registers are still
+driven from the UNDILATED forward arithmetic, so the part writes `ih + 2P − k + 1` rows and
+truncates the rest of the transposed result. A complete result therefore needs
+**`P ≥ toh − ih`** (measured: `s=2` needs `P≥5`, `s=4` needs `P≥11`, both for a 4×4 input),
+and with `P ≤ 15` that bounds the single-pass input to
+
+    ih ≤ (15 + s − k) / (s − 1)      →   ih ≤ 14 at s=2, ih ≤ 5 at s=4, ih ≤ 2 at s=8
+
+**which is the finding that bounds the payoff.** A 32×32 stride-2 decoder layer would need
+`P = 33` and the field cannot express it, so the mode is not reachable single-pass at the
+resolutions segmentation heads, depth decoders and FPN upsamples actually run at. An encoder
+would have to tile the output. That is a real constraint on the item, not a detail.
+
+**One narrow anomaly is open**: at `s=2`, pads **12–15** match the oracle at no offset at all,
+while every pad 0–11 matches and 16+ wraps cleanly. At `s=4` the same pads are fine. It sits
+immediately below the wrap and is undecoded; do not assume the `(k−1)−P` rule holds there.
+
+**What is still NOT measured: whether any of this is FASTER.** Nothing here times the mode
+against the shipping lowering. The host no longer materialises the `s²`-larger dilated input,
+which is a real and certain saving; but whether the hardware SKIPS the `s²` zero-MACs or
+merely expands internally is **not established**, and the `s²`-zero-MAC figure the section
+above quotes as the payoff remains unverified. Measure before building an encoder.
 
 **How to drive it**: `ROCKET_CNA_DECONV=1` sets the bit, `ROCKET_CNA_DECONV_X` /
-`ROCKET_CNA_DECONV_Y` write the two 3-bit fields raw. Deliberately env-only and absent from
-`npu_cna_desc` — there is no API for a mode whose semantics are unknown.
+`ROCKET_CNA_DECONV_Y` write the two 3-bit fields raw (the value is `s−1`). Still env-only and
+absent from `npu_cna_desc`: the semantics are now decoded, but the single-pass input bound
+above means a shipping entry would refuse most real decoder layers, so what it needs next is
+a timing measurement and a tiling decision rather than an API.
 
 ## Validation
 

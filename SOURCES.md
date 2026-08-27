@@ -362,7 +362,12 @@ driver (see the [README](README.md) evidence tags).
 
 - **gahingwoo `kiln`** (`github.com/gahingwoo/kiln`, GPL-2.0). The VENDOR RKLLM/RKNN stack run
   on a mainline kernel (7.1.3+): the GPL `rknpu` driver built out of tree plus a small kernel
-  patch set, an installer, and an OpenAI-compatible server. `charsiu`'s measuring stick, and
+  patch set, an installer, and an OpenAI-compatible server. **Its ten kernel patches apply to
+  7.1.7 in series order with zero fuzz under `git apply --check`** (read 2026-08-26 against a
+  prepared 7.1.7 tree), touching only `pm-domains.c`, `rockchip-iommu.c`, `rk3576.dtsi` and
+  `rk3576-rock-4d.dts` — so the stated 7.1.3 target is not a ceiling there. Applied out of
+  series order against an unpatched tree, five report offsets and two report fuzz, which is a
+  property of that test and not of the series. `charsiu`'s measuring stick, and
   the live-capture harness (`capture/rknpu-regcmd-dump.patch`) that complements the offline
   `.rkllm` reader. Two of its kernel-side facts land here, read against our own DTS
   (2026-08-18): **(1) The "two IOMMUs / four MMU banks, mainline drives one" claim is about
