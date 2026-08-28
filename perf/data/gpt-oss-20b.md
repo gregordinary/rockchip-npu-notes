@@ -1,21 +1,19 @@
-<!-- Raw llama-bench output backing perf/benchmarks.md (gpt-oss-20b, MXFP4, MoE), and the
-     first archived data for that model -- the block it backs was previously summarized
-     inline with no raw run behind it.
+<!-- Raw llama-bench output backing perf/benchmarks.md (gpt-oss-20b, MXFP4, MoE).
 
-     One board, one session, clock PINNED at 600 MHz throughout (power/control=on for all three
+     One board, one session, clock pinned at 600 MHz throughout (power/control=on for all three
      NPU domains, restored to auto after). Nothing here is compared against a number from a
      previous session: the CPU and NPU-default baselines were re-measured alongside the thing
      under test. RK1 (RK3588), 31 GiB, kernel 7.1.1, llama.cpp a646006f0 (9932), 8 CPU threads.
 
      -b 2048 -ub 2048 throughout -- for the moe_fp16 route because its per-expert dequant is
-     exactly what a smaller micro-batch multiplies, and for moe_native because (a) the DENSE
+     exactly what a smaller micro-batch multiplies, and for moe_native because (a) the dense
      MXFP4 weights are not in the expert cache and still re-dequantize per micro-batch and
      (b) each expert receives only n_tokens*n_used/n_expert rows (64 at -ub 512 vs 256 at
      -ub 2048) while the per-expert dispatch/gather/scatter/padding around the GEMM stays flat.
-     The native route was NOT measured at -ub 512; do not quote the fp16 route's -ub 512
+     The native route was not measured at -ub 512; do not quote the fp16 route's -ub 512
      collapse as if it applied to it.
 
-     It is also why the NPU-default baseline here reads LOWER than the 13.11 recorded in earlier
+     It is also why the NPU-default baseline here reads lower than the 13.11 recorded in earlier
      notes: that figure was measured at the default -ub 512. The like-for-like -ub 2048 number
      has always been ~11 (Jul 3 raw: 11.31; this run: 10.99). Comparing a -ub 512 baseline
      against a -ub 2048 result is the trap this file exists to close.
@@ -25,12 +23,12 @@
        npu_default     GGML_BACKEND_PATH set, ROCKET_MOE unset -- dense graph on the NPU,
                        routed experts on the CPU
        moe_fp16        ROCKET_MOE=1 ROCKET_MOE_NATIVE=0 -- experts on the NPU via the fp16
-                       route (weight dequantized to fp16 on the host EVERY micro-batch)
-       moe_native      ROCKET_MOE=1 -- experts ingested ONCE to resident int8 codes on the NPU
+                       route (weight dequantized to fp16 on the host every micro-batch)
+       moe_native      ROCKET_MOE=1 -- experts ingested once to resident int8 codes on the NPU
      [HW sweep, 600 MHz, 2026-07-14].
 -->
 
-# gpt-oss-20b (MXFP4, MoE) — raw
+# gpt-oss-20b (MXFP4, MoE), raw data
 
 ## The bench matrix
 
@@ -78,21 +76,21 @@ build: a646006f0 (9932)
 
 Between the matrix above and the run below, three defects were found and fixed. Every one
 of them was invisible until the per-phase instrumentation was added, and none of them made
-anything FAIL -- they just quietly cost throughput, or quietly computed the wrong answer.
+anything fail -- they just quietly cost throughput, or quietly computed the wrong answer.
 
-  1. Resident-weight TILE PADDING (driver). The N-tile defaulted to MAX_TILE=256 while each
+  1. Resident-weight tile padding (driver). The N-tile defaulted to MAX_TILE=256 while each
      worker plans on a 576-wide slice, so 3 tiles stored 768 columns to hold 576. Fixed by
-     taking the smallest tile that still reaches the same tile COUNT (192): same dispatch,
+     taking the smallest tile that still reaches the same tile count (192): same dispatch,
      same DMA. 10.70 -> 8.07 MiB per resident expert; residency 82% -> 99%.
 
-  2. M-BUCKET RATCHET (ggml-rocket). The adaptive granule doubled whenever the distinct-slot
+  2. M-bucket ratchet (ggml-rocket). The adaptive granule doubled whenever the distinct-slot
      set neared the driver table -- but that set never shrinks, so the test could never
      re-pass and the granule slammed to its 4096 ceiling on the first overflow. 88.3% of
      every expert GEMM was padding. Fixed with a fixed 2-per-octave ladder: 20.5% padded.
 
-  3. ATTENTION SINKS (ggml-rocket). supports_op never checked src[4], so gpt-oss (which
+  3. Attention sinks (ggml-rocket). supports_op never checked src[4], so gpt-oss (which
      carries a learned per-head sink logit on every layer) took the FLASH_ATTN offload and
-     got a softmax with no sink term -- a silently WRONG attention, past the n_kv floor of
+     got a softmax with no sink term -- a silently wrong attention, past the n_kv floor of
      1024. Fixed by declining. Declining is also +26% at pp2048, which is why the bug
      presented as a performance regression.
 
@@ -167,24 +165,24 @@ ROCKET MoE native-quant cosine vs CPU fp64 reference (real weights, real activat
 
 ---
 
-# The default-on flip — raw (2026-08-27)
+# The default-on flip, raw data (2026-08-27)
 
-<!-- One board, one session, clock PINNED at 600 MHz (power/control=on for all three NPU
+<!-- One board, one session, clock pinned at 600 MHz (power/control=on for all three NPU
      domains), CPU governor `performance` on all three clusters. RK1 (RK3588), 31 GiB,
      kernel 7.2.0-1, llama.cpp 171974745 (b10558), rocket 1.3.0, rocket-userspace b6e364a.
 
-     THREE BINARIES, and the boundary matters -- do not read rows across it:
-       [A] the pre-flight as first written. MoE budget from the SHARED auto reserve
+     Three binaries, and the boundary matters -- do not read rows across it:
+       [A] the pre-flight as first written. MoE budget from the shared auto reserve
            (max(6 GiB, 30% RAM)) -> 21.2 GB, 54 of 72 stacks.
        [B] + the GGUF double-count removed from the MoE budget (6 GiB floor only)
            -> 24.6 GB, 63 of 72 stacks.
        [C] + the per-expert row floor (M_e >= ROCKET_MOE_M_BUCKET), which is what
            DeepSeek needed. gpt-oss is unaffected by [C] (M_e = 64 and 256, both clear it).
-     [A] is kept because it is the run that isolates the PLACEMENT question at a matched
-     budget -- default and forced against the same 21.2 GB -- which [B] and [C] no longer do.
+     [A] is kept because it is the run that isolates the placement question at a matched
+     budget -- default and forced against the same 21.2 GB -- which [B] and [C] do not.
 
      Arms: cpu (no backend), ROCKET_MOE=0 (dense graph on the NPU, experts on the CPU),
-     default (ROCKET_MOE unset -> AUTO), ROCKET_MOE=1 (FORCED, claims everything).
+     default (ROCKET_MOE unset -> auto), ROCKET_MOE=1 (forced, claims everything).
      ROCKET_KACC=1 throughout. -r 2, and llama-bench's warmup is a full prompt run, so the
      one-time expert ingest lands there and the reported t/s is clean.
 -->
@@ -417,9 +415,9 @@ DONE
 
 <!-- Continues the block above. Binary [C] = [B] + the per-expert row floor
      (M_e >= ROCKET_MOE_M_BUCKET); [D] = [C] + the cached bucket-knob read, which is the
-     SHIPPED source and is semantically inert.
+     shipped source and is semantically inert.
 
-     READ THE moeoff CONTROL COLUMN FIRST. `d-default-fixed` / `g-default-fixed` is a single
+     Read the moeoff control column first. `d-default-fixed` / `g-default-fixed` is a single
      rep each, and g-default-fixed came in at 20.52 / 26.88 against 22.82 / 28.66 on [B] --
      a 10% "regression" from a change that cannot move gpt-oss at all (it clears the new floor
      at both ends, and the log shows identical placement: 63 stacks, 1656 experts, 0 streamed).
@@ -429,8 +427,8 @@ DONE
      not drift and the build is congruent, and the 20.52 was a low sample of an arm whose own
      pp512 spread is ~10%. Repeated on [C] and [D] it reads 22.35 / 21.91 / 21.97 / 22.29.
 
-     THE LESSON, because it nearly went into the record the other way: a single run of the
-     OFFLOADED arm is not a measurement of it, and the control is what says so. Six runs of
+     The lesson, because it nearly went into the record the other way: a single run of the
+     offloaded arm is not a measurement of it, and the control is what says so. Six runs of
      the default span 20.5-22.8 at pp512. Published figures are the mean of those six.
      See [[rebuild-rerolls-cache-congruence]], [[small-red-sample-proves-no-more-than-green]],
      [[isolation-run-is-the-measurement]].
@@ -558,8 +556,8 @@ DONE
 gpt-oss's five cells of that map are filed with DeepSeek-V2-Lite's, in
 [deepseek-v2-lite.md](deepseek-v2-lite.md), because it is one experiment and the defect it found
 lives on that model. What the gpt-oss half says on its own: the offload wins at **every** prefill
-length measured, rising monotonically with the per-expert row count — 1.64x at `M_e`=64 to 2.08x at
-`M_e`=256 — and its `ROCKET_MOE=0` control read **13.64** at pp2048, against 13.61-13.63 on every
+length measured, rising monotonically with the per-expert row count, 1.64x at `M_e`=64 to 2.08x at
+`M_e`=256, and its `ROCKET_MOE=0` control read **13.64** at pp2048, against 13.61-13.63 on every
 earlier binary and repetition. Its placement is unchanged by the per-dispatch work floor added
 after that map: the tile granule binds first on this architecture at every reachable shape.
 
@@ -567,11 +565,11 @@ after that map: the tile granule binds first on this architecture at every reach
 
 <!-- What the residency pre-flight costs on a board that nearly fits, and how much of it comes back
      from the budget knob alone. Run behind a `drop_caches`, because the budget is MemAvailable
-     minus 6 GiB read ONCE at the first supports_op and it had drifted 24.6 -> 20.7 GB over the
-     session -- an experiment that VARIES that budget cannot have its baseline sliding under it.
+     minus 6 GiB read once at the first supports_op and it had drifted 24.6 -> 20.7 GB over the
+     session -- an experiment that varies that budget cannot have its baseline sliding under it.
      MemAvailable 31.7 GB after the drop, 30.8 GB by the first supports_op. RK1 @ 600 MHz pinned,
      governor performance, -b 2048 -ub 2048, -r 3, one discarded warm-up process, same binary
-     throughout. EVERY arm reported 0 streamed. -->
+     throughout. Every arm reported 0 streamed. -->
 
 ```
 arm                       budget    stacks    pp512    pp2048     vs default
@@ -586,9 +584,9 @@ within-process spread:  default +/-1.36 / +/-0.17,  cache28000 +/-1.86 / +/-0.39
 ```
 
 **`CACHE_MB=28000` reaches 71 of 72 stacks and recovers 79% of the pp2048 ceiling while exceeding
-the forced arm outright at pp512 — with the pre-flight's sign guarantee intact**, which
+the forced arm outright at pp512, with the pre-flight's sign guarantee intact**, which
 `ROCKET_MOE=1` gives up. So the pre-flight's cost is mostly recoverable by documentation rather
-than by code, and the number is 28000 rather than the 26000 an earlier note pointed at.
+than by code, and the number is 28000.
 
 Two caveats that belong with it. A 28000 MB budget leaves only ~2.8 GB of the headroom the 6 GiB
 auto reserve exists for (KV cache, activations, slack) -- it ran clean here at pp512-pp2048 on a
@@ -602,13 +600,13 @@ read 13.54 at pp2048 here against 13.61-13.64 on every earlier binary and repeti
 -0.7%, taken immediately after a `drop_caches` had emptied the page cache. Small, but it widens the
 range that has been quoted as the congruence check to **13.54-13.64**.
 
-## Per-matmul cosine on the SHIPPED placement (2026-08-27)
+## Per-matmul cosine on the shipped placement (2026-08-27)
 
 <!-- The greedy-match leg raised a question it could not answer: every arm carrying the expert
      offload diverged from the CPU reference at word 10 where the experts-on-CPU arm diverged at
      word 16. ROCKET_MOE_COSINE=1 answers it directly -- one expert per MUL_MAT_ID op, rotating
      across every layer, projection and expert, recomputed on the CPU in fp64 from the undecoded
-     GGUF blocks, on REAL weights and REAL activations. Run under the SHIPPED default (63 of 72
+     GGUF blocks, on real weights and real activations. Run under the shipped default (63 of 72
      stacks), not the archived harness's ROCKET_MOE=1. -->
 
 ```
@@ -620,7 +618,7 @@ ROCKET MoE native-quant cosine vs CPU fp64 reference (real weights, real activat
 
 **0.999815 / 0.998976 on the shipped placement against 0.999821 / 0.998980 on the archived
 `ROCKET_MOE=1` one.** The two placements are numerically the same: narrowing the gate to 63 of 72
-stacks changed WHAT is placed, not HOW it computes.
+stacks changed what is placed, not how it computes.
 
 That also settles the greedy question. A 0.9998 cosine is excellent and is still enough to flip an
 argmax wherever the top two logits are close, at a position nothing controls -- so an arm carrying

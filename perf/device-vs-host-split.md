@@ -3,7 +3,7 @@
 On the vendor `rknpu` path the driver writes back a per-submit elapsed time, which is the
 first way on RK3588 to say how much of a matmul's wall the device actually held. Mainline
 `rocket` has no equivalent. This note is what that instrument says and, first, what it does
-not measure — the envelope decides how the numbers may be read.
+not measure: the envelope decides how the numbers may be read.
 
 ## The instrument and its envelope
 
@@ -15,7 +15,7 @@ over every submit a process has made since `rocket_submit_counters_reset()`.
 before the register program is written, and the delta is taken in the IRQ path. So the value
 **contains** the register-write burst and the interrupt latency, and **excludes** the ioctl
 entry, the BO and IOMMU setup, the fence plumbing, and every host-side cost. There are no
-byte counters on this part to go with it — RK3588's driver config leaves `amount_top` and
+byte counters on this part to go with it. RK3588's driver config leaves `amount_top` and
 `amount_core` NULL, and SRAM and bandwidth QoS are unimplemented there [source-confirmed].
 
 Three bounds are invisible in the value itself:
@@ -23,7 +23,7 @@ Three bounds are invisible in the value itself:
 - **Device time is not MAC time.** The span covers whatever the core does between commit and
   interrupt, DMA included, so this instrument cannot separate MAC-bound from DMA-bound. It
   separates *device* from *host*. See [not-mac-bound.md](not-mac-bound.md) for the other axis.
-- **A multicore job reports one core's span, not their sum** — each core's completion
+- **A multicore job reports one core's span, not their sum**: each core's completion
   overwrites the job's elapsed time. Separately, because the accumulator is process-wide, a
   run with several concurrent worker fds sums *core* time, which can exceed the wall. Measure
   single-worker when the number is to be compared against a wall clock.
@@ -40,8 +40,8 @@ warm-up discarded, board to itself [HW sweep, `rknpu` 0.9.8, 2026-08-25]. "one-s
 
 | M×K×N | submits | one-shot wall | dev | dev % | resident wall | dev | dev % |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| 64×256×256 | 1 | 10.26 ms | 0.09 | **0.9%** | — | — | — |
-| 128×512×512 | 1 | 9.58 ms | 0.60 | 6.2% | — | — | — |
+| 64×256×256 | 1 | 10.26 ms | 0.09 | **0.9%** | n/a | n/a | n/a |
+| 128×512×512 | 1 | 9.58 ms | 0.60 | 6.2% | n/a | n/a | n/a |
 | 256×1024×1024 | 2 | 19.13 ms | 2.58 | 13.5% | 4.72 ms | 3.85 | **81.6%** |
 | 512×1024×1024 | 2 | 25.53 ms | 4.89 | 19.2% | 7.16 ms | 4.81 | 67.2% |
 | 512×2048×2048 | 4 | 37.44 ms | 8.20 | 21.9% | 8.24 ms | 5.74 | 69.7% |
@@ -49,15 +49,15 @@ warm-up discarded, board to itself [HW sweep, `rknpu` 0.9.8, 2026-08-25]. "one-s
 | 1024×3840×4096 | 16 | 127.19 ms | 42.90 | 33.7% | 55.42 ms | 42.91 | **77.4%** |
 
 **The host share belongs to the one-shot path, not to the datapath.** At 1024×3840×4096 the
-device time is the same to two decimals in both arms — 42.90 against 42.91 ms — while the wall
+device time is the same to two decimals in both arms (42.90 against 42.91 ms) while the wall
 falls from 127.2 to 55.4 ms. The whole 71.8 ms difference is the per-call weight scatter, and
-with the weight resident the device holds **67–82%** of the wall. That is the internal check on
+with the weight resident the device holds **67-82%** of the wall. That is the internal check on
 the instrument as much as it is the result: the same device work is reported identically through
-two host paths that differ by 2.3× in wall time.
+two host paths that differ by 2.3x in wall time.
 
 **A small matmul is almost entirely not the device.** 64×256×256 spends 0.09 ms of a 10.26 ms
-wall on the device, and 128×512×512 has a *shorter* wall than the shape below it — so the
-one-shot path carries a per-call floor of roughly 9–10 ms that is independent of shape at this
+wall on the device, and 128×512×512 has a *shorter* wall than the shape below it, so the
+one-shot path carries a per-call floor of roughly 9-10 ms that is independent of shape at this
 end. What the instrument cannot do is split that floor further: the ioctl entry, BO and IOMMU
 setup and fence plumbing all sit in the excluded region, so `wall − dev` there is host work and
 dispatch cost together, and quoting it as a dispatch floor overstates what was measured.

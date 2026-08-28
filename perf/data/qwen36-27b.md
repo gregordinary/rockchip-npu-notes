@@ -1,7 +1,7 @@
 <!-- Raw llama-bench + llama-perplexity output backing perf/benchmarks.md (Qwen3.6-27B). The
      clk=200 in each per-run header is an idle sample taken between the discarded warmup and the
      measured run; the NPU rides to 600 MHz under load (module loaded with
-     rocket_npu_clk_hz=600000000). Warm medians. Q4_K_M ONLY: at 27B the F16 GGUF (~54 GB) and
+     rocket_npu_clk_hz=600000000). Warm medians. Q4_K_M only: at 27B the F16 GGUF (~54 GB) and
      Q8_0 (~29 GB) do not fit the 31 GB board; Q4_K_M (15.92 GiB) fits with headroom. Quant and PPL
      both at -b 2048 -ub 2048. Two methodology deviations forced by the 27B CPU baseline being
      ~1.8 t/s (a full -r 2 CPU pass is ~2.8 h): the CPU baseline runs -r 1 (its prefill variance is

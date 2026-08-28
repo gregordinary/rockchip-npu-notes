@@ -5,7 +5,7 @@
      at -b 2048 -ub 2048. F16 is intentionally absent: the F16 GGUF (29.3 GB) does not fit the
      31 GB board (29 GB free, no swap), so Q8_0 + Q4_K_M are the precisions that run. GGUFs from
      `unsloth/phi-4-GGUF` (base model microsoft/phi-4); no local convert. llama.cpp maps the 14 B
-     Phi-4 onto the `llama` arch (shown as "llama 13B" in the rows) — a different architecture from
+     Phi-4 onto the `llama` arch (shown as "llama 13B" in the rows), a different architecture from
      Phi-4-mini's `phi3`. See ../benchmarks.md Method. -->
 
 == phi4-14b Q8_0  Sat Jul  4 05:54:47 UTC 2026 ==

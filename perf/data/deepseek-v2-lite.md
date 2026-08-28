@@ -2,7 +2,7 @@
      clk=200 in each per-run header is an idle sample taken between the discarded warmup and the
      measured run; the NPU rides to 600 MHz under load (module loaded with
      rocket_npu_clk_hz=600000000). Warm medians, llama-bench -r 2 plus a discarded warmup. Q4_K_M
-     ONLY: at 15.71B the F16 GGUF (~31 GB) does not fit the 31 GB board; Q4_K_M (9.65 GiB) fits with
+     only: at 15.71B the F16 GGUF (~31 GB) does not fit the 31 GB board; Q4_K_M (9.65 GiB) fits with
      headroom. Quant and PPL both at -b 2048 -ub 2048. GGUF from mradermacher/DeepSeek-V2-Lite-GGUF
      (the base model deepseek-ai/DeepSeek-V2-Lite; converted 2024-05, MLA tensors in the pre-split
      attn_kv_a_mqa/attn_kv_b form, which build 9568 reconstructs -- the FLASH_ATTN op shapes are
@@ -10,7 +10,7 @@
      nope + 64 rope, value_length 128, 16 heads) + MoE (64 routed + 2 shared experts, 6 routed
      active per token, 27 blocks, block 0 dense). ~2.4B of 15.71B params active per token.
 
-     A COMBINED gap-finder -- it stacks the two attention/expert paths that run on the CPU here:
+     A combined gap-finder -- it stacks the two attention/expert paths that run on the CPU here:
        1. MLA attention: the FA gate accepts DK != DV (DeepSeek's DK=192 = 128 nope + 64 rope,
           DV=128), so the FLASH_ATTN_EXT primitive is bit-faithful for MLA. The DeepSeek DL-backend
           FA path is not yet exercised on-device, so in this bench attention ran on the CPU -- the
@@ -18,10 +18,10 @@
        2. MoE routed FFN: GGML_OP_MUL_MAT_ID has an opt-in handler (ROCKET_MOE=1), but offloading
           quantized experts is dequant-bound and a net loss, so the 6 active routed experts'
           gate/up/down matmuls stay on the (faster) CPU by default.
-     What DOES reach the NPU: the large MLA projections (q_a/q_b/kv_a/kv_b), the 2 always-on SHARED
+     What does reach the NPU: the large MLA projections (q_a/q_b/kv_a/kv_b), the 2 always-on shared
      experts' gate/up/down, and lm_head -- all ordinary static-weight MUL_MAT. Those dense GEMMs are
      substantial (bigger than gpt-oss's GQA projections + no shared expert), so the NPU prefill win
-     is modest-but-real (1.18-1.26x) and LARGER than gpt-oss's ~1.04x, even with attention and the
+     is modest-but-real (1.18-1.26x) and larger than gpt-oss's ~1.04x, even with attention and the
      routed experts on the CPU. Unlike the instruct/reasoning models in this record,
      the absolute wikitext PPL (~8.2) is in the normal range (base model); the NPU-CPU delta is the
      faithfulness measure. See ../benchmarks.md Method. Generator: run_sweep_deepseek.sh, 2026-07-03. -->
@@ -29,9 +29,9 @@
 == FA engagement diagnostic (pp2048, r1; a "ROCKET FA total" line == FA offloaded to the NPU) ==
 --- -fa auto ---
 | deepseek2 16B Q4_K - Medium    |   9.65 GiB |    15.71 B | ROCKET     |  -1 |     2048 |          pp2048 |         23.89 ± 0.00 |
---- -fa 1 (flash attention FORCED ON) ---
+--- -fa 1 (flash attention forced on) ---
 | deepseek2 16B Q4_K - Medium    |   9.65 GiB |    15.71 B | ROCKET     |  -1 |     2048 |   1 |          pp2048 |         23.92 ± 0.00 |
-NO "ROCKET FA total" line printed under either -fa auto or -fa 1 -> the FLASH_ATTN_EXT op is built
+No "ROCKET FA total" line printed under either -fa auto or -fa 1 -> the FLASH_ATTN_EXT op is built
 by llama.cpp (fa=1 column present, no error) but did not engage the NPU FA path in this backend
 build -> attention ran on the CPU for this bench. (The FA gate itself accepts DK != DV and is
 bit-faithful; the DeepSeek end-to-end offload is not yet wired/validated on-device.)
@@ -78,11 +78,11 @@ PPL is inflated); the NPU-CPU delta is the faithfulness measure. Per-run stderr 
 
 <!-- This is the model that showed a MoE placement failure mode residency cannot see.
      RK1 (RK3588), 31 GiB, kernel 7.2.0-1, llama.cpp 171974745 (b10558), rocket 1.3.0,
-     clock PINNED at 600 MHz, CPU governor `performance`, -b 2048 -ub 2048, -r 2,
+     clock pinned at 600 MHz, CPU governor `performance`, -b 2048 -ub 2048, -r 2,
      ROCKET_KACC=1. Arms: cpu (no backend), ROCKET_MOE=0 (dense graph on the NPU, experts on
      the CPU), default (ROCKET_MOE unset).
 
-     The pp512 default row BEFORE the row floor is 19.09 against 26.04 with the experts on
+     The pp512 default row before the row floor is 19.09 against 26.04 with the experts on
      the CPU -- a 27% regression -- and the teardown line for that same run reads
      "4767 resident on the NPU, 0 streamed, 100% of the per-micro-batch dequant removed".
      Residency was perfect and irrelevant. DeepSeek routes 6 of 64 experts, so 512 tokens give
@@ -119,10 +119,10 @@ build: 171974745 (10558)
 
 ## The accept-boundary map, and the row floor's replacement (2026-08-27)
 
-<!-- ONE experiment across BOTH MoE models, filed here because the defect it found lives on this
+<!-- one experiment across both MoE models, filed here because the defect it found lives on this
      one. RK1 (RK3588), 31 GiB, kernel 7.2.0-1, rocket 1.3.0, llama.cpp 171974745 (b10558), NPU
-     clock PINNED at 600 MHz, CPU governor `performance` on cpu0/4/6, -b 2048 -ub 2048, -r 3 with
-     a discarded warm-up process per model, ROCKET_KACC=1. Arms INTERLEAVED per point so clock and
+     clock pinned at 600 MHz, CPU governor `performance` on cpu0/4/6, -b 2048 -ub 2048, -r 3 with
+     a discarded warm-up process per model, ROCKET_KACC=1. Arms interleaved per point so clock and
      thermal drift are charged to both equally. Every offloaded cell reported 100% resident and 0
      streamed, so nothing here is a residency effect.
 
@@ -164,9 +164,9 @@ Three things the raw rows carry that the ratio column does not:
 
 ### The boundary cells, repeated
 
-The map ran ONE adjacent pair per cell. That is adequate for gpt-oss, whose ratios sit an order of
-magnitude outside the offloaded arm's spread, and NOT adequate for the three DeepSeek cells that sit
-within a few percent of 1.00 — this arm varies ~15% run to run here. Three more process-pairs each,
+The map ran one adjacent pair per cell. That is adequate for gpt-oss, whose ratios sit an order of
+magnitude outside the offloaded arm's spread, and not adequate for the three DeepSeek cells that sit
+within a few percent of 1.00, where this arm varies ~15% run to run. Three more process-pairs each,
 alternating, on the same binary:
 
 ```
@@ -200,13 +200,13 @@ p=1024  M_e= 96   277 MMAC/dispatch, pairs 4-7
 
 All eight pairs, in the order taken: **0.936 1.019 1.071 1.076 1.072 1.076 1.072 1.072**.
 Pooled mean **1.049** (sd 0.049); over the seven repeat-harness pairs alone, **1.065** (sd 0.021).
-The first pair is 6.3 sd below the other seven and it is the map's — but every one of the eight ran
+The first pair is 6.3 sd below the other seven and it is the map's, but every one of the eight ran
 the identical placement, and a different point in the board's allocation history predicts the fresh
-run being FASTER, not slower. There is no mechanistic ground to drop it, so the pooled figure is the
+run being faster, not slower. There is no mechanistic ground to drop it, so the pooled figure is the
 one quoted.
 
-An accept criterion was written down BEFORE these four pairs ran — accept a cell only if its mean
-over >= 4 pairs reaches 1.05 — precisely because 1.049 against 1.065 is the kind of split that
+An accept criterion was written down before these four pairs ran: accept a cell only if its mean
+over >= 4 pairs reaches 1.05. That is precisely because 1.049 against 1.065 is the kind of split that
 invites picking after the fact. What makes the pooled side the right one rather than a coin toss is
 the **ingest break-even**: the ~32 s expert ingest is charged only if the gate accepts, an offload at
 ratio `r` saves `1 - 1/r` of prefill wall, and so a 1.049x cell does not repay its own admission
@@ -217,17 +217,17 @@ Two things this settles that the map could not:
 
 - **The map's `M_e`=96 pair was the outlier, not the signal.** It read 0.936 where three repeats read
   1.019-1.076, and all four runs were **placement-identical** (4767 resident, 0 streamed, 14921 MB,
-  the same ingest profile) — so nothing but variance separates them and the low one cannot be
+  the same ingest profile), so nothing but variance separates them and the low one cannot be
   discarded on mechanism either. `M_e`=72 is the cell that is genuinely under 1.00: four pairs,
   every one of them, max 0.970.
-- **The deficit at `M_e`=72 belongs to the ROUTE, not to the gate.** AUTO admits every DeepSeek stack
+- **The deficit at `M_e`=72 belongs to the route, not to the gate.** Auto admits every DeepSeek stack
   (no "budget reached" line at any prefill length), so at `M_e`=72 the default and `ROCKET_MOE=1` are
-  the same placement — and the forced arm reads **25.55**, inside the default's 23.89-25.60 range and
+  the same placement, and the forced arm reads **25.55**, inside the default's 23.89-25.60 range and
   likewise under the 26.35 control. Both arms lose there; the gate is not mis-accounting anything.
 
 The offloaded arm's spread is the reason all of this needed repeating: at `M_e`=96 it ranges
 **21.5-24.8 t/s** across runs while its control sits at **23.05-23.09**. Absolute t/s is not
-comparable across runs here — only adjacent-pair ratios are, which is what both harnesses take.
+comparable across runs here; only adjacent-pair ratios are, which is what both harnesses take.
 
 Per-expert ingest, five samples a model on the same binary, which corrects a figure that had been
 carried as a per-expert rate:
@@ -243,7 +243,7 @@ are that one rate divided by two different expert sizes.
 
 ### After the fix, on the rebuilt binary
 
-A cell the gate DECLINES is the same code path as `ROCKET_MOE=0`, so it must read ~1.00 and emit no
+A cell the gate declines is the same code path as `ROCKET_MOE=0`, so it must read ~1.00 and emit no
 residency line at all -- nothing is ingested. Two process-pairs per cell:
 
 ```
@@ -268,7 +268,7 @@ control arms across the rebuild:  26.35 -> 26.35/26.29   23.07 -> 23.12/23.03
 Every control is within **0.2%** of its pre-fix value, which is what says a rebuild that re-rolls
 cache congruence did not move the floor under the comparison.
 
-**THE ONE OUTLIER IS A PROPERTY OF THE PRE-FLIGHT, NOT NOISE.** The first p=1536 cell reads 1.163
+**The one OUTLIER is a property of the PRE-FLIGHT, not noise.** The first p=1536 cell reads 1.163
 because its process saw a RAM budget of **20716 MB** and admitted **70 of 78** expert stacks, where
 every pre-fix cell saw ~24.6 GB and took all 78. The budget is `MemAvailable - 6 GiB`, read **once**,
 at the first `supports_op` -- so hours of multi-GB allocation churn move it, and the same model on
@@ -281,13 +281,13 @@ product: a long-lived server that builds a fresh `llama_context` late in its lif
 fewer stacks on the NPU than the same process would have at startup -- the teardown line
 (`ggml_backend_rocket_moe_stats`) is the only thing that reports it.
 
-## Differential perplexity on the SHIPPED placement (2026-08-27)
+## Differential perplexity on the shipped placement (2026-08-27)
 
 <!-- Every archived greedy-match and differential-PPL row was taken under ROCKET_MOE=1, which is a
      different placement from what ships. This gates what users get. -c 2048 rather than the
-     archived -c 512 for one reason: at -c 512 DeepSeek's M_e is 48 and the default DECLINES, so
+     archived -c 512 for one reason: at -c 512 DeepSeek's M_e is 48 and the default declines, so
      the gate would test only the declined path. -c 2048 puts M_e = 192 and the expert route is
-     ACTIVE -- verified in the teardown line, not assumed. Absolute PPL is therefore NOT comparable
+     active -- verified in the teardown line, not assumed. Absolute PPL is therefore not comparable
      to the archived 8.24; a longer context lowers it. The differential is the gate. -->
 
 ```
@@ -299,7 +299,7 @@ wikitext test, -c 2048 -b 2048 -ub 2048 --chunks 8, same GGUF, RK1 @ 600 MHz pin
       [moe-int8] experts exercised: 4800 resident on the NPU (15025MB), 0 streamed -- 100% removed
 ```
 
-**Take the PAIRED per-chunk difference, not the finals.** The absolute error bar is +/- 0.131, or
+**Take the paired per-chunk difference, not the finals.** The absolute error bar is +/- 0.131, or
 +/- 2.5%, and would resolve nothing; pairing on the same chunks cancels the chunk-to-chunk variance
 that both arms share and gives an se around 0.10% in PPL terms.
 

@@ -5,7 +5,7 @@
      (mmproj-...-f16.gguf). "2.2B" is the combined vision+LLM param count; the LLM alone is
      1.81 B (llama-bench shows "llama ?B ... 1.81 B").
 
-     TWO backends, TWO measurements:
+     Two backends, two measurements:
        - LLM prefill/decode: stock llama-bench, the language GGUF alone, exactly as every other
          LLM in this record. CPU baseline = backend unloaded (8 threads); NPU =
          GGML_BACKEND_PATH=<libggml-rocket.so> ROCKET_KACC=1. F16 at defaults; quants at
@@ -13,7 +13,7 @@
        - Vision encoder: the SigLIP tower run through llama.cpp's mtmd/clip.cpp. clip builds a
          ggml_backend_sched over [selected backend, CPU]; the NPU is attached with
          MTMD_BACKEND_DEVICE=ROCKET. clip's auto-path only probes GPU/IGPU *device types*, and
-         rocket registers as an ACCEL device named "ROCKET", so the env selector is REQUIRED --
+         rocket registers as an ACCEL device named "ROCKET", so the env selector is required --
          without it the vision encoder silently runs on the CPU. mmproj is fp16 so the
          offloadable vision matmuls run fp16 on the NPU. Timing via an env-gated in-process
          repeat loop around clip_image_batch_encode's sched_graph_compute (a measurement-only
@@ -23,7 +23,7 @@
      RK3588 @ 600 MHz (module loaded rocket_npu_clk_hz=600000000). build 7d2b45b4f (9568).
      [HW sweep, 600 MHz, 2026-07-04]. See ../benchmarks.md Method. -->
 
-== SmolVLM2-2.2B vision encoder (SigLIP-SO400M) — clip encode, CPU vs NPU, per-rep ms ==
+== SmolVLM2-2.2B vision encoder (SigLIP-SO400M): clip encode, CPU vs NPU, per-rep ms ==
 
 SigLIP-SO400M vision tower: hidden 1152, intermediate 4304, 27 layers, 16 heads (head_dim 72),
 patch 14, 729 tokens/image. Single image = one 729-token encode graph (no multi-tile split here).
@@ -32,12 +32,12 @@ Graph placement (ggml_backend_sched reserve):
   CPU:         1 split,  859 nodes
   NPU ROCKET: 272 splits, 913 nodes
 
-The vision graph shatters into 272 CPU<->NPU handoffs. ggml-rocket offloads only STATIC-WEIGHT
+The vision graph shatters into 272 CPU<->NPU handoffs. ggml-rocket offloads only static-weight
 GEMMs that clear K%32==0, N%16==0, K>=64, N>=64 (src0 == a model-parameter leaf). Per SigLIP
 layer that admits exactly q/k/v/o projections + fc1 (5 GEMMs). Excluded:
 
   - fc2 down-proj: K=4304, 4304%32=16 -> fails K%32.
-  - attention QK^T and score*V: src0 is a COMPUTED tensor (not a weight leaf), so the handler
+  - attention QK^T and score*V: src0 is a computed tensor (not a weight leaf), so the handler
     skips them by design -- independent of head_dim 72 also missing %32/%16.
   - every norm / softmax / GELU / residual-add / patch-embed op -- op types ggml-rocket does
     not implement.
@@ -49,11 +49,11 @@ layer that admits exactly q/k/v/o projections + fc1 (5 GEMMs). Excluded:
   CPU            7912.1     7900.7 7946.9 7908.9 7898.2 7881.7      ~7901         1.00x
 
 Warm: NPU 6.66 s vs CPU 7.90 s -> 1.19x. Cold single-encode (parked clock): NPU 8.12 s vs
-CPU 7.91 s (~1.03x SLOWER) -- the cold NPU clock penalty inverts the small warm win, so warm
+CPU 7.91 s (~1.03x slower) -- the cold NPU clock penalty inverts the small warm win, so warm
 discipline is load-bearing here. tile384.jpg (384x384) and the full test.jpg give the same
 729-token single-graph encode and the same timing.
 
-== SmolVLM2-2.2B LLM (arch llama, 1.81 B) — llama-bench, CPU vs NPU, warm ==
+== SmolVLM2-2.2B LLM (arch llama, 1.81 B): llama-bench, CPU vs NPU, warm ==
 
 ### SmolVLM2-2.2B F16  [cpu]
 | model              |   size |  params | backend | threads |         test |         t/s |
@@ -122,7 +122,7 @@ Both deltas are far inside the ~+/-0.60-0.63 per-chunk stderr (the F16 NPU-CPU d
 smaller than its stderr). Absolute PPL ~12.2 is inflated -- SmolVLM2's LLM is instruction-tuned
 and models raw wikitext poorly -- so only the NPU-CPU delta is informative. NPU-faithful.
 
-== Faithfulness: vision encoder — projected image-embedding cosine (CPU vs NPU) ==
+== Faithfulness: vision encoder, projected image-embedding cosine (CPU vs NPU) ==
 
 The 81 projected image tokens (729 patches / scale_factor^2=9; 2048-dim = the LLM's embedding
 width) that clip hands to the language model, dumped for vision=CPU and vision=NPU (same fp16
@@ -146,7 +146,7 @@ vision=NPU: "The image is a newspaper clipping from 'The New York Times' dated M
   The article is about the Apollo 11 mission, where astronauts Neil Armstrong and Edwin ..."
 
 Both captions correctly read the same NYT moon-landing front page (same headline + "Collect
-Rocks, Plant Flag" subhead) but diverge in wording. This is NOT a contradiction of the 0.99998
+Rocks, Plant Flag" subhead) but diverge in wording. This is not a contradiction of the 0.99998
 encoder cosine: greedy autoregressive decode amplifies the ~0.5% embedding perturbation into a
 different-but-equivalent token path (the hallucinated date differs in both from the true 1969).
 For a vision->LLM pipeline the embedding cosine, not the greedy caption tokens, is the encoder
@@ -156,10 +156,10 @@ faithfulness metric -- exactly as WER/cosine, not token-identity, is the metric 
 
 - Vision device selector: MTMD_BACKEND_DEVICE=ROCKET (clip's auto-path probes GPU/IGPU *device
   types* only; rocket is an ACCEL device named "ROCKET" in the deployed build-dl .so, so the
-  selector is REQUIRED -- without it clip silently runs the vision encoder on the CPU). Note the
-  device NAME is "ROCKET"; the current ggml-rocket source renames the device to "RK3588 NPU
+  selector is required -- without it clip silently runs the vision encoder on the CPU). Note the
+  device name is "ROCKET"; the current ggml-rocket source renames the device to "RK3588 NPU
   (mainline rocket driver)", so after a build-dl rebuild the selector value tracks that string.
-- Measurement-only patches on the RK1 reference llama.cpp checkout (tools/mtmd/clip.cpp, NOT our
+- Measurement-only patches on the RK1 reference llama.cpp checkout (tools/mtmd/clip.cpp, not our
   repos): an env-gated wall-clock timer + in-process repeat loop (CLIP_ENC_TIMING /
   CLIP_ENC_REPEAT) around clip_image_batch_encode's sched_graph_compute, and a full-embedding
   binary dump (MTMD_EMB_DUMP) in the MTMD_DEBUG_EMBEDDINGS block. All default-off; normal use

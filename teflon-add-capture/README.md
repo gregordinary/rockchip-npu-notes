@@ -6,11 +6,11 @@ tensor for an elementwise op (the question that blocks a fully-on-NPU HardSwish/
 `x·gate(x)` multiply).
 
 ## Files
-- `add_c8_4x4.tflite` — minimal int8 per-tensor model: `add(conv_a(x), conv_b(x))`
+- `add_c8_4x4.tflite`: minimal int8 per-tensor model: `add(conv_a(x), conv_b(x))`
   (two 1×1 convs added; both add-inputs are conv outputs, the only shape Teflon's
-  fuser accepts — a MobileNet residual `add(input, conv)` **asserts** `input_op_2`
+  fuser accepts; a MobileNet residual `add(input, conv)` **asserts** `input_op_2`
   in `rkt_ml.c:344` because the raw graph input has no producing op).
-- `regcmd.decoded.txt` — `decode.py` of the captured `mesa-regcmd-000-000.bin`.
+- `regcmd.decoded.txt`: `decode.py` of the captured `mesa-regcmd-000-000.bin`.
 
 Reproduce on the RK1:
 ```
@@ -22,13 +22,13 @@ python3 .../rocket/decode.py --xml .../rocket/registers.xml --dump mesa-regcmd-0
 
 The `.../` tools (`make_add_tflite.py`, `run_delegate.py`, `decode.py`, `registers.xml`,
 `libteflon.so`) live in a Mesa **Teflon** checkout (the `rocket` gallium driver + `teflon`
-frontend), not vendored here — point the `.../` paths at your Mesa tree. The committed
+frontend), not vendored here; point the `.../` paths at your Mesa tree. The committed
 `regcmd.decoded.txt` is the decoded result, so the analysis below is reproducible by
 inspection without re-running the capture.
 
 ## What the decode shows (the baseline)
 
-The dumped task is a **plain conv** — Teflon's TFLite partitioner only claimed one
+The dumped task is a **plain conv**: Teflon's TFLite partitioner only claimed one
 conv for this graph, so the EW residual didn't appear in the dump. But the plain
 conv is itself the key baseline: it confirms the **main feed is the conv/CACC, with
 MRDMA disabled**:
@@ -56,21 +56,21 @@ DPU_RDMA_SURF_NOTCH / EW_SURF_NOTCH = surf_notch
 ```
 
 **The conclusion:** in *both* the plain-conv and the residual-add cases the DPU
-**main feed is the conv/CACC**. MRDMA is either OFF (plain) or repurposed — with
-`COMB_USE(5)` — to deliver the *operand* (SRC_BASE and EW_BASE both point at the
-add tensor). MRDMA is never simultaneously a flying main AND an operand feed.
+**main feed is the conv/CACC**. MRDMA is either off (plain) or repurposed, with
+`COMB_USE(5)`, to deliver the *operand* (SRC_BASE and EW_BASE both point at the
+add tensor). MRDMA is never simultaneously a flying main and an operand feed.
 
 So the flying-mode LUT activation (MRDMA flying = main, no operand) and a two-buffer
 EW op are different MRDMA roles. A pure flying-MRDMA-main + ERDMA-operand multiply
-(our `gen_ew_mul_fp16`) has no valid main once MRDMA is needed for the operand →
+(our `gen_ew_mul_fp16`) has no valid main once MRDMA is needed for the operand ->
 the operand reads 0. **A fully-on-NPU two-buffer EW multiply requires a conv (even
 an identity 1×1) as the main feed.**
 
 Feeding the EW operand path with an **identity matmul** as the main (the fp16 K-accum
-machinery, `gen_matmul_fp16` `accumulate=1`) and switching the EW op add→mul
-(`DPU_EW_CFG` `0x108202C0` → **`0x108003C4`**, i.e. `EW_OP_TYPE(1)`) computes `A*B`
+machinery, `gen_matmul_fp16` `accumulate=1`) and switching the EW op add->mul
+(`DPU_EW_CFG` `0x108202C0` -> **`0x108003C4`**, i.e. `EW_OP_TYPE(1)`) computes `A*B`
 **bit-exact** on the NPU [HW sweep] (`tests/ew_mul_rocket.c`; ADD reproduces `A+B` on the
 same datapath). This is wired into `rocket_ew_mul_fp16` and the fully-on-NPU
 HardSwish/SiLU (`ROCKET_ACT_NPU_MUL=1`). The operand transport here (ERDMA `EW_BASE` +
-MRDMA `SRC_BASE` + `COMB_USE(5)`) is the add-path's verbatim — only the EW op field
+MRDMA `SRC_BASE` + `COMB_USE(5)`) is the add-path's verbatim; only the EW op field
 differs. Detail: [../encodings/dpu-lut-activation.md](../encodings/dpu-lut-activation.md).

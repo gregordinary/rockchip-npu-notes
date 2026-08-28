@@ -2,7 +2,7 @@
 
 A workload that hands its heavy arithmetic to the NPU spends that time blocked, with its
 threads off the run queue. A load-sampling CPU governor reads that as idle and drops the big
-cores toward their floor — and the half of the work that never left the host, the cube scatter
+cores toward their floor, and the half of the work that never left the host, the cube scatter
 and gather, then runs at that floor. **The NPU arm pays the penalty and the CPU-only arm does
 not**, so an A/B taken under the default governor understates the offload and can read as
 a regression [HW sweep 2026-08-25].
@@ -33,7 +33,7 @@ allowed to fall to on the A76 cluster:
 | mainline, kernel 7.2 | 1 200 MHz | 2 400 MHz | 2.0x | 1.27x |
 | vendor, kernel 6.1 | 408 MHz | 2 352 MHz | 5.8x | 3.2x |
 
-So this is a platform-configuration effect and **not a property of either driver** — the
+So this is a platform-configuration effect and **not a property of either driver**: the
 mechanism is identical on both, and the board whose A76 may park at 408 MHz pays about
 2.5x more for it. A board read right after a delegated run shows the cluster sitting at its
 floor.
@@ -41,7 +41,7 @@ floor.
 ## What to do
 
 - **Pin the CPU governor before quoting any NPU-versus-CPU number**, and put it back
-  afterwards. Reading `scaling_governor` is not enough — read `scaling_min_freq` too, because
+  afterwards. Reading `scaling_governor` is not enough: read `scaling_min_freq` too, because
   that is what sets the cost.
 - **In a deployment, raise the floor rather than the governor.** A detection service does not
   need `performance` on every core; it needs the cores its offloading process runs on not to

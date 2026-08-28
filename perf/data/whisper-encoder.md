@@ -6,11 +6,11 @@
      whisper-bench invocations per (model, backend), discard rep 1 (cold clock), warm mean of
      reps 2-4. RK3588 @ 600 MHz. whisper-bench -t 4. [HW sweep, 600 MHz, 2026-07-04].
 
-     FAITHFULNESS/CONFIG NOTE — the resident-weight cache and whisper's tensor names. whisper.cpp
+     FAITHFULNESS/CONFIG note: the resident-weight cache and whisper's tensor names. whisper.cpp
      leaves its weight tensors unnamed, so ggml auto-names them "leaf_%d" by graph position, and
-     the same "leaf_N" string denotes DIFFERENT weights across whisper's separate conv/encode/
+     the same "leaf_N" string denotes different weights across whisper's separate conv/encode/
      cross/decode graphs. ggml-rocket's resident-weight cache keys on the weight name, so before
-     the fix below it served one weight's packed tiles for another's matmul -> a fast but GARBAGE
+     the fix below it served one weight's packed tiles for another's matmul -> a fast but garbage
      encode (whisper-bench times encode without checking it, so the bad config still benchmarks).
      Fixed in ggml-rocket.cpp rocket_weight_key: ggml-default leaf_/node_ names are rejected
      (empty key -> the weight streams per call instead of caching). Streaming is timing-neutral
@@ -21,7 +21,7 @@
      after the fix vs 61.79 published. Numbers below are the faithful config.
 -->
 
-== Whisper encoder — whisper-bench encode-only, CPU vs FOSS-NPU, warm mean of reps 2-4 (ms) ==
+== Whisper encoder: whisper-bench encode-only, CPU vs FOSS-NPU, warm mean of reps 2-4 (ms) ==
 
 | model            | enc d_model | enc layers | CPU (ms) | NPU (ms) | speedup |
 | ---------------- | ----------: | ---------: | -------: | -------: | ------: |
@@ -41,7 +41,7 @@ Per-rep encode (ms): rep1 discarded (cold clock), reps 2-4 the warm mean.
   large-v3  CPU 35513.73 / 36163.69 36770.26 36265.79  NPU 16746.65 / 16922.92 17088.72 17028.92
   large-v3-turbo CPU 32123.66 / 32920.88 33020.67 32929.91  NPU 15595.08 / 15510.08 15558.57 15563.70
 
-== Whole-pipeline shape — encoder vs decoder cost (whisper-bench full timing, NPU run) ==
+== Whole-pipeline shape: encoder vs decoder cost (whisper-bench full timing, NPU run) ==
 
 The encoder is what the NPU accelerates; the decoder (autoregressive, small-M GEMV) stays on the
 CPU on both backends. whisper-bench's synthetic decode/batchd/prompt phases show the per-step
@@ -55,7 +55,7 @@ turbo's per-step decoder cost is ~6x lower, so for a real transcription the (NPU
 encoder is a much larger fraction of the wall time -> the encoder's ~2.1x NPU speedup carries more
 of the whole-pipeline win for turbo than for full large-v3.
 
-== Faithfulness — transcript agreement, CPU vs NPU (jfk.wav, greedy, whisper-cli -np -nt) ==
+== Faithfulness: transcript agreement, CPU vs NPU (jfk.wav, greedy, whisper-cli -np -nt) ==
 
   base.en         CPU: "And so my fellow Americans, ask not what your country can do for you, ask what you can do for your country."
   base.en         NPU: "And so my fellow Americans, ask not what your country can do for you, ask what you can do for your country."   [identical]

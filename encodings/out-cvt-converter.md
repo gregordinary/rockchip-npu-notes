@@ -1,4 +1,4 @@
-# DPU OUT_CVT — the output converter (int32 accumulator → output)
+# DPU OUT_CVT, the output converter (int32 accumulator -> output)
 
 The last stage of the DPU before write-back is the **output converter** (NVDLA SDP lineage:
 `y = sat((x − offset) * scale >> shift)`). It is driven by three registers:
@@ -18,26 +18,26 @@ accumulator, the converter is purely integer:
 out = (float_or_int)( round_half_to_even( (acc_i32 * SCALE) >> SHIFT ) )
 ```
 
-- `SCALE` is a **uint16 integer multiplier** — *not* fp16, *not* fixed-point. HW-confirmed by
-  the ratio classifier: `SCALE=2 → ×2`, `SCALE=256 → ×256`, exactly.
+- `SCALE` is a **uint16 integer multiplier**, *not* fp16 and *not* fixed-point. HW-confirmed by
+  the ratio classifier: `SCALE=2 -> ×2`, `SCALE=256 -> ×256`, exactly.
 - `SHIFT` is an **integer right-shift in the integer domain, applied before any float cast**.
   It rounds to nearest; see the tie rule below.
-- `minus_exp` (bits[19:12]) and `cvt_type` are **no-ops on the integer accumulator path** —
+- `minus_exp` (bits[19:12]) and `cvt_type` are **no-ops on the integer accumulator path**;
   they only matter on the LUT/EW float datapath (below).
 - The **BN-MUL operand** (`DPU_BN_MUL_CFG[31:16]`) is likewise an integer multiply with the
-  operand read as **uint16** (`0x3800 → ×14336`), redundant with `SCALE` here.
+  operand read as **uint16** (`0x3800 -> ×14336`), redundant with `SCALE` here.
 
 This is exactly the QNNPACK **requantization** form (15-bit multiplier + shift + zero-point
-offset → int8/int16). `gen_conv2d_int8_fill(int8_out=1)` uses it to emit requantized int8
+offset -> int8/int16). `gen_conv2d_int8_fill(int8_out=1)` uses it to emit requantized int8
 bit-exact vs Teflon.
 
-### The tie rounds to EVEN
+### The tie rounds to even
 
 `acc*SCALE >> SHIFT` rounds to nearest, and an exact half lands on the **even** side:
-0.5 → 0, 1.5 → 2, −0.5 → 0, −1.5 → −2. Measured over 40 exact ties at two shifts, both
+0.5 -> 0, 1.5 -> 2, −0.5 -> 0, −1.5 -> −2. Measured over 40 exact ties at two shifts, both
 signs, all four candidate rules discriminated [HW sweep, H96 MAX M9, RK3576,
-`tests/requant_round_probe.c`]. So it is banker's rounding — matching QNNPACK's *precise*
-requantization, whose scale derivation the emitters already copy — and **not** the
+`tests/requant_round_probe.c`]. So it is banker's rounding, matching QNNPACK's *precise*
+requantization, whose scale derivation the emitters already copy, and **not** the
 round-half-**away-from-zero** the ancestor IP's documentation specifies
 ([nvdla-lineage.md](../nvdla-lineage.md)), nor the round-half-**up** that
 `(x + half) >> shift` gives and that every CPU model in this tree used to spell.
@@ -45,15 +45,15 @@ round-half-**away-from-zero** the ancestor IP's documentation specifies
 
 **Reaching a tie needs a deliberately chosen scale.** The derivation ends in `+1`
 (`MUL = ((bits>>9) & 0x7fff) + 1`, bit 14 forced), so `MUL` is **odd** for every round scale
-including every power of two — and an odd multiplier moves an exact half off the tie in the
+including every power of two, and an odd multiplier moves an exact half off the tie in the
 outward direction, so the rounder never sees one. That is why no gate has ever exercised the
 case, and why the probe picks a scale whose top 14 mantissa bits are all ones under an even
 exponent field, which is what makes `MUL` exactly `2^14`.
 
 **How often it matters in practice.** With `MUL` odd, ties are one accumulator residue in
 `2^SHIFT`, and the two rules differ on half of those: about `2^-(SHIFT+1)` of a surface.
-At a typical `SHIFT` of 15–20 that is nothing in a small gate case and tens of elements in a
-large prefill — one count each, sparse, present in every configuration. Exactly the standing
+At a typical `SHIFT` of 15-20 that is nothing in a small gate case and tens of elements in a
+large prefill: one count each, sparse, present in every configuration. Exactly the standing
 noise that has made single-element int8 disagreements unreadable.
 
 **Scope.** Measured on the RK3576. The RK3588 is **unmeasured**: its int8 matmul writes a raw
@@ -61,14 +61,14 @@ int32 accumulator and requants on the host, so the only entry with the on-chip r
 is the depthwise int8 conv, and `tests/requant_round_probe.c`'s RK3588 arm does not yet drive
 its accumulator (it says so at runtime rather than reporting a rule it has not earned).
 Since the scale derivation, the register triple and the IP are shared, the RK3576 rule is the
-prediction for the RK3588 — but it is a prediction, and this page previously asserted
-truncation there on the strength of a probe that could not have separated the two.
+prediction for the RK3588, and it is a prediction: no probe run there has separated
+truncation from round-to-even.
 
 **Float-affine convert (the LUT-activation path).** When the converter's *input* is already a
 Q-format value in the float/EW datapath (e.g. a LUT output `q`), `cvt_type=1` selects
 `out = (q + offset) * 2^-minus_exp`, narrowed to fp16 by `FP32TOFP16_EN`. See
 [dpu-lut-activation.md](dpu-lut-activation.md). The keystone is that `q` is *not* the raw
-integer accumulator — which is why `minus_exp` is inert on the plain matmul path.
+integer accumulator, which is why `minus_exp` is inert on the plain matmul path.
 
 ## Output dtype / cube on the int8 (int32-acc) datapath
 
@@ -76,27 +76,27 @@ integer accumulator — which is why `minus_exp` is inert on the plain matmul pa
 |---|---|---|---|
 | int32 | `7` / `stride*8` | 4 | the default raw-accumulator readback |
 | fp32  | `7` / `stride*8` | 4 | **bit-exact cast** of the int32 acc (`ROCKET_INT8_FP32_OUT`) |
-| fp16  | `3` / `stride*2` | 8 | small single-tile shapes only; **range-limited** `|acc|≤2048` |
+| fp16  | `3` / `stride*2` | 8 | small single-tile shapes only; **range-limited** `|acc|<=2048` |
 
-- **fp32 cast + integer SCALE** fold cleanly and generally (any shape, bit-exact).
+- **fp32 cast + integer scale** fold cleanly and generally (any shape, bit-exact).
 - **fp16** halves the output readback but its writer geometry is only correct for small
   single-tile shapes (wrong/strided values at e.g. 64×128×64) **and** the int32 accumulator
-  must fit fp16 — so it does **not** help the large-K LLM readback. Not shipped.
+  must fit fp16, so it does **not** help the large-K LLM readback. Not shipped.
 
 ## Consequence for int8 dequant (the negative result)
 
 A **fractional** W8A8 dequant scale (`acc * a_scale[m] * b_scale[n]`, both < 1) **cannot fold
-into OUT_CVT to produce a fractional float** — `(acc*scale)>>shift` always yields an
+into OUT_CVT to produce a fractional float**: `(acc*scale)>>shift` always yields an
 integer-valued float (the fraction is truncated). So:
 - the host per-row × per-channel dequant **stays**;
 - the int8 output-readback lever is **bigger-Kt** (fewer K-partials to read), not OUT_CVT;
-- OUT_CVT *is* the right tool for int8→int8/int16 **requant** (integer output) and for the
+- OUT_CVT *is* the right tool for int8->int8/int16 **requant** (integer output) and for the
   fp32 cast / per-tensor integer gain.
 
 Gate: `tests/matmul_int8_dequant_rocket.c`. Related: [precision-field.md](precision-field.md),
 [size-e-quirk.md](size-e-quirk.md), [k-accumulation.md](k-accumulation.md) (int8 EW K-accum dead).
 
-## Per-channel (per-axis) requant — multiplier yes, shift no
+## Per-channel (per-axis) requant: multiplier yes, shift no
 
 The DPU output requant stage carries a **per-channel multiplier but only a single per-stage
 shift**, so it cannot reproduce TFLite's per-axis int8 requant bit-exactly. [source-confirmed]
@@ -106,28 +106,28 @@ shift**, so it cannot reproduce TFLite's per-axis int8 requant bit-exactly. [sou
 |---|---|---|---|
 | `DPU_BS_MUL_CFG` | `0x4048` | **mul: yes** (`BS_MUL_SRC=1` reads the operand from a `[C]` cube) | per-channel multiply |
 | `DPU_BN_MUL_CFG` | `0x4068` | **mul: yes** (`BN_MUL_SRC=1` per-channel `[C]` operand) | per-channel multiply |
-| `BS/BN_MUL_SHIFT_VALUE` (+`_NEG`) | in-reg `[13:8]` / `[5:0]` | **shift: no** — one register value per stage | per-stage right-shift |
-| `DPU_OUT_CVT_SHIFT` | `0x4088` | **shift: no** — one global value | final requant shift |
+| `BS/BN_MUL_SHIFT_VALUE` (+`_NEG`) | in-reg `[13:8]` / `[5:0]` | **shift: no**, one register value per stage | per-stage right-shift |
+| `DPU_OUT_CVT_SHIFT` | `0x4088` | **shift: no**, one global value | final requant shift |
 
 So a per-output-channel **scale** is expressible (the BS/BN MUL operand cube, the `[C]` broadcast
 that [sdp-stage-precision.md](sdp-stage-precision.md) also notes), but a per-output-channel
-**shift** is not — every channel truncates by the same `SHIFT`. TFLite per-axis requant is
+**shift** is not: every channel truncates by the same `SHIFT`. TFLite per-axis requant is
 `out[oc] = MultiplyByQuantizedMultiplier(acc[oc], mult_q31[oc], shift[oc]) + zp` with a per-OC
-multiplier **and** per-OC shift in gemmlowp's Q31 doubling-high-mul form — which the NVDLA
+multiplier **and** per-OC shift in gemmlowp's Q31 doubling-high-mul form, which the NVDLA
 uint16-mul + single-shift integer requant above cannot match channel-for-channel.
 
 The per-channel converter the chip *does* have is the **CNA input** path (`CVT_CON0` `0x104C`
-`CVT_TRUNCATE_0..3`, `CVT_CON5` `0x1180` `PER_CHANNEL_CVT_EN`) in the `0x1xxx` domain — it
+`CVT_TRUNCATE_0..3`, `CVT_CON5` `0x1180` `PER_CHANNEL_CVT_EN`) in the `0x1xxx` domain. It
 normalizes input features/weights as they stream into CBUF, **not** the output requant. Don't
 mistake it for a per-OC output requant.
 
 **Consequence.** On-chip int8 requant matches **Teflon** (which uses this same NVDLA
 single-shift form, and is itself **per-tensor** only) but diverges from CPU TFLite by up to
-**~143** on full-range int8 — the measured Teflon-vs-CPU gap [HW sweep],
+**~143** on full-range int8, the measured Teflon-vs-CPU gap [HW sweep],
 [depthwise-conv.md](../depthwise-conv.md). A native per-channel int8 depthwise was declined on
 that basis (COCO mAP parity showed the fp16-approx depthwise costs ~0 accuracy). The same
 ceiling governs **keeping int8 activations resident between conv ops** (the delegate's
 NCHW-resident int8 inter-op lever): doing the inter-op requant on-chip would drift from the
 int8 reference unboundedly across ops, so that lever is **mAP-gated (an accuracy decision),
-not bit-exact-gateable** — which is why it sits with the calibration-accuracy cluster, not the
+not bit-exact-gateable**, which is why it sits with the calibration-accuracy cluster, not the
 on-device bit-exact gates.
