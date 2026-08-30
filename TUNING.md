@@ -25,7 +25,10 @@ almost nothing:
   dequant, +19-33%). You do not set these; you would only ever set one to `0` to A/B it.
 - **The four opt-ins that actually change the outcome**, each gated on your workload and RAM:
   1. **`-b 2048 -ub 2048`** (a llama.cpp flag, not a `ROCKET_*` one), for any **quantized
-     GGUF**. ~2.1x over the llama.cpp `-ub 512` default. The single biggest lever, and nearly free:
+     GGUF**. **0.94-1.53x over the llama.cpp `-ub 512` default, model-dependent** — ten models
+     measured, larger on the big DENSE models but not predictable from parameter count, and
+     negative on two (`smolvlm2` 0.941x, `qwen3-30b-a3b` 0.908x). Still the
+     biggest of the flag levers on a large quant model, and nearly free:
      the larger micro-batch grows the activation/compute buffers ~4x (512->2048), negligible against the
      weights but not zero, so glance at it on a RAM-tight, swap-less board.
   2. **`ROCKET_QUANT_RESIDENT=auto`**, for a quantized GGUF **if the model's fp16 size fits RAM**.
@@ -168,7 +171,7 @@ also speeds decode. Sizes are the fp16 footprint the residency levers need.
 |---|---|---|---|
 | **F16, fits RAM** | medium / long | defaults only (KACC/REUSE/ASYM/FA on) | Already the fastest prefill; nothing to add |
 | **F16, fits ~2x RAM** | agentic / RAG (repeated) | `+ ROCKET_F16_RESIDENT=auto` | Pack the weights once; ~+6% pp2048, +9% pp512 on a 3B F16 model [HW sweep] |
-| **Quantized GGUF** | medium / long | `-b 2048 -ub 2048` | ~2.1x over the `-ub 512` default; per-µbatch dequant amortized |
+| **Quantized GGUF** | medium / long | `-b 2048 -ub 2048` | **0.91-1.53x** over the `-ub 512` default. **Dense**: 1.18-1.53x above 8 B, 0.94-1.13x under 4 B. **MoE**: read its own row, 0.91-1.32x. Measure it: two of eleven lose |
 | **Quantized GGUF, fp16 fits RAM** | agentic / RAG | `-b 2048 -ub 2048` + `ROCKET_QUANT_RESIDENT=auto` | Dequant once -> fp16 parity (~1.5x); costs the full fp16 footprint |
 | **Any, short prompts** | interactive chat | pick `Q4_K_M` for decode; no NPU flags | Prefill is below the offload floor; the turn is decode-bound |
 | **MoE (gpt-oss, DeepSeek, …)** | medium / long | `-b 2048 -ub 2048`; the expert offload needs no flag | ~2.4x the CPU at pp2048 on gpt-oss-20b, default-on and self-gating. Eligibility is per architecture, not universal: gpt-oss offloads from `-ub 512` up, DeepSeek-V2-Lite only past ~1250 tokens in a micro-batch |
@@ -188,8 +191,19 @@ re-decodes the whole model every 512 rows; `-ub 2048` spreads that fixed cost.
   (one micro-batch).
 - **Cost:** the larger micro-batch grows the activation/compute buffers ~4x (512->2048), negligible
   against the weights, but not zero; on a RAM-tight board (no swap on this one) confirm it still fits.
-- **Delta:** ~2.1x, at 9B `Q4_K` pp2048 **8.2 -> 17.2 t/s** [HW sweep]. `Q4_K` / `IQ4_XS` / `Q8_0`
-  converge within noise; quant type does not change NPU prefill throughput.
+- **Delta:** **0.94-1.53x, model-dependent**, over ten models 0.75-27.32 B
+  [HW sweep 2026-08-29, rotated passes]. **The split is at ~4 B**: models above 8 B read
+  **1.18-1.53x** (1.176 / 1.424 / 1.257 / 1.308 / 1.532 at 8.49 / 8.95 / 11.91 / 14.66 / 27.32 B)
+  and models under 4 B read **0.94-1.13x**, with `smolvlm2` (1.81 B) a **loss** at 0.941x. Within
+  the large group parameter count does not order it. **That split is DENSE models only**:
+  `qwen3-30b-a3b` is 30.53 B and reads **0.908x**, the matrix's second loss, because only ~3 B are
+  active per token — read a MoE model from its own row, not from its parameter count. The superseded ~2.1x / 2.25x are 2026-06-28
+  readings of the 9B and 27B; **both have fallen by the same 0.68 factor** (2.098 -> 1.424,
+  2.250 -> 1.532), because three default-on host-cost cuts raised the `-ub 512` baseline ~1.47x
+  more than the `-ub 2048` arm on each — measure it rather than assuming the class. The superseded ~2.1x
+  (8.2 -> 17.2 t/s) is a 2026-06-28 reading of the same 9B; three default-on host-cost cuts have
+  since raised the `-ub 512` baseline 2.33x against the `-ub 2048` arm's 1.59x. `Q4_K` / `IQ4_XS` /
+  `Q8_0` converge within noise; quant type does not change NPU prefill throughput.
 - **Trap:** never compare a `-ub 512` number against a `-ub 2048` one; a whole class of phantom
   "regressions" is this mistake. See [perf/quant-prefill-microbatch.md](perf/quant-prefill-microbatch.md).
 
@@ -256,7 +270,8 @@ removes the per-µbatch host dequant that makes the naive fp16 expert route a lo
   `ROCKET_MOE_CACHE_MB` instead**: it buys most of that back while keeping both the zero-streamed
   property and the sign guarantee.
 - **The measured budget ladder, gpt-oss-20b on a 31 GiB board** [HW sweep 2026-08-27, 600 MHz,
-  behind a `drop_caches`, every arm 0 streamed]:
+  behind a `drop_caches`, every arm 0 streamed, **one `-r 3` process per arm, so every rung is
+  n=1**]:
 
   | setting | budget | stacks | pp512 | pp2048 | vs default |
   |---|---|---:|---:|---:|---|
@@ -268,8 +283,76 @@ removes the per-µbatch host dequant that makes the naive fp16 expert route a lo
   **28000 is the setting worth knowing**: 71 of 72 stacks, 79% of the pp2048 ceiling, and above the
   forced arm at pp512, with the pre-flight still guaranteeing the sign. But it leaves only ~2.8 GB
   of the headroom the 6 GiB auto reserve exists for (KV cache, activations), so it is a knob for a
-  **known working set**, not a new default. The pp512 column is inside a ±1.4-2.1 spread and should
-  not be read finely. `ROCKET_MOE=0` leaves the experts on the CPU.
+  **known working set**, not a new default. **The stack counts are exact and the percentages are
+  not**: one process on this board can sit ~10% off the level its own configuration repeats at, so
+  the ladder supports "more budget places more stacks, and on this model class that pays" rather
+  than those four deltas. The pp512 column is inside a ±1.4-2.1 within-process spread on top of
+  that and should not be read finely at all. `ROCKET_MOE=0` leaves the experts on the CPU.
+- **On an expert-dominated model the direction INVERTS**, so this is not a "raise it if you have
+  RAM" knob. Qwen3-30B-A3B holds 29 of its 30.5 B parameters in the experts (17.28 GiB GGUF), and
+  at `-ub` 4096 on the same board the curve is a plateau then a cliff: **18000-21000 MB** takes
+  58-67 stacks and reads 1.046x the experts-on-CPU baseline (pooled over seven processes), auto
+  (24425 MB) takes 79 and reads 1.014x (n=3), and 28000 MB takes 90 and reads 0.999x (**n=1**, so
+  it supports "one process read parity", not "at 90 stacks the offload buys nothing")
+  [HW sweep 2026-08-28, RK1, 600 MHz]. The cause is that the admission charge counts the GGUF
+  source bytes of the experts it *places* but not of the ones it leaves on the CPU, which the CPU
+  reads from the same mmap every micro-batch and which are equally unreclaimable.
+- **The knob's units are not bytes of RAM, so a recommendation does not transfer by arithmetic on
+  RAM alone.** The charge per expert is `N·K` int8 code bytes + `N·(K/group)·4` scale bytes + that
+  expert's GGUF source stride, so budget buys less residency than it names by a **charge factor**
+  `1 + 4/group + source_bits_per_weight/8` -- and the route measures it for you. The pre-flight's
+  `resident budget reached after N expert stacks (X MB RAM, Y MB IOVA)` line has the charge and the
+  codes side by side, and `X/Y` reads **1.610** on Qwen3-30B-A3B Q4_K_M and **1.521** on gpt-oss
+  MXFP4 against **1.617** and **1.538** derived, so the formula sizes a budget to ~1% before a run
+  and the log pins it after. A Q8_0 MoE would need about **2.07** **[expected -- derived from
+  bits/weight, not measured]**. Convert, do not copy:
+
+  ```
+  budget_MB  ~=  factor x (MemTotal - the whole expert GGUF - ~1.2 GiB runtime headroom)
+  ```
+- **Board size: what fits, and where `auto` over-places.** Every MoE number here was taken on a
+  31 GiB board, which is the only RK3588 size in hand, so **the rows below 32 GB are arithmetic
+  from that board's measurements and are tagged [expected]** -- not measurements. The arithmetic is
+  the formula above plus a stack's code size (`n_expert · K · N` bytes), and it is checked against
+  the 32 GB board first, where it is out of sample for two of the three models:
+
+  | board (MemTotal) | Qwen3-30B-A3B Q4_K_M, 17.3 GiB | gpt-oss-20b MXFP4, 11.3 GiB | DeepSeek-V2-Lite Q4_K_M, 9.7 GiB |
+  |---|---|---|---|
+  | **32 GB** (31.0 GiB) | ~67 of 144 stacks fit; auto asks ~81. **Pin 18000-21000** | whole stack fits; auto asks ~65 of 72. **Raise to 28000** | whole stack fits with room; auto is right |
+  | | *measured: plateau 58-67, auto took 79* | *measured: auto took 63, 28000 took 71* | *measured: all 78 admitted* |
+  | **16 GB** (15.4 GiB) | **not viable** -- the GGUF alone is 17.3 GiB | ~12 of 72 fit; auto asks ~24, **2x too many**. Pin ~4600 [expected] | ~26 of 78 fit; auto asks ~32. Pin ~7500, and needs `-ub` past ~1250 to clear the work floor [expected] |
+  | **8 GB** (7.6 GiB) | no | no -- GGUF > RAM | no -- GGUF > RAM |
+  | **4 GB** | no | no | no |
+
+  **The 32 GB row is the check, and it is worth being exact about which half of it is evidence.**
+  The `auto` column is mostly arithmetic the pre-flight itself performs, so reproducing it
+  (**79.0 predicted against 79 measured** on Qwen3, **64.1 against 63** on gpt-oss, from each run's
+  own reported budget and measured charge factor) confirms the *inputs* -- the per-stack code size
+  `n_expert · K · N` and the charge factor -- rather than the model. That is worth having, because
+  those inputs are what the small-board rows are computed from, but it is not independent.
+
+  **The `fits` column is the independent half.** It is `MemTotal − GGUF − headroom`, it has the one
+  free parameter, and its prediction for Qwen3-30B is **~67 stacks** -- which is the top of the
+  **measured 58-67 plateau**, a performance boundary the arithmetic never saw. The same column says
+  the gpt-oss and DeepSeek stacks fit whole on this board, which is what was measured. So: the
+  inputs are confirmed exactly, and the one prediction that could have been wrong landed on the
+  measured edge.
+
+  **Why 16 GB is the only tier where the answer is "it depends".** Prefill touches **every** expert
+  **every** micro-batch, so the working set is the whole expert GGUF no matter how little of it is
+  placed. A GGUF larger than RAM therefore thrashes, and no budget setting changes that: at 8 GB
+  and below all three models are refused on GGUF size alone. At 16 GB the GGUF fits for two of the
+  three and the question becomes how much int8 fits beside it -- which is the case where the budget
+  actually has to be pinned, because `auto`'s uncharged remainder is largest at LOW placement.
+  Placing 12 of gpt-oss's 72 stacks leaves 60 stacks' worth of source, ~9.4 GiB, charged to nobody
+  on a board with 15.4.
+
+  **The default's own failure direction is safe, which is why `auto` is still the shipping value.**
+  The flat 6 GiB reserve is 19% of a 32 GB board, 37.5% of 16 GB and 75% of 8 GB, so `auto`
+  withholds proportionally more the smaller the board is and effectively turns the route off at
+  8 GB. And a stack the budget cannot reserve is never claimed, so those layers run wholly on the
+  CPU: the experts-on-CPU baseline, not a streamed partial-residency loss. Partial residency is a
+  `ROCKET_MOE=1` failure mode (52% resident, 0.97x), and the default cannot reach it.
 - **Negative results, not worth chasing:** the **fp16** expert route (`ROCKET_MOE_NATIVE=0`) is a net
   loss on both models, re-dequantizing every expert every µbatch, and the default never takes it. And a
   per-expert row count is the wrong handle for the floor: `M_e` = 96 is 1.77x on gpt-oss and ~parity on
@@ -315,7 +398,7 @@ llama.cpp/stack defaults leave real speed on the table:
 | Lever | Default | Tuned | Gain | Measured on |
 |---|---|---|---|---|
 | Clock | 200 MHz | 600 MHz (`patches/rocket`) | 1.43x | Gemma-4-12B [HW sweep] |
-| Quant micro-batch | `-ub 512` | `-b 2048 -ub 2048` | ~2.1x | Qwen3.5-9B `Q4_K`, 27B `Q4_K` [HW sweep] |
+| Quant micro-batch | `-ub 512` | `-b 2048 -ub 2048` | **0.91-1.53x**; dense 1.18-1.53x above 8 B | eleven models 0.75-30.53 B [HW sweep 2026-08-29/30, rotated passes]. The superseded ~2.1x/2.25x are 2026-06-28 figures; the 9B now reads 1.424x and the 27B 1.532x, both down by the same 0.68 factor. Total parameter count is the wrong axis for a MoE model |
 | Quant residency | streaming | `ROCKET_QUANT_RESIDENT=auto` | ~1.5x (-> fp16 parity) | Qwen3.5-0.8B, 9B [HW sweep] |
 | F16 residency | re-pack per turn | `ROCKET_F16_RESIDENT=auto` | ~+6-9% | 3B F16 [HW sweep] |
 | MoE experts | (now default-on) | n/a | 1.64x -> 2.08x over experts-on-CPU, pp512->pp2048 | gpt-oss-20b [HW sweep] |
@@ -337,9 +420,14 @@ the project's own open-work tracker, which is not part of this repo. The largest
   Qwen3.5); every other model inherits the default silently.
 - `ROCKET_QUANT_RESIDENT` is measured only on Qwen3.5-0.8B/9B; it is untested whether a 12B+ fp16 resident even
   fits, or its delta.
-- `ROCKET_MOE` is measured on gpt-oss-20b and DeepSeek-V2-Lite only, and the two disagree about which
-  shapes are eligible, so a third MoE architecture is where the size floors get tested; no `ROCKET_MOE_CACHE_MB`
-  residency sweep beyond the gpt-oss observation.
+- `ROCKET_MOE`'s size floors are fitted on gpt-oss-20b and DeepSeek-V2-Lite, which disagree about
+  which shapes are eligible; Qwen3-30B-A3B is a third architecture and confirms the floor's **sign**
+  but not its position (201 MMAC is far below the 340 default). `ROCKET_MOE_CACHE_MB` now has two
+  ladders, gpt-oss and Qwen3-30B-A3B, and they invert -- but both are on the same 31 GiB board, so
+  the board-size axis is unmeasured and the small-board table above is arithmetic.
+- The `ROCKET_MOE_CACHE_MB` ladders' end rungs are **n=1** (both of gpt-oss's three, and Qwen3's
+  12000 and 28000), against a per-process spread on this board of ~10%. Only the Qwen3 plateau
+  (n=7) against auto (n=3) is deep enough to quote as a size.
 - The SmolVLM2 resident `rocket_siglip_encoder` vision path is described but has no end-to-end benchmark;
   the generic clip drop-in is the only measured multimodal-vision number (1.19x).
 - Prompt-size crossover is characterized on a few models (`ROCKET_MIN_M` sweep on 0.8B/3B/8B); the exact

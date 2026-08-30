@@ -346,9 +346,9 @@ memory traffic and index math, not by instruction throughput:
   the NEON path already fans across 3, so the NEON de-tile stays the path
   ([rga-detile.md](rga-detile.md), and by the same argument the PL330 DMAC).
 
-## An analytical bytes-moved model (no HW counter)
+## An analytical bytes-moved model, and where a counter says it is wrong
 
-The real DDR/DMA byte counters are dead on rk3588 (reading the `0x2xxx` page
+The NPU's own DMA byte counters are dead on rk3588 (reading the `0x2xxx` page
 hard-locks the SoC; `0x80xx` is config-only; see [hw-byte-counters.md](hw-byte-counters.md)),
 and RKNN's "Total Memory R/W per frame" is itself *computed from the graph*, not read
 from HW. So **`tests/bytes_moved_rocket.c`** computes the DRAM bytes each phase moves
@@ -378,6 +378,27 @@ dtype + the reuse mode. It maps each term to a `ROCKET_MM_PROFILE` bucket:
 - **DATA_REUSE quantified.** Turning data_reuse off changes only `fDMA` 3.75 -> 60 MB
   (`×nNt=16`), total 141.5 -> 197.8 MB, which is the DMA the `ROCKET_REUSE` CBUF-reuse
   win removes ([cbuf-reuse.md](../encodings/cbuf-reuse.md)).
+
+**The system-level DDR PMU now checks it, and splits the verdict**
+[HW sweep 2026-08-28, RK1, 600 MHz; `rockchip_ddr`, calibrated to 0.4% against known bytes --
+[hw-byte-counters.md](hw-byte-counters.md) §5]. Differencing 45 against 5 reps of this same
+`512x3840x4096` cell isolates 40 matmuls:
+
+- **The `data_reuse` term is right.** `ROCKET_REUSE=0` is predicted to add `+116.25 MB` of
+  reads and nothing to writes; measured **+120.98 MiB read, -1.93 MiB write**, 4% high. The
+  tiling and the loop order the model assumes are confirmed against a counter.
+- **The absolute total is 3.57x the model** -- 475.95 MiB measured against 133.50 MB -- and the
+  excess is the **host scatter**. Hoisting `packB` out of the loop (the prepacked path, same
+  arithmetic) removes **249.34 MiB per call** against a 30.00 MB term: **8.3x**, in both
+  directions. A scatter moves useful chunks smaller than a cache line, so the bus moves a whole
+  line per chunk and moves it twice. This does not overturn "pack is not bandwidth-bound" --
+  249 MiB over the ~78 ms of wall the scatter adds per call is ~3.4 GB/s against a ~17 GB/s
+  ceiling -- but the headroom is **8x smaller** than the 0.9 GB/s figure below implies, so quote
+  the achieved rate as a rate on the *bus*, not on the operand. (The 78 ms is a three-rep timing
+  with the first rep included, so it is the loose end of the two.)
+- **The `KACC` sensitivity is wrong on the read side.** `ROCKET_KACC=0` is predicted to add
+  `+28 MB` of writes and no reads; measured **+20.4 MiB write and +189.0 MiB read**. So the
+  int8 readback floor just below is a **lower bound**, not the figure.
 
 **It makes the int8 readback floor concrete.** Same shape, int8 (no on-NPU K-accum,
 int32 out): `oWDMA` + `readback` = `nKt·M·N·4` *each* = **80 MB + 80 MB = 160 MB** of

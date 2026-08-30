@@ -114,6 +114,9 @@ if [ "${1:-}" = --list ]; then
   echo "MODE=$MODE  CPUARM=$CPUARM  TESTS='$TESTS'  OUTD=$OUTD"
   echo "Cost per arm ~= (sum of -p) x (reps + 1 warmup) tokens of prefill, plus one discarded"
   echo "warmup process and one model load. Divide by the model's pp2048 t/s for wall time."
+  echo "Then MULTIPLY BY PASSES (default 3): one process per arm does not settle a sign on this"
+  echo "board -- the same two-arm unit read 0.948x and then 1.107x with identical placement."
+  echo "PASSES=$(printf %s "${PASSES:-3}")"
   exit 0
 fi
 

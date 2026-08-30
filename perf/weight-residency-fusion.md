@@ -71,5 +71,35 @@ backend only).
   path is untouched and bit-identical. Decode is unaffected (the source GGUF stays mapped). RAM cost
   is ~2x the fp16 model (resident tiles plus the source), so it wants a model that fits ~2x in RAM.
 
+## Reading whether residency actually happened
+
+An A/B on t/s cannot tell a residency arm that was **declined** from one that was **placed and
+gained nothing**: both produce the same rows at the same speed, and the init line reports only the
+*budget* the route was given. Both routes therefore report their outcome at teardown, on the driver
+log channel (`ROCKET_LOG_STDERR=1` shows it under a host that silences ggml, which `llama-bench`
+does without `-v`):
+
+```
+[f16-resident] weights offered to the resident route: 193 resident on the NPU (5232MB), 0 streamed
+               via the per-call pack -- 100% resident
+[f16-resident] admission first declined at 1008MB resident: the 1024MB resident-weight budget
+               would not hold the next 96MB group
+```
+
+The second line names which of the three admission limits turned a weight away first — the byte budget, the
+`MemAvailable` floor, or a full NPU IOVA window — because each takes a different fix, and under 80%
+resident a warning says that what was measured is mostly the streaming path.
+
+**A fused group's members count individually**, so the number means the same thing on both routes:
+Llama-3.2-3B-F16 at `ROCKET_F16_RESIDENT=auto` reads **193 resident / 5232 MB** with fusion on and
+**193 / 5232 MB** with `ROCKET_NO_FUSE=1` [HW sweep 2026-08-28, RK1, 600 MHz].
+
+What it does **not** score: whether residency paid (that is the t/s beside it); the *work* held
+resident, since it counts weights and bytes, not GEMM share; and anything about matmuls the backend
+never claimed — the denominator is the weights **offered** to the residency route, so an op refused
+upstream by type, shape or `rocket_min_m` appears in neither column. A model whose `K` never exceeds
+2048 never forms a fusable group, so a small model exercises only the per-node route.
+
 Probe: warm pp512 / pp2048 A/B through ggml-rocket / llama.cpp with `ROCKET_F16_RESIDENT=auto` vs
-unset, and `ROCKET_NO_FUSE=1` to isolate the fusion delta at fixed residency.
+unset, and `ROCKET_NO_FUSE=1` to isolate the fusion delta at fixed residency. Read the teardown
+line on each arm before quoting a delta as a zero.

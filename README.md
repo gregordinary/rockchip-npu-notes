@@ -1,29 +1,38 @@
 # Rockchip NPU reverse-engineering notes
 
-## AI Disclosure
+## AI disclosure
 
-The documents in rockchip-npu-notes were authored by AI, primarily Claude Code (Opus 4.8). These documents were produced as part of a series of side projects and are being published here as they may be of use to efforts by others. Accuracy of information is not guaranteed.
+The documents in rockchip-npu-notes were authored by AI, primarily Claude Code (Opus 4.8). They
+were produced as part of a series of side projects, and are published here in case they are of use
+to others. Accuracy of information is not guaranteed.
 
 ## About rockchip-npu-notes
 
 These are subsystem-organized, project-independent notes on the Rockchip RK3588
 NPU as driven through the mainline `rocket` DRM-accel driver.
 
-Most of what is here is IP-inherent: true of the rknpu/NVDLA-derived block on any
-Rockchip SoC that carries it. The values that vary per chip (machine parameters, the
-register offset map, SoC integration) are collected in the per-SoC sheets under
-[chips/](chips/); the RK3588 is the hardware-validated reference, with the RK3576 and
-RK3566 tracked there.
+Most of what is here is IP-inherent, meaning true of the rknpu and NVDLA-derived block on any
+Rockchip SoC that carries it. The values that vary per chip are collected in the per-SoC sheets
+under [chips/](chips/): machine parameters, the register offset map, and SoC integration. The
+RK3588 is the hardware-validated reference, with the RK3576 and RK3566 tracked there.
 
-They were established by reverse-engineering the hardware on a real device (Turing
-RK1, 32 GB, mainline kernel ~7.1) while building a FOSS inference stack on top of
-`rocket`: a userspace matmul library, a ggml backend, an NPU-clock patch, and a
-TFLite delegate. Most of what we learned, though, is not specific to any one of
-those projects; it is facts about the silicon and how its register-command
-interface behaves. That is what lives here.
+They were established by reverse-engineering the hardware on a real device, a Turing RK1 with
+32 GB on mainline kernel ~7.1. That work built a FOSS inference stack on top of `rocket`: a
+userspace matmul library, a ggml backend, an NPU-clock patch, and a TFLite delegate.
 
-If you are trying to run your own compute on the RK3588 NPU through `rocket` (or
-any raw-regcmd path), this repository provides observations, insights, and details on precision encodings, native tile layouts, integer-output `size_e` quirk, what the DPU eltwise unit can and cannot accumulate, the CBUF operand-reuse bits, the MRDMA trap that hangs your first job, the per-fd IOVA window, and the clock that boots at 1/5 speed.
+Most of what we learned is not specific to any one of those projects. It is facts about the
+silicon and how its register-command interface behaves. That is what lives here.
+
+This repository is for someone running their own compute on the RK3588 NPU through `rocket`, or
+any raw-regcmd path. It carries observations, insights and details on:
+
+- Precision encodings and native tile layouts.
+- The integer-output `size_e` quirk.
+- What the DPU eltwise unit can and cannot accumulate.
+- The CBUF operand-reuse bits.
+- The MRDMA trap that hangs your first job.
+- The per-fd IOVA window.
+- The clock that boots at 1/5 speed.
 
 For a start-to-finish walkthrough that ties the driver library, the frontends, and the
 kernel patches together, see the [guide](guide/).
@@ -92,31 +101,45 @@ ones, which were the most expensive to learn.
 
 ## The one-paragraph summary
 
-The RK3588 NPU is an NVDLA-derived 3-core accelerator. The `rocket` kernel driver
-is a generic register-command submitter (`CREATE_BO` / `SUBMIT` / `PREP_BO`), so you
-can drive matmul yourself by emitting the same CNA→CORE→DPU regcmd Mesa uses for
-convolution: a matmul is a 1×1 convolution. It natively supports int4 / int8 /
-int16 / fp16 / bf16 / tf32 (+ int32 / fp32 outputs); we have a working matmul for
-every one (int16 is the lone exception: it has no native matmul *output*, so it is
-done by int8 byte-decomposition). Weights and activations must be pre-scattered into
-native tiled layouts on the host (the NPU has no on-chip row-major->tiled
-conversion). The integer-output write stride has a quirk (`size_e=7`). You can
-accumulate fp16 K-partials on-chip via the DPU eltwise unit, but not integer
-ones, because the DPU eltwise ALU is float-only. The int8 feature cube has a CBUF gotcha: its
-DMA over-reads by one bank, so you must give it `data_bank = fd_banks+1` of slack
-(fp16 is immune). The matmul rows are the conv's spatial height, and a height below
-4 (the `M==1` single-vector / GEMV case) mis-computes on the hardware at every
-dtype, so `M%4==0` is the real constraint and software pads `M==1` to 4. You reach
-the 3 cores by opening 3+ file descriptors (one scheduling entity per fd). The DPU also has an
-NVDLA LUT unit that computes nonlinear activations on-chip (sigmoid/tanh/SiLU/GELU/sqrt/rsqrt/
-reciprocal/exp), enough, composed with the matmul, to run a full transformer/Whisper encoder
-block on the NPU; two LUT gotchas: a table entry of exactly `q=0` mis-decodes to a garbage ~4.0
-(floor entries to `q>=1`), and riding the exact 13-bit max cube width corrupts the tail (tile under
-it). And the most important performance fact: at the current operating point the matmul is
-DMA/dispatch-bound, not MAC-bound, so quantization buys you RAM, not prefill speed
-(bottleneck-conditional, not a permanent silicon law). The clock boots at 200 MHz and
-can only be raised
-from inside the driver after the power domain is up.
+The RK3588 NPU is an NVDLA-derived 3-core accelerator. The `rocket` kernel driver is a generic
+register-command submitter (`CREATE_BO` / `SUBMIT` / `PREP_BO`). You can therefore drive matmul
+yourself by emitting the same CNA→CORE→DPU regcmd Mesa uses for convolution, because a matmul is
+a 1×1 convolution.
+
+**Datatypes.** It natively supports int4, int8, int16, fp16, bf16 and tf32, with int32 and fp32
+outputs. We have a working matmul for every one. int16 is the lone exception: it has no native
+matmul *output*, so it is done by int8 byte-decomposition.
+
+**Layout.** Weights and activations must be pre-scattered into native tiled layouts on the host,
+because the NPU has no on-chip row-major-to-tiled conversion. The integer-output write stride has
+a quirk, `size_e=7`.
+
+**Accumulation.** You can accumulate fp16 K-partials on-chip via the DPU eltwise unit, but not
+integer ones, because the DPU eltwise ALU is float-only.
+
+**The int8 feature cube has a CBUF gotcha.** Its DMA over-reads by one bank, so give it
+`data_bank = fd_banks+1` of slack. fp16 is immune.
+
+**Alignment.** The matmul rows are the conv's spatial height, and a height below 4 mis-computes on
+the hardware at every dtype. That is the `M==1` single-vector or GEMV case. So `M%4==0` is the
+real constraint, and software pads `M==1` to 4.
+
+**Cores.** You reach the 3 cores by opening 3 or more file descriptors, one scheduling entity per
+fd.
+
+**Activations.** The DPU also has an NVDLA LUT unit that computes nonlinear activations on-chip:
+sigmoid, tanh, SiLU, GELU, sqrt, rsqrt, reciprocal and exp. Composed with the matmul, that is
+enough to run a full transformer or Whisper encoder block on the NPU.
+
+Two LUT gotchas. A table entry of exactly `q=0` mis-decodes to a garbage ~4.0, so floor entries to
+`q>=1`. And riding the exact 13-bit max cube width corrupts the tail, so tile under it.
+
+**The most important performance fact.** At the current operating point the matmul is
+DMA/dispatch-bound rather than MAC-bound. Quantization therefore buys RAM rather than prefill
+speed. That is bottleneck-conditional rather than a permanent silicon law.
+
+**Clock.** It boots at 200 MHz, and can only be raised from inside the driver after the power
+domain is up.
 
 ## License
 

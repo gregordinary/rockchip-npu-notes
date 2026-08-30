@@ -609,12 +609,85 @@ than drift:
 **The shape is a plateau and then a cliff, and the shipped budget is over the edge of it.** The two
 middle rungs are not separable, 10.76 against 10.83, 0.65% apart against arms whose own spreads are
 1.1% and 1.6%, so 58 and 67 stacks are one plateau, pooled **1.046x over seven processes**. Between
-67 and 79 the ratio falls to 1.014, and by 90 the offload buys nothing at all. Per-rep spread grows
-monotonically with placement across the whole ladder (±0.00 -> ±1.02), which is a memory-pressure
-signature rather than anything about the offload. Set against the materiality table above, the
-shipped budget's admission repays after ~34 000 tokens, **twice the 1.05x cell the floor was fitted
-to exclude**, where the plateau repays after ~7 500, between the 1.22x and 1.31x rows. So the
-practical recommendation is a **range, 18000-21000 MB**, not a value that has to be hit exactly.
+67 and 79 the ratio falls to 1.014.
+
+**The two ends of the ladder are one process each, and the `n` column is load-bearing.** The plateau
+is seven processes over two rungs and the auto rung is three, but 12000 and 28000 are **n=1**. A
+single process on this board can sit ~10% off the level its own configuration repeats at [HW sweep
+2026-08-28], so 28000's 0.999x supports "one process read parity", not "at 90 stacks the offload
+buys nothing"; the cliff's existence rests on the plateau-to-auto step, which has the depth, and its
+*depth* past 79 stacks does not. Per-rep spread grows monotonically with placement across the whole
+ladder (±0.00 -> ±1.02), which is a memory-pressure signature rather than anything about the
+offload, and it is also why the two single-process rungs are the least trustworthy: they are the
+ones taken where the spread is widest.
+
+Set against the materiality table above, the shipped budget's admission repays after ~34 000
+tokens, **twice the 1.05x cell the floor was fitted to exclude**, where the plateau repays after
+~7 500, between the 1.22x and 1.31x rows. So the practical recommendation is a **range,
+18000-21000 MB**, not a value that has to be hit exactly.
+
+**The budget's units are code-relative, so the number does not transfer to another quant or
+another board.** What the knob bounds is not RAM: the admission charge is the int8 codes plus the
+per-(channel, K-group) scales plus that expert's GGUF source bytes, so a budget buys strictly less
+residency than it names. Across the ladder:
+
+| budget | resident int8 | budget / resident |
+|---:|---:|---:|
+| 18000 MB | 11430 MB | 1.58 |
+| 21000 MB | 13167 MB | 1.60 |
+| 24425 MB | 14877 MB | 1.64 |
+| 28000 MB | 16716 MB | 1.68 |
+
+**The charge's own form predicts the ratio, which is what makes it usable rather than a curve fit.**
+Per expert the charge is `N·K` code bytes + `N·(K/group)·4` scale bytes + the source stride `nb[2]`,
+so against the codes alone
+
+```
+charge / codes  =  1 + 4/group + source_bits_per_weight/8
+```
+
+This GGUF is 18556686912 bytes for 30.5 B parameters = **4.87 bits/weight**, and `K`=2048 auto-picks
+group 512, giving **1.617**. The scales term is the small one (0.8% here) and the source term
+carries it.
+
+**The route measures the factor directly, and that is the number to compare against** -- the
+budget-over-resident column above is only an estimator of it, since a budget is what was *requested*.
+The pre-flight prints both halves of the charge:
+
+```
+[moe-int8] resident budget reached after 79 expert stacks (24425MB RAM, 15168MB IOVA)
+```
+
+RAM is the charge and IOVA is the int8 codes, so their ratio **is** `1 + 4/group + bits/8` with
+nothing inferred. Measured that way, on two models and two quant formats:
+
+| model | quant | charged / codes | derived | agreement |
+|---|---|---:|---:|---:|
+| Qwen3-30B-A3B | Q4_K_M, group 512 | 24425 / 15168 = **1.610** | 1.617 | 0.4% |
+| gpt-oss-20b | MXFP4, group 576 | 21433 / 14092 = **1.521** | 1.538 | 1.1% |
+
+[HW sweep 2026-08-28 for the first, RK1; the second from four archived runs
+([data/gpt-oss-20b.md](data/gpt-oss-20b.md)) whose six such lines read 1.5209-1.5211.] The derived
+value is ~1% high in both cases, so the form is a good sizing rule and not an exact one. Two caveats
+on its input explain the direction: 4.87 bits/weight is the whole file's average standing in for the
+expert tensors' own rate, and a Q4_K_M GGUF mixes types.
+
+So the same physical placement needs a different number typed in for a different quant of the same
+model -- about **2.07** for Q8_0 (8.5 bits/weight) and **1.54** for IQ4_XS (4.25)
+**[expected -- derived from bits/weight, not measured]**.
+
+**So read the factor off the log when an exact number is wanted, and derive it when sizing a budget
+before a run.** The derivation is what makes it transferable across quants and boards; the log is
+what pins it for one model. (One archived gpt-oss line reads 1.3926 at 10.70 MB/expert against the
+others' 8.07 -- a different expert geometry, not a disagreement. And a run at a *pinned*
+`ROCKET_MOE_CACHE_MB` stops at the pin rather than at the natural budget, so take the ratio from a
+line whose stack count is limited by RAM, which is what "budget reached ... Bound by RAM" says.)
+
+**It is also why the rule and the recommendation look contradictory.** `MemTotal` minus the whole
+expert GGUF minus the reserve reads 31.7 − 17.3 = 14.4 GB on this board, nothing like 21000 MB.
+Converted through the measured factor, with a runtime-headroom term, it closes:
+`1.610 × (31.7 − 17.3 − 1.2)` = 21.3 GB. **That is a consistent FORM and not an independent prediction** -- the headroom term is
+the one free parameter and it was chosen to land on the measured plateau.
 
 **The mechanism is an omission in the charge [hypothesis].** The pre-flight charges each *placed*
 expert as int8 codes plus that expert's GGUF source bytes. What it does not charge is the rest of the
@@ -645,8 +718,12 @@ how long; that is not measured here.
 
 It predicts its own scope, and the prediction holds where it can be checked: the defect needs the
 experts to dominate the model *and* the GGUF to be large against RAM. gpt-oss-20b is neither
-(11.27 GiB), and `ROCKET_MOE_CACHE_MB=28000` there measured **+8.3% / +14.1%** with no degradation.
-So a `ROCKET_MOE_CACHE_MB` recommendation is scoped to the model class, not to the board size.
+(11.27 GiB), and `ROCKET_MOE_CACHE_MB=28000` there measured **+8.3% / +14.1%** with no degradation
+-- but that ladder is **one `-r 3` process per arm**, so those two deltas carry the same n=1 caveat
+as this ladder's ends and support a direction rather than a magnitude. What the two ladders jointly
+establish is the **sign flip between model classes**, which is a comparison of directions and
+survives it. So a `ROCKET_MOE_CACHE_MB` recommendation is scoped to the model class, not to the
+board size.
 
 **What this does not settle.** One architecture at one operating point, with the clock, the governor,
 `rate_npu` and the model held fixed. Because residency cannot reach 100% on this model on this board,
@@ -654,6 +731,79 @@ it still cannot separate the floor's **position** from a residency term, only a 
 lands near 340 MMAC and fits resident could do that. And 403 MMAC is 1.19x the floor; the tightest
 accept-side cell this architecture reaches is `-ub` 3584 -> `M_e` 224 -> **352 MMAC**, 1.035x the
 floor, which is what would test the position rather than the sign.
+
+### The induced-scarcity ladder: the budget mechanism does not produce an inverted U
+
+The MoE budget hypothesis is that the per-expert admission charge covers only the *placed*
+experts' GGUF source bytes, leaving the rest of a still-mapped expert GGUF charged to nobody, so
+the route over-places once the true hot set approaches RAM. It had an arithmetic fit to five rungs
+on **one** model, and no second model on this board reaches the regime unaided. The way to test it
+on a second one is to induce the scarcity: hold `B` GiB of touched anonymous memory beside the run
+and walk `B` up. The account said the turn would come once `25.3 + B` exceeded ~31.7, i.e. at
+`B` ~ 6-7 GB and **not** at `B` = 4.
+
+[HW sweep 2026-08-28, RK1, 600 MHz pinned, governor `performance`, gpt-oss-20b MXFP4,
+`-p 2048 -n 0 -r 1 -b 2048 -ub 2048`, page cache dropped and `compact_memory` before every rung,
+one process per rung; `perf/data/moe-ballast-ladder.sh`.]
+
+| `B` | MemAvailable | pre-flight budget | stacks placed | resident | streamed | pp2048 t/s | vs `B`=0 |
+|---:|---:|---:|---:|---:|---:|---:|---:|
+| 0 | 30.2 GB | 24598 MB | 63 | 13454 MB | **0** | 28.93 | 1.000 |
+| 4 | 26.2 | 20488 | 52 | 11317 | **0** | 24.04 | 0.831 |
+| 8 | 22.2 | 16401 | 42 | 9486 | **0** | 20.89 | 0.722 |
+| 12 | 18.2 | 12290 | 31 | 7348 | **0** | 18.16 | 0.628 |
+| 16 | 14.2 | 8225 | 21 | 5372 | **0** | 15.36 | 0.531 |
+
+**There is no turn, at any rung.** Throughput falls monotonically and very nearly linearly in the
+number of placed stacks — `t/s = 8.32 + 0.315 x stacks`, residuals within ±0.8 t/s over a 15-29
+range — and every rung reports **100% resident, 0 streamed, and no OOM line in `dmesg`**. The
+predicted collapse into the 0.42-0.97x partial-residency regime does not happen; neither does the
+"any memory pressure at all" rival's earlier turn. What the ladder shows instead is the route
+degrading exactly as its own code says it should: fewer stacks placed, the rest left on the CPU,
+"a partial offload and not a loss".
+
+**The mechanism is that the ladder's knob and the route's input are the same quantity.** The
+pre-flight budget is `MemAvailable - 6 GiB`, and the budget column falls by exactly 4096 MB per
+4 GiB rung. So ballast makes the route **more** conservative, never less: it cannot reach a state
+where the route holds more than the board can honour, because the memory it removes is removed
+from the budget first. **An induced-scarcity ladder of this shape cannot test the over-placement
+hypothesis at all** — that is a fact about the instrument, and it is the useful output here.
+
+**And the account that predicted `B` ~ 6-7 over-counts a file-backed GGUF.** At `B` = 16 the
+accounted hot set is 5372 MB of int8 codes + 11.27 GiB of GGUF + 16 GiB of ballast = **32.5 GB
+against 31.7 GB of RAM**, and nothing streamed, nothing was killed, and the linear fit did not
+bend. So at least some of what that account calls hot is being reclaimed under pressure, and the
+GGUF — file-backed, unlike the ballast — is the only candidate [hypothesis: not separated from a
+smaller-than-assumed activation footprint]. The charge model treats each placed expert's source
+bytes as unreclaimable because **decode** reads them from the mmap every token; during a `-n 0`
+prefill they are not touched after ingest.
+
+**What this does not settle.** It does not refute the charge omission itself — the uncharged
+remainder is still real and still largest at low placement, and the ladder never reached a state
+where it could bite. What it refutes is that **this** experiment can reach that state. The
+remaining route to it is memory that disappears **after** the budget is frozen, which the
+pre-flight cannot see by construction, and that is the runtime-floor safety item rather than the
+charge item.
+
+**And that route reaches it on the first try.** Same model, same flags, but the 16 GiB of ballast
+is allocated **after** the pre-flight line prints rather than before [HW sweep 2026-08-28, RK1]:
+
+| | budget frozen at | MemAvailable when the ingest ran | stacks reserved | outcome |
+|---|---:|---:|---|---|
+| ballast **before** (`B`=16 rung above) | 8225 MB | 14.2 GB | 21 | 100% resident, 0 streamed, no OOM |
+| ballast **after** the freeze | **24608 MB** | **11.1 GB** | **63** | kernel **OOM-killer fired**; 91% resident, 144 streamed, pp2048 25.53 |
+
+The budget was resolved at 24608 MB against an idle board and then **kept** while 18 GB of the
+board disappeared underneath it, so the route went on reserving 63 stacks and 24529 MB against
+11.1 GB of available RAM. The board recovered only because the OOM killer picked the **ballast**
+— 16.8 GB of anonymous RSS, the largest badness score on the box. A competing allocation smaller
+than the inference process would have made `llama-bench` the victim instead. The run itself
+returned **rc=0 and a plausible number**; nothing in its output says a process was killed.
+
+Note the same two rows are a controlled pair: at essentially the same free RAM (14.2 against
+11.1 GB) the route reserved 8225 MB in one and 24608 MB in the other, and the only difference is
+**when** the memory went away. That is the runtime `MemAvailable` floor gap tracked as an open
+safety item, reproduced rather than argued.
 
 ### Qwen3.5-9B
 

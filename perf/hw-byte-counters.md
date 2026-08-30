@@ -4,8 +4,10 @@
 (weight-read / data-read / data-write bytes) through the mainline `rocket` driver. The
 vendor's per-core "amount" counter offsets are **undecoded** on rk3588, and *reading* them
 raises a bus abort that hard-locks the SoC. The legacy amount offsets alias DDMA
-reserved space and read `0` regardless of traffic. For bytes-moved ground truth, use a
-system-level PMU (DDR/DFI or NOC/MSCH) instead.
+reserved space and read `0` regardless of traffic. **The system-level route this file used
+to recommend has now been taken and works**: `rockchip_ddr` is a live `perf` PMU on the
+RK1, calibrated here to within 0.4% against a known number of bytes, and §5 is what it
+reads. It has no master-id attribution, so it measures the board rather than the NPU.
 
 The motivation was to turn DMA-traffic
 levers (CBUF operand reuse, resident weights, quantized readback) from wall-time
@@ -121,17 +123,146 @@ is genuinely undecoded rather than power-gated, since a gated slave hangs where 
 aborts. Until someone re-runs it with power state controlled, treat **both** pages as unsafe on
 either path; the cheapest wrong guess costs a cold power-cycle.
 
-## 5. Conclusion & the fallback
+## 5. Conclusion, and the system-level route that answers it
 
 - **No HW DMA byte counters via `rocket` on rk3588.** The real `0x22xx`/`0x24xx`
   counters are undecoded (fatal to read); the legacy `0x80xx` offsets are reserved and
   static.
 - **Side-result:** the DDMA control/status block *is* safely readable; `CFG_STATUS.IDEL`
   is a coarse "DDMA idle" signal, but that is not byte accounting.
-- **For bytes-moved ground truth, go outside the NPU register space:** the RK3588
-  **DDR/DFI PMU** or a **NOC/MSCH performance probe** with master-id filtering measures
-  the same physical traffic and sidesteps the unmapped-MMIO hazard entirely. This is the
-  recommended next avenue if DMA-byte accounting is needed.
+- **Bytes-moved ground truth comes from outside the NPU register space, and it is
+  reachable today.** The kernel exposes the DDR controller's PMU as an ordinary `perf`
+  uncore PMU, `rockchip_ddr`, and it sidesteps the unmapped-MMIO hazard entirely. What it
+  costs is attribution: it counts the board, not a master.
+
+### 5.1 The PMU, and the positive control that makes it quotable
+
+On the RK1, kernel 7.2.0-1-arm64, `/sys/bus/event_source/devices/rockchip_ddr/` publishes
+`bytes`, `read-bytes`, `write-bytes`, the same three per channel (`read-bytes0..3` /
+`write-bytes0..3`), and `cycles`, each with a `.scale` of `2^-20` and a `.unit` of MB. The
+`cycles` event tracks wall time at the memory clock exactly (2.112e10 over 10 s = 2112 MHz),
+which says the PMU is running; it does not say the byte events mean bytes.
+
+**They do, to within 0.4%** [HW sweep 2026-08-28, RK1]. `tests/ddr_pmu_cal.c` moves a known
+number of bytes past every cache and `tools/ddr-pmu-cal.sh` differences two pass counts, so
+that allocation, page faults, the kernel's page zeroing and the idle floor -- identical in
+both arms -- cancel:
+
+| known traffic | counted | ratio | the other column |
+|---|---|---|---|
+| 16384 MiB read (2 GiB buffer, 1 vs 9 read passes, 3 reps) | 16447.4 MiB | **1.0038** | +0.5 MiB written |
+| 16384 MiB written (1 vs 9 write passes, 3 reps) | 16372.8 MiB | **0.9993** | +41.5 MiB read, 0.25% |
+
+The idle floor is **4.8-7.3 MB/s** over 10 s, three orders below any figure below. The near-zero
+cross-columns are a second check: a read pass charges nothing to writes, and a write pass
+charges 0.25% to reads, so the A76's write-streaming mode is engaging and the columns mean
+what they are named.
+
+**The differential is not a nicety.** The same tool's single-pass arm counts **4.3 GiB read**
+where only 2 GiB is known -- the surplus is the fault and allocation path, which no model of
+the workload contains. An absolute system-wide count is not a measurement of a workload; a
+difference between two arms of it is.
+
+### 5.2 What one tiled matmul actually moves, against the analytical model
+
+`tests/bytes_moved_rocket.c` predicts DRAM traffic analytically because no counter existed.
+Now it can be checked. `tests/ddr_mm_bytes.c` runs the **single-fd streaming** path -- the one
+the model describes -- with no CPU reference, at 5 and 45 reps, 3 reps of each; the difference
+is 40 matmuls and nothing else. `512x3840x4096` fp16, KACC and data-reuse on, 600 MHz
+[HW sweep 2026-08-28, RK1]:
+
+| arm | model total | measured read | measured write | measured total |
+|---|---:|---:|---:|---:|
+| default (KACC + data reuse) | 133.50 MB | 287.30 MiB | 188.65 MiB | **475.95 MiB** |
+| `ROCKET_REUSE=0` | 249.75 MB | 408.29 | 186.72 | 595.00 |
+| `ROCKET_KACC=0` | 161.50 MB | 476.26 | 209.03 | 685.29 |
+| prepacked (same arithmetic, weight scatter hoisted) | 103.50 MB | 152.38 | 74.22 | 226.61 |
+
+Three separate results, and they do not all point the same way.
+
+**The data-reuse term is confirmed.** The model says turning `data_reuse` off multiplies the
+feature DMA by `nNt`=32, `+116.25 MB` of reads and nothing on the write side. Measured:
+**+120.98 MiB read, -1.93 MiB write** -- 4% high on the term and zero on the column the model
+says should not move. That is a real validation of the model's tiling and loop order (the
+feature tile is reused across the `N` loop), and it is the first time any traffic claim here
+has been checked against a counter rather than against wall time.
+
+**The absolute level is 3.57x the model, and the excess is concentrated in the host scatter.**
+Hoisting the weight scatter out of the loop -- the prepacked arm, same arithmetic -- removes
+**249.34 MiB per call** against a `packB` term of **30.00 MB**: the bus charges that phase
+**8.3x** what counting each weight byte once charges it, and it charges it in both
+directions (`-134.92` read, `-114.42` write). The model counts an operand's bytes once per
+logical movement; a host scatter moves useful chunks smaller than a cache line, so the bus
+moves a line per chunk and moves it twice, source in and destination out.
+**One term inside that difference is not separated**: `rocket_matmul_fp16` calls
+`mm_bos_alloc` per call [source-confirmed, `src/rocket_matmul.c`], so the streaming path also
+allocates, kernel-zeroes and frees a ~30 MB weight BO every call where the prepacked path does it
+once. If the zeroing is the whole 30 MB, the scatter's own write amplification is 2.8x rather than
+3.8x. Separating them needs a pack-only arm, which does not exist.
+
+**The `KACC` sensitivity is wrong.** The model predicts `+28 MB` of writes and no change in
+reads when K-accumulation moves off the NPU. Measured: **+20.4 MiB write** (same order) but
+**+189.0 MiB read**, where zero was predicted. So the model's account of what the
+un-accumulated partials cost is incomplete on the read side, and the `int8` readback floor
+that account underwrites -- `nKt * M * N * 4` -- is a lower bound, not the figure.
+
+**What a green result here does NOT show.** `rockchip_ddr` has no master-id filter exposed on
+this SoC, so every figure is the whole board's traffic during the run; the differential removes
+the fixed load but cannot attribute what remains between the NPU's DMA and the host packing
+that same arm causes. That pair happens to be exactly what the bytes-moved model is about, so
+it is the right total for this question and the wrong one for "how much did the NPU's DMA
+move". A DRAM counter also cannot see traffic served from cache, so every number is a **lower
+bound on data touched**. And this is one shape, one dtype, `n`=3 per cell. If master-id
+filtering turns out to be reachable on this SoC -- a NOC/MSCH probe, or a `filter` format on
+this PMU that is not published in its sysfs -- that is a separate and bigger finding.
+
+### 5.3 What an LLM prefill moves end to end
+
+System-wide over the whole process, memory reset before every arm, `-p 2048 -n 0`
+[HW sweep 2026-08-28, RK1, 600 MHz, governor `performance`]. `llama-bench` runs one warm-up
+plus the reps, so the token count is `(reps + 1) x 2048`. The counter covers model load and,
+on the MoE arm, the expert ingest as well; the load is under 1% of either total.
+
+**Dense, `Qwen3.5-0.8B-F16`, `-r 2`, two passes, means of the pair** (6144 tokens per arm):
+
+| arm | read | write | total | per prefill token | t/s |
+|---|---:|---:|---:|---:|---:|
+| CPU only | 202736 MiB | 38485 MiB | 241221 MiB | 39.3 MiB | 68.4 |
+| NPU (`GGML_BACKEND_PATH`) | 255272 | 102838 | 358110 | 58.3 MiB | 119.5 |
+
+**The offload buys 1.75x the speed by moving 1.48x the bytes.** The write column is where the
+arms differ most -- **2.7x** -- which is the host cube scatter and the readback, consistent with
+§5.2's finding that the host phases carry the traffic. The CPU arm ran *longer* in wall time and
+still moved less, so the difference is not a duration artifact.
+
+**MoE, `gpt-oss-20b-mxfp4`, `-r 1 -b 2048 -ub 2048`, one process per arm** (4096 tokens per
+arm). This is the pair the byte counter was wanted for -- the expert route against leaving the
+experts on the CPU -- and both arms reproduce this board's published rates for those configs
+(`ROCKET_MOE=0` is on record at 13.68-13.72, the placed arms at 24.79-33.03):
+
+| arm | read | write | total | per prefill token | t/s | wall | bytes / wall |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| `ROCKET_MOE=0` (experts on the CPU) | 358387 MiB | 123631 MiB | 482018 MiB | 117.7 MiB | 13.67 | 316 s | 1.6 GB/s |
+| `ROCKET_MOE=1` (experts placed) | 614269 | 451662 | 1065931 | 260.2 MiB | 33.72 | 174 s | **6.4 GB/s** |
+
+**The expert route buys 2.47x the speed for 2.21x the bytes, and it runs the memory system
+about four times harder** -- 6.4 GB/s against 1.6, where a `memcpy` on this board reaches
+~13-15 GB/s and streaming reads ~17. So the placed MoE arm is the first workload measured here
+that is within sight of a DRAM ceiling rather than an order below it, and the write column
+(**3.65x**) is again where the difference sits. Two caveats on the magnitude, neither of which
+touches the sign: it is **one process per arm**, which does not settle a percentage on this board
+(§"Performance discipline"), and the `ROCKET_MOE=1` total includes the one-time int8 expert
+ingest -- ~30 GB of it, about **3%**, so the per-token figure is not an ingest artifact.
+
+Same attribution caveat as §5.2 throughout: this is the board's traffic, not the NPU's.
+
+### 5.4 Repeating it
+
+`perf` is not installed by default. `apt-get install linux-perf` gives **7.1.8-2** against a
+**7.2.0-1** kernel and the binary runs anyway -- `perf stat` with sysfs-named events tolerates
+that skew where `perf record` does not. `perf_event_paranoid` is **2** and an uncore PMU has no
+per-process attribution, so every reading needs `sudo perf stat -a`; use **`sudo -E`** whenever
+the command also carries `ROCKET_*` knobs or they do not survive.
 
 ## 6. How to read DDMA safely (probe design)
 
@@ -183,6 +314,6 @@ WDMA/DPU registers returns the programmed output *shape*, not traffic.
 - Register map: Mesa `rocket/registers.xml` (`DDMA` domain @ 0x8000), our `npu_hw.h`
 - RK3576 lead (§7): gahingwoo's mainline-`rocket` RK3576 bring-up
   (`https://www.reddit.com/r/embedded/comments/1ub5npg/`)
-- Second witness (§4): poad42/opennpu_rk3588 `docs/ref/NPU_REGISTER_INVESTIGATION.md`,
-  vendor `rknpu` on a 6.1 BSP kernel, so a different driver and
-  a different power-management path; see [SOURCES.md](../SOURCES.md)
+- Second witness (§4): poad42/opennpu_rk3588 `docs/ref/NPU_REGISTER_INVESTIGATION.md`, vendor
+  `rknpu` on a 6.1 BSP kernel, so a different driver and a different power-management path;
+  see [SOURCES.md](../SOURCES.md)

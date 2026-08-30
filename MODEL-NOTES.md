@@ -178,7 +178,10 @@ are full-attention**.
   get leaving the experts on the CPU). Check the split with `ROCKET_LOG_STDERR=1`; under the default
   it should read **100% resident**. `ROCKET_MOE=1` overrides the pre-flight and both size floors: it
   is *faster* where the stack nearly fits and **below the experts-on-CPU baseline where it does not**,
-  so it is the A/B arm, not a setting. With RAM to spare, raise `ROCKET_MOE_CACHE_MB` instead.
+  so it is the A/B arm, not a setting. With RAM to spare, raise `ROCKET_MOE_CACHE_MB` instead --
+  **on this model.** Raising it is a loss on an expert-dominated MoE, where the experts are most of
+  the GGUF; see [TUNING.md](TUNING.md) §"MoE routed experts on the NPU" before carrying the
+  direction to another model.
   **This model clears the size floors at every prefill length; DeepSeek-V2-Lite does not**; see its
   section, and do not read this ratio across to another MoE.
 - **Its attention stays on the CPU, and must.** gpt-oss carries a learned **attention sink** per
