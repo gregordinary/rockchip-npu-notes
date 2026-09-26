@@ -109,7 +109,7 @@ integer-valued float (the fraction is truncated). So:
   fp32 cast / per-tensor integer gain.
 
 Gate: `tests/matmul_int8_dequant_rocket.c`. Related: [precision-field.md](precision-field.md),
-[size-e-quirk.md](size-e-quirk.md), [k-accumulation.md](k-accumulation.md) (int8 EW K-accum dead).
+[size-e-quirk.md](size-e-quirk.md), [k-accumulation.md](k-accumulation.md) (int8 EW K-accum: unestablished, and not a speed lever).
 
 ## Per-channel (per-axis) requant: multiplier yes, shift no
 

@@ -93,7 +93,7 @@ invert outright.
 | Matmul precision | fp16 wins; resident int8 prefill is 0.60x fp16 | **int8 wins**; one int8 task contracts 4608 input channels against fp16's 16, so fp16 is 30-300x slower |
 | M alignment | `M % 4`; `M == 1` is padded to 4 | **No constraint**; `M = 1` is bit-exact |
 | Matmul output | raw int32 readback | **int8 through the DPU requant** |
-| Integer partials | on-chip integer K-accumulation impossible (eltwise operand DMA <=16-bit) | **an int32 output writer exists**, so a K split carries exact integer partials out |
+| Integer partials | no on-chip integer K-accumulation ships, and the eltwise ALU's integer mode is unestablished | **an int32 output writer exists**, so a K split carries exact integer partials out |
 | M=1 GEMV | ~82x slower than CPU; decode stays on the host | bit-exact and unconstrained (still submit-bound) |
 | Multiple cores | 3 cores, per-fd entities, scheduling shipped and correct | 2 cores; **two jobs in flight at once compute wrong answers**, 96-100% of calls |
 | Completion | maskable completion interrupt | `PC_DONE` read-only in `INTERRUPT_MASK`; must be polled |
