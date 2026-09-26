@@ -1,0 +1,6 @@
+load_backend: loaded CPU backend from ~/npu/llama.cpp/build/bin/libggml-cpu.so
+load_backend: loaded ROCKET backend from ~/npu/ggml-rocket/build-dl/libggml-rocket.so
+[rocket] ROCKET_DEQUANT_CACHE_MB=4096 -> host fp16 dequant cache set
+[dq-cache] 165 weights held (2976MB): 495 dequants skipped, 165 one-time fills, 0 still-streaming calls
+ROCKET profile total(ms): pack=43755 (packA=20995 packB=8897) gen=1103 sync=5067 submit=583 wait=189853 read=46263  over 4260 job-batches
+ROCKET convert total(ms): pack_act=2267 (660 calls, 3926M elems) weight_dequant=3156 (165 calls, 1560M elems) unpack_out=1560 (660 calls, 5083M elems)

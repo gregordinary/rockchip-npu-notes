@@ -163,7 +163,7 @@ where only 2 GiB is known -- the surplus is the fault and allocation path, which
 the workload contains. An absolute system-wide count is not a measurement of a workload; a
 difference between two arms of it is.
 
-### 5.2 What one tiled matmul actually moves, against the analytical model
+### 5.2 What one tiled matmul moves, against the analytical model
 
 `tests/bytes_moved_rocket.c` predicts DRAM traffic analytically because no counter existed.
 Now it can be checked. `tests/ddr_mm_bytes.c` runs the **single-fd streaming** path -- the one

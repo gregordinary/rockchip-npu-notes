@@ -1,0 +1,69 @@
+WALL p1_chain1_prof0 rc=0 chain=1 prof=0 wall=99.792610284
+WALL p1_chain0_prof0 rc=0 chain=0 prof=0 wall=100.816470954
+WALL p1_chain1_prof1 rc=0 chain=1 prof=1 wall=99.760952929
+WALL p1_chain0_prof1 rc=0 chain=0 prof=1 wall=100.759754801
+WALL p2_chain1_prof1 rc=0 chain=1 prof=1 wall=99.816231036
+WALL p2_chain0_prof1 rc=0 chain=0 prof=1 wall=100.873156548
+WALL p2_chain1_prof0 rc=0 chain=1 prof=0 wall=99.736631891
+WALL p2_chain0_prof0 rc=0 chain=0 prof=0 wall=100.837850463
+WALL p3_chain1_prof0 rc=0 chain=1 prof=0 wall=99.723731430
+WALL p3_chain0_prof0 rc=0 chain=0 prof=0 wall=100.789535437
+WALL p3_chain1_prof1 rc=0 chain=1 prof=1 wall=99.682145147
+WALL p3_chain0_prof1 rc=0 chain=0 prof=1 wall=100.716168722
+== correctness ==
+--- p1_chain0_prof0.log : 0 FAIL lines, 38 PASS lines
+  fa T=128 n_kv=2048 dh=256 dv=256 nh=16 nkvh=8 win=0 cap=0 ctx=5: cos=1.000000 max_abs=3.052e-05 (maxv=0.0616) -> PASS
+==== PASS ====
+--- p1_chain0_prof1.log : 0 FAIL lines, 38 PASS lines
+  fa T=128 n_kv=2048 dh=256 dv=256 nh=16 nkvh=8 win=0 cap=0 ctx=5: cos=1.000000 max_abs=3.052e-05 (maxv=0.0616) -> PASS
+==== PASS ====
+--- p1_chain1_prof0.log : 0 FAIL lines, 38 PASS lines
+  fa T=128 n_kv=2048 dh=256 dv=256 nh=16 nkvh=8 win=0 cap=0 ctx=5: cos=1.000000 max_abs=3.052e-05 (maxv=0.0616) -> PASS
+==== PASS ====
+--- p1_chain1_prof1.log : 0 FAIL lines, 38 PASS lines
+  fa T=128 n_kv=2048 dh=256 dv=256 nh=16 nkvh=8 win=0 cap=0 ctx=5: cos=1.000000 max_abs=3.052e-05 (maxv=0.0616) -> PASS
+==== PASS ====
+--- p2_chain0_prof0.log : 0 FAIL lines, 38 PASS lines
+  fa T=128 n_kv=2048 dh=256 dv=256 nh=16 nkvh=8 win=0 cap=0 ctx=5: cos=1.000000 max_abs=3.052e-05 (maxv=0.0616) -> PASS
+==== PASS ====
+--- p2_chain0_prof1.log : 0 FAIL lines, 38 PASS lines
+  fa T=128 n_kv=2048 dh=256 dv=256 nh=16 nkvh=8 win=0 cap=0 ctx=5: cos=1.000000 max_abs=3.052e-05 (maxv=0.0616) -> PASS
+==== PASS ====
+--- p2_chain1_prof0.log : 0 FAIL lines, 38 PASS lines
+  fa T=128 n_kv=2048 dh=256 dv=256 nh=16 nkvh=8 win=0 cap=0 ctx=5: cos=1.000000 max_abs=3.052e-05 (maxv=0.0616) -> PASS
+==== PASS ====
+--- p2_chain1_prof1.log : 0 FAIL lines, 38 PASS lines
+  fa T=128 n_kv=2048 dh=256 dv=256 nh=16 nkvh=8 win=0 cap=0 ctx=5: cos=1.000000 max_abs=3.052e-05 (maxv=0.0616) -> PASS
+==== PASS ====
+--- p3_chain0_prof0.log : 0 FAIL lines, 38 PASS lines
+  fa T=128 n_kv=2048 dh=256 dv=256 nh=16 nkvh=8 win=0 cap=0 ctx=5: cos=1.000000 max_abs=3.052e-05 (maxv=0.0616) -> PASS
+==== PASS ====
+--- p3_chain0_prof1.log : 0 FAIL lines, 38 PASS lines
+  fa T=128 n_kv=2048 dh=256 dv=256 nh=16 nkvh=8 win=0 cap=0 ctx=5: cos=1.000000 max_abs=3.052e-05 (maxv=0.0616) -> PASS
+==== PASS ====
+--- p3_chain1_prof0.log : 0 FAIL lines, 38 PASS lines
+  fa T=128 n_kv=2048 dh=256 dv=256 nh=16 nkvh=8 win=0 cap=0 ctx=5: cos=1.000000 max_abs=3.052e-05 (maxv=0.0616) -> PASS
+==== PASS ====
+--- p3_chain1_prof1.log : 0 FAIL lines, 38 PASS lines
+  fa T=128 n_kv=2048 dh=256 dv=256 nh=16 nkvh=8 win=0 cap=0 ctx=5: cos=1.000000 max_abs=3.052e-05 (maxv=0.0616) -> PASS
+==== PASS ====
+== profile lines (prof=1 arms) ==
+--- p1_chain0_prof1.log
+  fa T=64ROCKET FA profile total(ms): gather=718 qk=8459 mask=586 softmax=2216 av=8943 scatter=30  device=17402 host=3549  max-range=1635  over 142 ranges (worker-thread intervals summed over CONCURRENT workers: read ratios within max-range, never as a share of the wall)
+ROCKET FA profile max-range(ms): gather=11.7 qk=712.7 mask=48.3 softmax=110.6 av=745.5 scatter=6.3  total=1635.2
+--- p1_chain1_prof1.log
+  fa T=64ROCKET FA profile total(ms): gather=1213 qk=7604 mask=582 softmax=2332 av=7344 scatter=27  device=14948 host=4153  max-range=1643  over 142 ranges (worker-thread intervals summed over CONCURRENT workers: read ratios within max-range, never as a share of the wall)
+ROCKET FA profile max-range(ms): gather=11.4 qk=714.4 mask=48.6 softmax=111.4 av=750.5 scatter=6.3  total=1642.7
+--- p2_chain0_prof1.log
+  fa T=64ROCKET FA profile total(ms): gather=723 qk=8440 mask=580 softmax=2238 av=8774 scatter=30  device=17215 host=3570  max-range=1631  over 142 ranges (worker-thread intervals summed over CONCURRENT workers: read ratios within max-range, never as a share of the wall)
+ROCKET FA profile max-range(ms): gather=11.9 qk=709.6 mask=48.2 softmax=110.7 av=744.2 scatter=6.4  total=1631.0
+--- p2_chain1_prof1.log
+  fa T=64ROCKET FA profile total(ms): gather=1227 qk=7510 mask=611 softmax=2318 av=7388 scatter=26  device=14898 host=4182  max-range=1622  over 142 ranges (worker-thread intervals summed over CONCURRENT workers: read ratios within max-range, never as a share of the wall)
+ROCKET FA profile max-range(ms): gather=11.2 qk=706.1 mask=48.8 softmax=111.2 av=738.2 scatter=6.2  total=1621.6
+--- p3_chain0_prof1.log
+  fa T=64ROCKET FA profile total(ms): gather=735 qk=8349 mask=587 softmax=2215 av=8796 scatter=30  device=17144 host=3567  max-range=1610  over 142 ranges (worker-thread intervals summed over CONCURRENT workers: read ratios within max-range, never as a share of the wall)
+ROCKET FA profile max-range(ms): gather=11.7 qk=695.6 mask=48.1 softmax=110.6 av=738.0 scatter=6.3  total=1610.3
+--- p3_chain1_prof1.log
+  fa T=64ROCKET FA profile total(ms): gather=1235 qk=7566 mask=590 softmax=2342 av=7363 scatter=26  device=14929 host=4193  max-range=1638  over 142 ranges (worker-thread intervals summed over CONCURRENT workers: read ratios within max-range, never as a share of the wall)
+ROCKET FA profile max-range(ms): gather=11.3 qk=712.4 mask=48.7 softmax=111.3 av=747.8 scatter=6.3  total=1637.8
+DONE

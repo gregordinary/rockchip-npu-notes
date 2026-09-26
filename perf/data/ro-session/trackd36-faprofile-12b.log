@@ -1,0 +1,64 @@
+[2026-09-07T20:09:27+00:00] start: PASSES=3, 2 arms, so=138de09d05f235f8c50c7d9d7df3eaa5
+== gemma4-12b-f16-faprofile  Mon Sep  7 20:09:27 UTC 2026 ==
+### gemma4-12b-f16-faprofile [prof_off] pass 1  env='ROCKET_FA_TIMING=1 PIN_MASK=0xf0'  args='-t 4 -v'  20:10:51  clk=600 MHz  MemAvail=31781424 kB
+<!--PRED 1	prof_off	memavail_kb=31781424	anonhuge_kb=0	hugepagesz_kb=2048	buddy=1964,2460,2308,1729,1795,1214,745,660,387,149,1698-->
+<!--RO 1	prof_off	wall_s=296	busy=267,256,226,272,14301,9807,9367,12405	busy_tot=46901	busy_little_share=0.0218	a55_cpu_cycles=39532082517	a55_inst_retired=8143824531	context_switches=9710399	a76_cpu_cycles=1012677016824	a76_l3d_cache_refill=14964923589	a76_l2d_cache_refill=7048605288	cpu_migrations=19418	page_faults=939623	a76_dtlb_walk=801593598	a76_mem_access=286913892144	a76_inst_retired=1296458544070	a76_l1d_cache_refill=20006202566	a55_inst_share=0.0062	a76_ipc=1.280	l2ref_pki=5.437	l3ref_pki=11.543	l1dref_pki=15.431	memacc_pki=221.31	dtlbw_pki=0.6183	pmu_enabled=100.0	pmu_cpu_s=2359.3	who=at_s=8,rss_pg=6044922,settled=2	pfn_zero_frac=0.0000	maps=3	sampled=73728	present_frac=0.8281	l2color_cv=0.0034	l3color_cv=0.0135	contig_frac=0.9369	mean_run=15.4	vapa16=0.0146	gib_regions=29	anon_pg=12958	anon_l2cv=0.0011	anon_contig=0.9592	anon_run=23.3	anon_gib=13	file_pg=24576	file_l2cv=0.0008	file_contig=0.9988	file_run=319.2	file_gib=26	other_pg=23517	other_l2cv=0.0090	other_contig=0.8600	other_run=7.0	other_gib=26	ro_cost_ms=87-->
+<!--DATA 1	prof_off	pp2048	21.13-->
+
+### gemma4-12b-f16-faprofile [prof_on] pass 1  env='ROCKET_FA_TIMING=1 ROCKET_FA_PROFILE=1 PIN_MASK=0xf0'  args='-t 4 -v'  20:17:11  clk=600 MHz  MemAvail=31780008 kB
+<!--PRED 1	prof_on	memavail_kb=31779708	anonhuge_kb=0	hugepagesz_kb=2048	buddy=1595,2016,1998,1669,1505,1311,1108,760,381,140,1673-->
+<!--RO 1	prof_on	wall_s=295	busy=273,208,238,298,13998,9679,9824,12408	busy_tot=46926	busy_little_share=0.0217	a55_cpu_cycles=40148327510	a55_inst_retired=8099722159	context_switches=9699181	a76_cpu_cycles=1013746819002	a76_l3d_cache_refill=14963248632	a76_l2d_cache_refill=7026599551	cpu_migrations=19220	page_faults=937920	a76_dtlb_walk=798045093	a76_mem_access=287352972201	a76_inst_retired=1298674216128	a76_l1d_cache_refill=20073210621	a55_inst_share=0.0062	a76_ipc=1.281	l2ref_pki=5.411	l3ref_pki=11.522	l1dref_pki=15.457	memacc_pki=221.27	dtlbw_pki=0.6145	pmu_enabled=100.0	pmu_cpu_s=2354.1	who=at_s=8,rss_pg=6044921,settled=2	pfn_zero_frac=0.0000	maps=3	sampled=73728	present_frac=0.8264	l2color_cv=0.0067	l3color_cv=0.0161	contig_frac=0.9393	mean_run=16.0	vapa16=0.0762	gib_regions=29	anon_pg=12932	anon_l2cv=0.0015	anon_contig=0.9976	anon_run=226.9	anon_gib=16	file_pg=24576	file_l2cv=0.0004	file_contig=0.9983	file_run=276.1	file_gib=27	other_pg=23424	other_l2cv=0.0175	other_contig=0.8452	other_run=6.4	other_gib=26	ro_cost_ms=96-->
+<!--DATA 1	prof_on	pp2048	21.23-->
+
+### gemma4-12b-f16-faprofile [prof_on] pass 2  env='ROCKET_FA_TIMING=1 ROCKET_FA_PROFILE=1 PIN_MASK=0xf0'  args='-t 4 -v'  20:23:30  clk=600 MHz  MemAvail=31778352 kB
+<!--PRED 2	prof_on	memavail_kb=31778352	anonhuge_kb=0	hugepagesz_kb=2048	buddy=1373,2014,1996,1574,1469,1206,1070,715,391,134,1686-->
+<!--RO 2	prof_on	wall_s=295	busy=178,265,271,286,13981,9866,9562,12488	busy_tot=46897	busy_little_share=0.0213	a55_cpu_cycles=40104071830	a55_inst_retired=8304043799	context_switches=9706632	a76_cpu_cycles=1012718503399	a76_l3d_cache_refill=14982525398	a76_l2d_cache_refill=7020326890	cpu_migrations=19518	page_faults=941127	a76_dtlb_walk=799029724	a76_mem_access=287326069229	a76_inst_retired=1298643472311	a76_l1d_cache_refill=20070005955	a55_inst_share=0.0064	a76_ipc=1.282	l2ref_pki=5.406	l3ref_pki=11.537	l1dref_pki=15.455	memacc_pki=221.25	dtlbw_pki=0.6153	pmu_enabled=100.0	pmu_cpu_s=2351.9	who=at_s=8,rss_pg=6044921,settled=2	pfn_zero_frac=0.0000	maps=3	sampled=73728	present_frac=0.8335	l2color_cv=0.0052	l3color_cv=0.0111	contig_frac=0.9273	mean_run=13.4	vapa16=0.0165	gib_regions=29	anon_pg=12909	anon_l2cv=0.0005	anon_contig=0.9988	anon_run=314.9	anon_gib=15	file_pg=24576	file_l2cv=0.0004	file_contig=0.9988	file_run=315.1	file_gib=26	other_pg=23970	other_l2cv=0.0135	other_contig=0.8154	other_run=5.4	other_gib=26	ro_cost_ms=86-->
+<!--DATA 2	prof_on	pp2048	21.21-->
+
+### gemma4-12b-f16-faprofile [prof_off] pass 2  env='ROCKET_FA_TIMING=1 PIN_MASK=0xf0'  args='-t 4 -v'  20:29:49  clk=600 MHz  MemAvail=31772236 kB
+<!--PRED 2	prof_off	memavail_kb=31772236	anonhuge_kb=0	hugepagesz_kb=2048	buddy=1228,2029,2050,1540,1550,1145,1086,827,418,144,1660-->
+<!--RO 2	prof_off	wall_s=295	busy=247,213,258,275,14029,9552,10209,12053	busy_tot=46836	busy_little_share=0.0212	a55_cpu_cycles=40122545786	a55_inst_retired=8237369566	context_switches=9709774	a76_cpu_cycles=1011660677870	a76_l3d_cache_refill=14972809069	a76_l2d_cache_refill=7055504967	cpu_migrations=19585	page_faults=940298	a76_dtlb_walk=817125259	a76_mem_access=286897277522	a76_inst_retired=1296432634384	a76_l1d_cache_refill=19993240725	a55_inst_share=0.0063	a76_ipc=1.281	l2ref_pki=5.442	l3ref_pki=11.549	l1dref_pki=15.422	memacc_pki=221.30	dtlbw_pki=0.6303	pmu_enabled=100.0	pmu_cpu_s=2354.8	who=at_s=8,rss_pg=6044913,settled=2	pfn_zero_frac=0.0000	maps=3	sampled=73728	present_frac=0.8264	l2color_cv=0.0037	l3color_cv=0.0097	contig_frac=0.9504	mean_run=19.4	vapa16=0.0043	gib_regions=29	anon_pg=12909	anon_l2cv=0.0005	anon_contig=0.9985	anon_run=286.9	anon_gib=15	file_pg=24576	file_l2cv=0.0009	file_contig=0.9965	file_run=183.4	file_gib=28	other_pg=23446	other_l2cv=0.0094	other_contig=0.8755	other_run=7.9	other_gib=21	ro_cost_ms=90-->
+<!--DATA 2	prof_off	pp2048	21.22-->
+
+### gemma4-12b-f16-faprofile [prof_off] pass 3  env='ROCKET_FA_TIMING=1 PIN_MASK=0xf0'  args='-t 4 -v'  20:36:08  clk=600 MHz  MemAvail=31776556 kB
+<!--PRED 3	prof_off	memavail_kb=31776264	anonhuge_kb=0	hugepagesz_kb=2048	buddy=1606,2108,1614,1576,1254,1098,999,705,370,163,1691-->
+<!--RO 3	prof_off	wall_s=297	busy=232,212,273,308,14271,9543,9899,12023	busy_tot=46761	busy_little_share=0.0219	a55_cpu_cycles=40234977261	a55_inst_retired=8274810634	context_switches=9723547	a76_cpu_cycles=1011458326933	a76_l3d_cache_refill=14958833286	a76_l2d_cache_refill=7056691248	cpu_migrations=19339	page_faults=940748	a76_dtlb_walk=807868736	a76_mem_access=286830215911	a76_inst_retired=1296557929706	a76_l1d_cache_refill=19950666009	a55_inst_share=0.0063	a76_ipc=1.282	l2ref_pki=5.443	l3ref_pki=11.537	l1dref_pki=15.387	memacc_pki=221.22	dtlbw_pki=0.6231	pmu_enabled=100.0	pmu_cpu_s=2372.0	who=at_s=8,rss_pg=6044912,settled=2	pfn_zero_frac=0.0000	maps=3	sampled=73728	present_frac=0.8261	l2color_cv=0.0058	l3color_cv=0.0143	contig_frac=0.9316	mean_run=14.2	vapa16=0.1692	gib_regions=29	anon_pg=12909	anon_l2cv=0.0008	anon_contig=0.9986	anon_run=293.4	anon_gib=15	file_pg=24576	file_l2cv=0.0003	file_contig=0.9985	file_run=292.6	file_gib=27	other_pg=23424	other_l2cv=0.0150	other_contig=0.8245	other_run=5.6	other_gib=25	ro_cost_ms=88-->
+<!--DATA 3	prof_off	pp2048	21.06-->
+
+### gemma4-12b-f16-faprofile [prof_on] pass 3  env='ROCKET_FA_TIMING=1 ROCKET_FA_PROFILE=1 PIN_MASK=0xf0'  args='-t 4 -v'  20:42:29  clk=600 MHz  MemAvail=31785776 kB
+<!--PRED 3	prof_on	memavail_kb=31786020	anonhuge_kb=0	hugepagesz_kb=2048	buddy=1097,2049,1790,1705,1390,1204,1009,684,406,154,1683-->
+<!--RO 3	prof_on	wall_s=296	busy=214,298,254,248,14227,9463,9555,12549	busy_tot=46808	busy_little_share=0.0217	a55_cpu_cycles=40067322058	a55_inst_retired=8226567407	context_switches=9707553	a76_cpu_cycles=1011903580515	a76_l3d_cache_refill=14967091336	a76_l2d_cache_refill=7051734079	cpu_migrations=19363	page_faults=940631	a76_dtlb_walk=804488317	a76_mem_access=287366105490	a76_inst_retired=1298724351413	a76_l1d_cache_refill=20053484942	a55_inst_share=0.0063	a76_ipc=1.283	l2ref_pki=5.430	l3ref_pki=11.524	l1dref_pki=15.441	memacc_pki=221.27	dtlbw_pki=0.6194	pmu_enabled=100.0	pmu_cpu_s=2360.0	who=at_s=8,rss_pg=6044921,settled=2	pfn_zero_frac=0.0000	maps=3	sampled=73728	present_frac=0.8214	l2color_cv=0.0066	l3color_cv=0.0142	contig_frac=0.9418	mean_run=16.6	vapa16=0.1422	gib_regions=29	anon_pg=12845	anon_l2cv=0.0025	anon_contig=0.9590	anon_run=23.3	anon_gib=16	file_pg=24576	file_l2cv=0.0007	file_contig=0.9989	file_run=327.7	file_gib=27	other_pg=23140	other_l2cv=0.0177	other_contig=0.8715	other_run=7.7	other_gib=22	ro_cost_ms=85-->
+<!--DATA 3	prof_on	pp2048	21.17-->
+
+#### summary: per-arm mean over 3 passes, ratios paired within a pass against [prof_off]
+| test | arm | mean t/s | n | min | max | paired ratio | per-pass ratios |
+|---|---|---:|---:|---:|---:|---:|---|
+| pp2048 | prof_off | 21.14 | 3 | 21.06 | 21.22 | -- | -- |
+| pp2048 | prof_on | 21.20 | 3 | 21.17 | 21.23 | 1.003x | 1.005 1.000 1.005 |
+
+[2026-09-07T20:47:25+00:00] rc=0 TRACKD36-ALL-DONE
+--- FA timing lines, one per arm per pass ---
+gemma4-12b-f16-faprofile.prof_off.p1: ROCKET FA total(ms): gather=11762 (17%) compute=50301 (74%) scatter=5833 (9%) over 432 ops, n_kv [1024..2048]
+gemma4-12b-f16-faprofile.prof_off.p2: ROCKET FA total(ms): gather=11707 (17%) compute=49595 (74%) scatter=5813 (9%) over 432 ops, n_kv [1024..2048]
+gemma4-12b-f16-faprofile.prof_off.p3: ROCKET FA total(ms): gather=11610 (17%) compute=50274 (74%) scatter=5817 (9%) over 432 ops, n_kv [1024..2048]
+gemma4-12b-f16-faprofile.prof_on.p1: ROCKET FA total(ms): gather=11787 (17%) compute=50581 (74%) scatter=5753 (8%) over 432 ops, n_kv [1024..2048]
+gemma4-12b-f16-faprofile.prof_on.p2: ROCKET FA total(ms): gather=11770 (17%) compute=49902 (74%) scatter=5757 (9%) over 432 ops, n_kv [1024..2048]
+gemma4-12b-f16-faprofile.prof_on.p3: ROCKET FA total(ms): gather=11770 (17%) compute=50529 (74%) scatter=5753 (8%) over 432 ops, n_kv [1024..2048]
+--- FA profile lines, prof_on arms only ---
+gemma4-12b-f16-faprofile.prof_on.p1:
+ROCKET FA profile total(ms): gather=6890 qk=48113 mask=18856 softmax=72802 av=27956 scatter=722  device=76069 host=99270  max-range=243  over 2160 ranges (worker-thread intervals summed over CONCURRENT workers: read ratios within max-range, never as a share of the wall)
+ROCKET FA profile total(ms): gather=6890 qk=48113 mask=18856 softmax=72802 av=27956 scatter=722  device=76069 host=99270  max-range=243  over 2160 ranges (worker-thread intervals summed over CONCURRENT workers: read ratios within max-range, never as a share of the wall)
+ROCKET FA profile max-range(ms): gather=14.8 qk=80.1 mask=21.1 softmax=82.9 av=44.2 scatter=0.4  total=243.5
+ROCKET FA profile max-range(ms): gather=14.8 qk=80.1 mask=21.1 softmax=82.9 av=44.2 scatter=0.4  total=243.5
+gemma4-12b-f16-faprofile.prof_on.p2:
+ROCKET FA profile total(ms): gather=6955 qk=47520 mask=18665 softmax=72429 av=26637 scatter=704  device=74157 host=98753  max-range=241  over 2160 ranges (worker-thread intervals summed over CONCURRENT workers: read ratios within max-range, never as a share of the wall)
+ROCKET FA profile total(ms): gather=6955 qk=47520 mask=18665 softmax=72429 av=26637 scatter=704  device=74157 host=98753  max-range=241  over 2160 ranges (worker-thread intervals summed over CONCURRENT workers: read ratios within max-range, never as a share of the wall)
+ROCKET FA profile max-range(ms): gather=13.1 qk=78.9 mask=17.8 softmax=85.2 av=46.1 scatter=0.4  total=241.3
+ROCKET FA profile max-range(ms): gather=13.1 qk=78.9 mask=17.8 softmax=85.2 av=46.1 scatter=0.4  total=241.3
+gemma4-12b-f16-faprofile.prof_on.p3:
+ROCKET FA profile total(ms): gather=6999 qk=49604 mask=18815 softmax=72317 av=28443 scatter=745  device=78047 host=98876  max-range=244  over 2160 ranges (worker-thread intervals summed over CONCURRENT workers: read ratios within max-range, never as a share of the wall)
+ROCKET FA profile total(ms): gather=6999 qk=49604 mask=18815 softmax=72317 av=28443 scatter=745  device=78047 host=98876  max-range=244  over 2160 ranges (worker-thread intervals summed over CONCURRENT workers: read ratios within max-range, never as a share of the wall)
+ROCKET FA profile max-range(ms): gather=15.3 qk=77.3 mask=21.1 softmax=83.5 av=46.3 scatter=0.4  total=244.0
+ROCKET FA profile max-range(ms): gather=15.3 qk=77.3 mask=21.1 softmax=83.5 av=46.3 scatter=0.4  total=244.0
+--- residency control: every arm must report 0 resident ---
+gemma4-12b-f16-faprofile.prof_off.p1: gemma4-12b-f16-faprofile.prof_off.p2: gemma4-12b-f16-faprofile.prof_off.p3: gemma4-12b-f16-faprofile.prof_on.p1: gemma4-12b-f16-faprofile.prof_on.p2: gemma4-12b-f16-faprofile.prof_on.p3: TRACKD36-DONE

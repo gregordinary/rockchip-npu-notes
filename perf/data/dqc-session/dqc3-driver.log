@@ -1,0 +1,228 @@
+== audit before llama32-3b-dqc (12:19:04) ==
+%CPU     PID COMMAND
+ 200 3584595 ps -eo pcpu,pid,args --sort=-pcpu
+ 0.6 3460522 [kworker/u32:2-pm]
+ 0.5 3262887 [kworker/u32:4-fdad0000.npu]
+ 0.4 3573942 [kworker/u32:0-fdac0000.npu]
+ 0.3 3517781 [kworker/u32:1-fdab0000.npu]
+/dev/mmcblk0p1   29G   20G  9.2G  69% /
+=== llama32-3b-dqc (dqc, 4 arms) -> <data>/tuning-matrix/llama32-3b-dqc.md
+== llama32-3b-dqc  Mon Aug 31 12:19:04 UTC 2026 ==
+### llama32-3b-dqc [stock] pass 1  env=''  args=''  12:19:30  clk=600 MHz  MemAvail=31554652 kB
+<!--PRED 1	stock	memavail_kb=31555184	anonhuge_kb=0	hugepagesz_kb=2048	buddy=3394,5954,6083,5445,4248,3758,3191,2750,2265,1791,5010-->
+<!--DATA 1	stock	pp2048	39.19-->
+
+### llama32-3b-dqc [ub2048] pass 1  env=''  args='-b 2048 -ub 2048'  12:23:28  clk=600 MHz  MemAvail=31583708 kB
+<!--PRED 1	ub2048	memavail_kb=31583708	anonhuge_kb=0	hugepagesz_kb=2048	buddy=3770,6340,6371,5767,4218,3680,3196,2756,2268,1778,5019-->
+<!--DATA 1	ub2048	pp2048	42.52-->
+
+### llama32-3b-dqc [dqc512] pass 1  env='ROCKET_DEQUANT_CACHE_MB=6144'  args=''  12:27:08  clk=600 MHz  MemAvail=31394412 kB
+<!--PRED 1	dqc512	memavail_kb=31394412	anonhuge_kb=0	hugepagesz_kb=2048	buddy=3534,6689,6409,5749,1931,3605,3220,2760,2270,1764,5016-->
+<!--DATA 1	dqc512	pp2048	54.88-->
+    [dq-cache] 193 weights held (5232MB): 2895 dequants skipped, 193 one-time fills, 0 still-streaming calls
+
+### llama32-3b-dqc [dqc2048] pass 1  env='ROCKET_DEQUANT_CACHE_MB=6144'  args='-b 2048 -ub 2048'  12:30:10  clk=600 MHz  MemAvail=31447936 kB
+<!--PRED 1	dqc2048	memavail_kb=31447936	anonhuge_kb=0	hugepagesz_kb=2048	buddy=4456,6175,6117,5736,3896,3704,3202,2765,2268,1761,4999-->
+<!--DATA 1	dqc2048	pp2048	46.43-->
+    [dq-cache] 193 weights held (5232MB): 579 dequants skipped, 193 one-time fills, 0 still-streaming calls
+
+### llama32-3b-dqc [ub2048] pass 2  env=''  args='-b 2048 -ub 2048'  12:33:41  clk=600 MHz  MemAvail=31566328 kB
+<!--PRED 2	ub2048	memavail_kb=31566328	anonhuge_kb=0	hugepagesz_kb=2048	buddy=4899,6107,6210,5417,4177,3745,3179,2778,2267,1815,4997-->
+<!--DATA 2	ub2048	pp2048	42.41-->
+
+### llama32-3b-dqc [dqc512] pass 2  env='ROCKET_DEQUANT_CACHE_MB=6144'  args=''  12:37:22  clk=600 MHz  MemAvail=31443388 kB
+<!--PRED 2	dqc512	memavail_kb=31443388	anonhuge_kb=0	hugepagesz_kb=2048	buddy=4762,6511,6437,5705,2692,3685,3170,2779,2268,1788,5002-->
+<!--DATA 2	dqc512	pp2048	52.79-->
+    [dq-cache] 193 weights held (5232MB): 2895 dequants skipped, 193 one-time fills, 0 still-streaming calls
+
+### llama32-3b-dqc [dqc2048] pass 2  env='ROCKET_DEQUANT_CACHE_MB=6144'  args='-b 2048 -ub 2048'  12:40:30  clk=600 MHz  MemAvail=31366408 kB
+<!--PRED 2	dqc2048	memavail_kb=31366936	anonhuge_kb=0	hugepagesz_kb=2048	buddy=4848,6321,5981,4562,1699,3622,3204,2784,2280,1838,4981-->
+<!--DATA 2	dqc2048	pp2048	46.40-->
+    [dq-cache] 193 weights held (5232MB): 579 dequants skipped, 193 one-time fills, 0 still-streaming calls
+
+### llama32-3b-dqc [stock] pass 2  env=''  args=''  12:44:01  clk=600 MHz  MemAvail=31588440 kB
+<!--PRED 2	stock	memavail_kb=31588440	anonhuge_kb=0	hugepagesz_kb=2048	buddy=6316,6604,5974,5799,4056,3708,3184,2779,2263,1860,4979-->
+<!--DATA 2	stock	pp2048	38.95-->
+
+### llama32-3b-dqc [dqc512] pass 3  env='ROCKET_DEQUANT_CACHE_MB=6144'  args=''  12:47:59  clk=600 MHz  MemAvail=31337584 kB
+<!--PRED 3	dqc512	memavail_kb=31337584	anonhuge_kb=0	hugepagesz_kb=2048	buddy=5787,6319,5874,5816,2256,3588,3194,2777,2269,1796,4981-->
+<!--DATA 3	dqc512	pp2048	53.43-->
+    [dq-cache] 193 weights held (5232MB): 2895 dequants skipped, 193 one-time fills, 0 still-streaming calls
+
+### llama32-3b-dqc [dqc2048] pass 3  env='ROCKET_DEQUANT_CACHE_MB=6144'  args='-b 2048 -ub 2048'  12:51:06  clk=600 MHz  MemAvail=31486248 kB
+<!--PRED 3	dqc2048	memavail_kb=31486328	anonhuge_kb=0	hugepagesz_kb=2048	buddy=4738,6480,5903,5847,3071,3680,3238,2801,2283,1834,4973-->
+<!--DATA 3	dqc2048	pp2048	46.16-->
+    [dq-cache] 193 weights held (5232MB): 579 dequants skipped, 193 one-time fills, 0 still-streaming calls
+
+### llama32-3b-dqc [stock] pass 3  env=''  args=''  12:54:38  clk=600 MHz  MemAvail=31594580 kB
+<!--PRED 3	stock	memavail_kb=31594580	anonhuge_kb=0	hugepagesz_kb=2048	buddy=4005,6362,6220,5673,4475,3673,3155,2770,2264,1821,5000-->
+<!--DATA 3	stock	pp2048	39.51-->
+
+### llama32-3b-dqc [ub2048] pass 3  env=''  args='-b 2048 -ub 2048'  12:58:34  clk=600 MHz  MemAvail=31575912 kB
+<!--PRED 3	ub2048	memavail_kb=31575912	anonhuge_kb=0	hugepagesz_kb=2048	buddy=5795,6300,6161,5562,4207,3606,3178,2775,2265,1779,5020-->
+<!--DATA 3	ub2048	pp2048	42.76-->
+
+#### summary: per-arm mean over 3 passes, ratios paired within a pass against [stock]
+| test | arm | mean t/s | n | min | max | paired ratio | per-pass ratios |
+|---|---|---:|---:|---:|---:|---:|---|
+| pp2048 | stock | 39.22 | 3 | 38.95 | 39.51 | -- | -- |
+| pp2048 | ub2048 | 42.56 | 3 | 42.41 | 42.76 | 1.085x | 1.085 1.089 1.082 |
+| pp2048 | dqc512 | 53.70 | 3 | 52.79 | 54.88 | 1.369x | 1.400 1.355 1.352 |
+| pp2048 | dqc2048 | 46.33 | 3 | 46.16 | 46.43 | 1.181x | 1.185 1.191 1.168 |
+
+== llama32-3b-dqc rc=0 (13:01:47) ==
+== audit before ministral3-3b-dqc (13:01:47) ==
+%CPU     PID COMMAND
+ 200 3739127 ps -eo pcpu,pid,args --sort=-pcpu
+ 0.5 3676654 [kworker/u32:0-fdac0000.npu]
+ 0.5 3460522 [kworker/u32:2-pm]
+ 0.4 3517781 [kworker/u32:1-fdad0000.npu]
+ 0.3 3725389 [kworker/u32:3-fdad0000.npu]
+/dev/mmcblk0p1   29G   20G  9.2G  69% /
+=== ministral3-3b-dqc (dqc, 4 arms) -> <data>/tuning-matrix/ministral3-3b-dqc.md
+== ministral3-3b-dqc  Mon Aug 31 13:01:47 UTC 2026 ==
+### ministral3-3b-dqc [stock] pass 1  env=''  args=''  13:02:16  clk=600 MHz  MemAvail=31579484 kB
+<!--PRED 1	stock	memavail_kb=31579612	anonhuge_kb=0	hugepagesz_kb=2048	buddy=4191,6092,6288,5765,4292,3536,3155,2775,2260,1723,5022-->
+<!--DATA 1	stock	pp2048	34.72-->
+
+### ministral3-3b-dqc [ub2048] pass 1  env=''  args='-b 2048 -ub 2048'  13:06:42  clk=600 MHz  MemAvail=31593004 kB
+<!--PRED 1	ub2048	memavail_kb=31593132	anonhuge_kb=0	hugepagesz_kb=2048	buddy=5531,6580,6338,5795,4347,3537,3172,2774,2259,1719,5023-->
+<!--DATA 1	ub2048	pp2048	35.93-->
+
+### ministral3-3b-dqc [dqc512] pass 1  env='ROCKET_DEQUANT_CACHE_MB=6656'  args=''  13:11:00  clk=600 MHz  MemAvail=31325096 kB
+<!--PRED 1	dqc512	memavail_kb=31325096	anonhuge_kb=0	hugepagesz_kb=2048	buddy=5467,6435,5938,5146,3023,3026,3162,2778,2267,1712,5002-->
+<!--DATA 1	dqc512	pp2048	46.25-->
+    [dq-cache] 179 weights held (5610MB): 2685 dequants skipped, 179 one-time fills, 0 still-streaming calls
+
+### ministral3-3b-dqc [dqc2048] pass 1  env='ROCKET_DEQUANT_CACHE_MB=6656'  args='-b 2048 -ub 2048'  13:14:33  clk=600 MHz  MemAvail=31397640 kB
+<!--PRED 1	dqc2048	memavail_kb=31397640	anonhuge_kb=0	hugepagesz_kb=2048	buddy=4725,6445,6311,5712,3268,3028,3182,2803,2281,1757,4981-->
+<!--DATA 1	dqc2048	pp2048	38.69-->
+    [dq-cache] 179 weights held (5610MB): 537 dequants skipped, 179 one-time fills, 0 still-streaming calls
+
+### ministral3-3b-dqc [ub2048] pass 2  env=''  args='-b 2048 -ub 2048'  13:18:42  clk=600 MHz  MemAvail=31591148 kB
+<!--PRED 2	ub2048	memavail_kb=31591148	anonhuge_kb=0	hugepagesz_kb=2048	buddy=5985,6459,6376,5818,4232,3572,3140,2766,2264,1810,4979-->
+<!--DATA 2	ub2048	pp2048	36.10-->
+
+### ministral3-3b-dqc [dqc512] pass 2  env='ROCKET_DEQUANT_CACHE_MB=6656'  args=''  13:22:59  clk=600 MHz  MemAvail=31309952 kB
+<!--PRED 2	dqc512	memavail_kb=31309952	anonhuge_kb=0	hugepagesz_kb=2048	buddy=6323,6264,5860,5442,3520,3170,3201,2826,2330,1717,4957-->
+<!--DATA 2	dqc512	pp2048	46.70-->
+    [dq-cache] 179 weights held (5610MB): 2685 dequants skipped, 179 one-time fills, 0 still-streaming calls
+
+### ministral3-3b-dqc [dqc2048] pass 2  env='ROCKET_DEQUANT_CACHE_MB=6656'  args='-b 2048 -ub 2048'  13:26:30  clk=600 MHz  MemAvail=31324532 kB
+<!--PRED 2	dqc2048	memavail_kb=31324676	anonhuge_kb=0	hugepagesz_kb=2048	buddy=5010,6225,6021,5462,3899,2998,3163,2775,2270,1723,4982-->
+<!--DATA 2	dqc2048	pp2048	39.00-->
+    [dq-cache] 179 weights held (5610MB): 537 dequants skipped, 179 one-time fills, 0 still-streaming calls
+
+### ministral3-3b-dqc [stock] pass 2  env=''  args=''  13:30:38  clk=600 MHz  MemAvail=31596412 kB
+<!--PRED 2	stock	memavail_kb=31596644	anonhuge_kb=0	hugepagesz_kb=2048	buddy=6040,6258,6334,5680,4418,3594,3162,2782,2270,1815,4971-->
+<!--DATA 2	stock	pp2048	34.77-->
+
+### ministral3-3b-dqc [dqc512] pass 3  env='ROCKET_DEQUANT_CACHE_MB=6656'  args=''  13:35:02  clk=600 MHz  MemAvail=31501300 kB
+<!--PRED 3	dqc512	memavail_kb=31501456	anonhuge_kb=0	hugepagesz_kb=2048	buddy=5982,6244,6151,5655,4442,3385,3189,2793,2279,1770,4972-->
+<!--DATA 3	dqc512	pp2048	46.47-->
+    [dq-cache] 179 weights held (5610MB): 2685 dequants skipped, 179 one-time fills, 0 still-streaming calls
+
+### ministral3-3b-dqc [dqc2048] pass 3  env='ROCKET_DEQUANT_CACHE_MB=6656'  args='-b 2048 -ub 2048'  13:38:34  clk=600 MHz  MemAvail=31297392 kB
+<!--PRED 3	dqc2048	memavail_kb=31297392	anonhuge_kb=0	hugepagesz_kb=2048	buddy=5594,6251,6026,5419,3412,2911,3182,2790,2271,1757,4965-->
+<!--DATA 3	dqc2048	pp2048	38.76-->
+    [dq-cache] 179 weights held (5610MB): 537 dequants skipped, 179 one-time fills, 0 still-streaming calls
+
+### ministral3-3b-dqc [stock] pass 3  env=''  args=''  13:42:43  clk=600 MHz  MemAvail=31590256 kB
+<!--PRED 3	stock	memavail_kb=31590256	anonhuge_kb=0	hugepagesz_kb=2048	buddy=5962,6670,6354,5703,4338,3591,3137,2773,2268,1787,4987-->
+<!--DATA 3	stock	pp2048	34.72-->
+
+### ministral3-3b-dqc [ub2048] pass 3  env=''  args='-b 2048 -ub 2048'  13:47:08  clk=600 MHz  MemAvail=31583284 kB
+<!--PRED 3	ub2048	memavail_kb=31583284	anonhuge_kb=0	hugepagesz_kb=2048	buddy=3245,6538,6414,5429,4617,3505,3157,2783,2264,1721,5019-->
+<!--DATA 3	ub2048	pp2048	35.84-->
+
+#### summary: per-arm mean over 3 passes, ratios paired within a pass against [stock]
+| test | arm | mean t/s | n | min | max | paired ratio | per-pass ratios |
+|---|---|---:|---:|---:|---:|---:|---|
+| pp2048 | stock | 34.74 | 3 | 34.72 | 34.77 | -- | -- |
+| pp2048 | ub2048 | 35.96 | 3 | 35.84 | 36.10 | 1.035x | 1.035 1.038 1.032 |
+| pp2048 | dqc512 | 46.47 | 3 | 46.25 | 46.70 | 1.338x | 1.332 1.343 1.338 |
+| pp2048 | dqc2048 | 38.82 | 3 | 38.69 | 39.00 | 1.117x | 1.114 1.122 1.116 |
+
+== ministral3-3b-dqc rc=0 (13:50:59) ==
+== audit before phi4mini-dqc (13:50:59) ==
+%CPU     PID COMMAND
+ 200 3882845 ps -eo pcpu,pid,args --sort=-pcpu
+ 0.5 3676654 [kworker/u32:0-fdad0000.npu]
+ 0.4 3809412 [kworker/u32:1-pm]
+ 0.4 3778034 [kworker/u32:4-fdab0000.npu]
+ 0.3 3836615 [kworker/u32:2-fdab0000.npu]
+/dev/mmcblk0p1   29G   20G  9.2G  69% /
+=== phi4mini-dqc (dqc, 4 arms) -> <data>/tuning-matrix/phi4mini-dqc.md
+== phi4mini-dqc  Mon Aug 31 13:50:59 UTC 2026 ==
+### phi4mini-dqc [stock] pass 1  env=''  args=''  13:51:28  clk=600 MHz  MemAvail=31587068 kB
+<!--PRED 1	stock	memavail_kb=31587372	anonhuge_kb=0	hugepagesz_kb=2048	buddy=5058,6410,6393,5673,4706,3503,3144,2768,2269,1570,5010-->
+<!--DATA 1	stock	pp2048	35.86-->
+
+### phi4mini-dqc [ub2048] pass 1  env=''  args='-b 2048 -ub 2048'  13:55:47  clk=600 MHz  MemAvail=31586316 kB
+<!--PRED 1	ub2048	memavail_kb=31586336	anonhuge_kb=0	hugepagesz_kb=2048	buddy=5613,6332,6069,5530,4599,3541,3177,2769,2258,1571,5013-->
+<!--DATA 1	ub2048	pp2048	40.50-->
+
+### phi4mini-dqc [dqc512] pass 1  env='ROCKET_DEQUANT_CACHE_MB=7168'  args=''  13:59:40  clk=600 MHz  MemAvail=31413044 kB
+<!--PRED 1	dqc512	memavail_kb=31413220	anonhuge_kb=0	hugepagesz_kb=2048	buddy=4745,6231,5700,5442,3567,2982,3161,2794,2275,1591,4991-->
+<!--DATA 1	dqc512	pp2048	49.77-->
+    [dq-cache] 126 weights held (6000MB): 1890 dequants skipped, 126 one-time fills, 0 still-streaming calls
+
+### phi4mini-dqc [dqc2048] pass 1  env='ROCKET_DEQUANT_CACHE_MB=7168'  args='-b 2048 -ub 2048'  14:03:01  clk=600 MHz  MemAvail=31292224 kB
+<!--PRED 1	dqc2048	memavail_kb=31292224	anonhuge_kb=0	hugepagesz_kb=2048	buddy=5266,6394,5340,5065,3262,3089,3167,2784,2268,1559,4985-->
+<!--DATA 1	dqc2048	pp2048	42.54-->
+    [dq-cache] 126 weights held (6000MB): 378 dequants skipped, 126 one-time fills, 0 still-streaming calls
+
+### phi4mini-dqc [ub2048] pass 2  env=''  args='-b 2048 -ub 2048'  14:06:52  clk=600 MHz  MemAvail=31567712 kB
+<!--PRED 2	ub2048	memavail_kb=31567712	anonhuge_kb=0	hugepagesz_kb=2048	buddy=4439,6412,5489,5372,4674,3559,3162,2781,2271,1598,4994-->
+<!--DATA 2	ub2048	pp2048	39.70-->
+
+### phi4mini-dqc [dqc512] pass 2  env='ROCKET_DEQUANT_CACHE_MB=7168'  args=''  14:10:50  clk=600 MHz  MemAvail=31370192 kB
+<!--PRED 2	dqc512	memavail_kb=31370192	anonhuge_kb=0	hugepagesz_kb=2048	buddy=3805,6452,6123,5570,3327,3012,3138,2790,2268,1573,4994-->
+<!--DATA 2	dqc512	pp2048	49.15-->
+    [dq-cache] 126 weights held (6000MB): 1890 dequants skipped, 126 one-time fills, 0 still-streaming calls
+
+### phi4mini-dqc [dqc2048] pass 2  env='ROCKET_DEQUANT_CACHE_MB=7168'  args='-b 2048 -ub 2048'  14:14:13  clk=600 MHz  MemAvail=31427216 kB
+<!--PRED 2	dqc2048	memavail_kb=31427280	anonhuge_kb=0	hugepagesz_kb=2048	buddy=5338,5991,6224,5051,3980,3003,3156,2783,2273,1602,4985-->
+<!--DATA 2	dqc2048	pp2048	42.74-->
+    [dq-cache] 126 weights held (6000MB): 378 dequants skipped, 126 one-time fills, 0 still-streaming calls
+
+### phi4mini-dqc [stock] pass 2  env=''  args=''  14:18:03  clk=600 MHz  MemAvail=31586048 kB
+<!--PRED 2	stock	memavail_kb=31586048	anonhuge_kb=0	hugepagesz_kb=2048	buddy=4602,6180,6087,5438,4681,3500,3140,2782,2267,1589,5004-->
+<!--DATA 2	stock	pp2048	36.16-->
+
+### phi4mini-dqc [dqc512] pass 3  env='ROCKET_DEQUANT_CACHE_MB=7168'  args=''  14:22:19  clk=600 MHz  MemAvail=31362616 kB
+<!--PRED 3	dqc512	memavail_kb=31362616	anonhuge_kb=0	hugepagesz_kb=2048	buddy=3682,6113,6192,4991,3197,2919,3160,2787,2270,1568,5003-->
+<!--DATA 3	dqc512	pp2048	49.44-->
+    [dq-cache] 126 weights held (6000MB): 1890 dequants skipped, 126 one-time fills, 0 still-streaming calls
+
+### phi4mini-dqc [dqc2048] pass 3  env='ROCKET_DEQUANT_CACHE_MB=7168'  args='-b 2048 -ub 2048'  14:25:41  clk=600 MHz  MemAvail=31390376 kB
+<!--PRED 3	dqc2048	memavail_kb=31390412	anonhuge_kb=0	hugepagesz_kb=2048	buddy=4145,5812,6368,5598,3532,3010,3169,2791,2272,1596,4980-->
+<!--DATA 3	dqc2048	pp2048	42.83-->
+    [dq-cache] 126 weights held (6000MB): 378 dequants skipped, 126 one-time fills, 0 still-streaming calls
+
+### phi4mini-dqc [stock] pass 3  env=''  args=''  14:29:31  clk=600 MHz  MemAvail=31564652 kB
+<!--PRED 3	stock	memavail_kb=31564652	anonhuge_kb=0	hugepagesz_kb=2048	buddy=6228,6149,5754,5622,4451,3517,3131,2782,2268,1603,4993-->
+<!--DATA 3	stock	pp2048	36.07-->
+
+### phi4mini-dqc [ub2048] pass 3  env=''  args='-b 2048 -ub 2048'  14:33:49  clk=600 MHz  MemAvail=31580884 kB
+<!--PRED 3	ub2048	memavail_kb=31580888	anonhuge_kb=0	hugepagesz_kb=2048	buddy=3025,6267,6233,5677,4601,3484,3155,2789,2269,1576,5007-->
+<!--DATA 3	ub2048	pp2048	39.47-->
+
+#### summary: per-arm mean over 3 passes, ratios paired within a pass against [stock]
+| test | arm | mean t/s | n | min | max | paired ratio | per-pass ratios |
+|---|---|---:|---:|---:|---:|---:|---|
+| pp2048 | stock | 36.03 | 3 | 35.86 | 36.16 | -- | -- |
+| pp2048 | ub2048 | 39.89 | 3 | 39.47 | 40.50 | 1.107x | 1.129 1.098 1.094 |
+| pp2048 | dqc512 | 49.45 | 3 | 49.15 | 49.77 | 1.373x | 1.388 1.359 1.371 |
+| pp2048 | dqc2048 | 42.70 | 3 | 42.54 | 42.83 | 1.185x | 1.186 1.182 1.187 |
+
+== phi4mini-dqc rc=0 (14:37:19) ==
+== audit at end ==
+%CPU     PID COMMAND
+ 200 3991139 ps -eo pcpu,pid,args --sort=-pcpu
+ 0.4 3908325 [kworker/u32:4-fdab0000.npu]
+ 0.3 3885978 [kworker/u32:2-fdab0000.npu]
+ 0.3 3896074 [kworker/u32:3-fdab0000.npu]
+ 0.3 3986448 [kworker/u32:1-fdac0000.npu]
+[14:37:19] ALL-DONE
+[14:37:19] CHAIN-DONE

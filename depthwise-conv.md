@@ -44,7 +44,7 @@ working reference (Mesa's `rocket` driver, which runs depthwise correctly) branc
 | `od_bypass` (`DPU_BS_OW_CFG.OD_BYPASS`) | `1` | **0** (unset) | `rkt_regcmd.c` |
 | `surfaces_per_row` (`DPU_SURFACE_ADD.SURF_ADD`) | `OW·OH·2` | **`OW·OH·2 · 2`** | `rkt_task.c` |
 | `feature_grains` (`CNA_CONV_CON2`) | insensitive | **`50+stride_y+1`** | `rkt_regcmd.c` |
-| `bs_ow_op` (`DPU_BS_OW_OP`) | `0` (BS bypassed) | **`0x80 − weight_zp`** (128) | `rkt_regcmd.c` |
+| `bs_ow_op` (`DPU_BS_OW_OP`) | `0` (BS bypassed) | **`0x80 − weight_zp`**: 128 at fp16, 0 for int8 (below) | `rkt_regcmd.c` |
 | **weight channel group `G`** (host scatter) | n/a | **fp16 = 32** (int8 = 64) | HW sweep |
 
 **The host weight-group `G` is the field with no Mesa-fp16 reference.** Mesa's int8
@@ -82,7 +82,7 @@ G=64 gives `max_abs` 6-24 (channel-plausible-but-wrong) and **G=32 is bit-exact*
 
 Depthwise reuses the direct-conv datapath but reinterprets its output geometry: one
 kernel per group (`weights_kernels = 1`), a wider write-out surface (`size_e = 3`,
-`od_bypass = 0`, `surfaces_per_row ×2`, `bs_ow_op = 128`, `feature_grains = 52`). The MAC
+`od_bypass = 0`, `surfaces_per_row ×2`, `bs_ow_op`, `feature_grains = 52`). The MAC
 array, feature/weight CBUF load, and pad/stride/dilation handling are identical to a
 direct conv. **The registers are only half the job**: the host weight cube must use the
 right channel group (`G = 32` for fp16, half the int8 group). Get any of these wrong and
@@ -94,56 +94,105 @@ deltas differ), **then** sweep the one field with no reference (`G`).
 ## int8 depthwise: the int8-out on-chip-requant path
 
 int8 DW uses an **int8-output writer with on-chip requant**, not the int32-raw + host
-requant that fp16 DW uses. The "int32-raw" int8 DW writer (the int8 analog of fp16-out:
-`size_e=7`, `surf_add ×8`, int32 output, host requant) HW-fails with a clean signature:
-`got[2k] == ref[k]`, i.e. the MAC and weight group are correct but the int32 output lands
-at **2x the within-plane stride**. Sweeping `size_e` / `surf_mult` / readback-C2 / `G` does
-not fix it; it is a genuinely different writer mode. [HW sweep]
+requant that fp16 DW uses. The int32-raw int8 DW writer (`size_e=7`, `surf_add ×8`, int32
+output) fails with a clean signature: `got[2k] == ref[k]`. The MAC and the weight group are
+correct, and the int32 output lands at **2x the within-plane stride**. Sweeping `size_e`,
+`surf_mult`, the readback C2 and `G` does not fix it, because it is a different writer mode.
+[HW sweep]
 
-The Teflon capture (`teflon-dw-capture/`) shows why: **Mesa does int8 depthwise as
-int8-output with on-chip requant, never int32-raw.** The `gen_conv2d_dw_int8` path (with
-`conv_params_t.int8_out=1`) reproduces Mesa's int8-output writer bit-for-bit, validated by
-`tests/replay_dw_mesa.c` (the regcmd over Mesa's captured BOs -> output bit-exact vs
-`mesa-output`, on degenerate and non-degenerate random input). The deltas from the
-int32-raw writer:
+The int8-output writer is Mesa's (`rkt_regcmd.c`). `gen_conv2d_dw_int8` in rocket-userspace
+emits it with `conv_params_t.int8_out=1`. Its deltas from the int32-raw writer:
 
-- **`DPU_DATA_FORMAT = 0`**: int8 out / int8 in / int8 proc (`out_precision = int8`, not
-  int32). The output is int8, so the int32-readback geometry never applies.
-- **`CORE_MISC_CFG QD_EN = 1`** (the int8 *matmul* / int32-raw conv uses 0). Required for
-  the requant writer.
-- **`size_e = 3`, `SURF_ADD = dst_surf_stride·4`**: the int8-out stride (matches the
-  capture's `SURFACE_ADD = 256 = OH·OW·4`), not the int32-raw `7 / ·8`. (Like fp16 DW,
-  `size_e` does not track the actual output byte width.)
-- **`CNA_PAD_CON1 = (input_zp & 0xff) − 0x80`**: border pad in the uint8-centered domain
-  (`0x7e` for `in_zp = −2`). The float/int32 paths leave it `0`; new `npu_cna_desc.pad_con1`.
-- **per-output-channel int32 bias added in the BS ALU**, fetched by BRDMA: `DPU_BS_CFG =
-  BS_ALU_ALGO(2)|BS_ALU_SRC(1)|RELU/MUL bypass` (`0x20150`), `DPU_RDMA_BRDMA_CFG =
-  BRDMA_DATA_USE(1)`, `DPU_RDMA_BS_BASE_ADDR = bias-cube IOVA`. The bias cube is
-  `tflite_bias − Σ_kernel(w_uint8 − w_zp)·(in_zp − 0x80)` (Mesa's zero-point fold,
-  `rkt_coefs.c`). New `npu_dpu_desc.bias_en`/`bias_base_addr`.
-- **`OUT_CVT` requant** (new `npu_dpu_desc.out_cvt_offset`/`out_cvt_shift`, wired into the
-  conv emitter where they were hardcoded 0): `offset = output_zp − 0x80`; `scale`/`shift`
-  from the Mesa/QNNPACK float-bits formula
-  ```
-  conv_scale = in_scale·w_scale / out_scale;  bits = float_bits(conv_scale);
-  shift = (126 − (bits>>23) + 16) − 1;   scale = ((bits>>9) & 0x7fff) + 1 | 0x4000;
-  ```
-  (verified it reproduces the capture's `SCALE=17675 / SHIFT=22 / OFFSET=0xffffff85`).
-- **`bs_ow_op = 0x80 − weight_zp`**: same as fp16 DW.
+- **`DPU_DATA_FORMAT = 0`**: int8 out, in and proc (`out_precision = int8`). The int32-readback geometry never applies.
+- **`CORE_MISC_CFG QD_EN = 1`**, which the requant writer requires. The int8 matmul and the int32-raw conv use 0.
+- **`size_e = 3`, `SURF_ADD = dst_surf_stride·4`**: the int8-out stride, the capture's `SURFACE_ADD = 256 = OH·OW·4`. Like fp16 DW, `size_e` does not track the output byte width.
+- **A per-output-channel int32 bias in the BS ALU**, fetched by BRDMA: `DPU_BS_CFG` `0x20150`, `DPU_RDMA_BRDMA_CFG = BRDMA_DATA_USE(1)` and `DPU_RDMA_BS_BASE_ADDR` set to the bias cube.
+- **The `OUT_CVT` requant**, whose scale and shift come from the formula below and whose offset is the output zero point. [encodings/out-cvt-converter.md](encodings/out-cvt-converter.md) owns the converter.
+- **`CNA_PAD_CON1`** and **`DPU_BS_OW_OP`**, each with a trap of its own below.
 
-**The correctness oracle for int8 DW is Teflon, not CPU TFLite.** Teflon's NPU int8 DW
-diverges from the CPU int8 kernel by up to ~143 on full-range random int8 (its per-tensor
-uint8-domain requant is its own approximation), so the bit-exact gate is capture-replay
-(`replay_dw_mesa`), not a from-scratch TFLite reference. Teflon also forces per-tensor
-quant; real per-channel DW filters need the BS_MUL per-OC multiply path (a follow-on) or
-stay on the dequant->fp16-DW->requant boundary.
+```
+conv_scale = in_scale·w_scale / out_scale;  bits = float_bits(conv_scale);
+shift = (126 − (bits>>23) + 16) − 1;   scale = ((bits>>9) & 0x7fff) + 1 | 0x4000;
+```
 
-**Runtime + delegate.** The int8-out path is wrapped in a runtime `rocket_conv2d_dw_int8`
-(host-packs the uint8-centered cubes + the zero-point bias fold, reads back `+0x80` to the
-model domain; G=64; channel-tiled) and routed by the delegate for **per-tensor
-symmetric-pad** DW under `--option native_int8=1`. The host domain constants are pinned
-empirically against the capture (`tests/dw_dump_capture.py`: the weight + bias cubes
-reproduce `mesa-weights`/`mesa-biases` byte-for-byte; correction = `Σ(w_u8−w_zp)·(in_zp−0x80)`).
-Gate `tests/conv_dw_int8_runtime.c`: the runtime vs Teflon `mesa-output` = **0/4096
-bit-exact** (raw filter+bias from the tflite model, independent); delegate
-`max|delegate−Teflon| = 0`.
+The formula reproduces a Teflon capture's `SCALE=17675` and `SHIFT=22`. [source-confirmed]
+
+### The int8 domain
+
+Mesa's rocket driver is a uint8 driver: its formulas take a uint8 tensor `u` with zero
+point `Z` [source-confirmed, `rkt_ml.c`, `rkt_coefs.c`, `rkt_regcmd.c`]. An int8 tensor is
+the uint8 tensor `u = x + 0x80` with `Z = zp + 0x80`, at the same scale. Substituting gives
+the int8 program:
+
+| Field | Mesa's uint8 formula | int8 value |
+|---|---|---|
+| Input and weight cubes | `u − 0x80` | the raw int8 values |
+| `CNA_PAD_CON1` | `Z_in − 0x80` | `in_zp`, one byte per lane |
+| `OUT_CVT` offset | `Z_out − 0x80` | `out_zp` |
+| `DPU_BS_OW_OP` | `0x80 − Z_w` | 0 for symmetric weights |
+| Bias | `bias − (Z_in − 0x80)·Σ(u_w − Z_w)` | `bias − in_zp·Σ_kernel w` |
+| Output | `npu_byte + 0x80` | the raw int8 byte |
+
+This program computes TFLite's int8 depthwise [HW sweep, RK1, 600 MHz, measured
+2026-09-23]. Against TFLite's reference kernels on one model layer with a random input, 11
+of 4096 outputs differ by one and none by more. The difference is the requant: a 15-bit
+multiplier against TFLite's 31-bit one moves an output across a rounding boundary.
+Against a host model of TFLite's int32 accumulator followed by the `OUT_CVT` requant, the
+program is bit-exact at these shapes:
+
+| Channels × plane | Kernel, stride | Zero points (in, out) |
+|---|---|---|
+| 64×8×8 | 3×3, 1×1 | -2, 5 |
+| 64×6×10 | 3×3, 1×1 | 37, -20 |
+| 64×9×7 | 3×3, 2×1 | -128, 127 |
+| 128×7×5 | 3×3, 1×2 | 127, -128 |
+| 64×8×11 | 5×5, 1×1 | 0, 0 |
+
+The weights are symmetric throughout. A nonzero weight zero point adds `w_zp·Σx`, which
+depends on the input and cannot fold into the bias. rocket-userspace refuses it.
+
+### `CNA_PAD_CON1` is read per byte lane
+
+On the int8 depthwise path, the odd channels among the first 32 of a 64-channel group read
+byte 1 of `CNA_PAD_CON1`, and every other channel reads byte 0 [HW sweep, RK1]. The pad byte
+therefore goes in every lane. A single byte sign-extended to 32 bits pads those 16 lanes with
+`0x00` or `0xFF`, which only the border outputs of those channels show. Mesa's general
+formula writes exactly that, and its two hand-coded values, `0xffff8080` and `0x0b0b`, are
+the byte written twice [source-confirmed, `rkt_regcmd.c`].
+
+The method reads the pad directly. One unit weight sits at kernel tap (0,0), with bias 0,
+unit scales and the input equal to `in_zp` everywhere, so each channel's corner output is
+`pad − in_zp`. At `in_zp` 37, -2, 100 and -100 over 64 channels at 6×10, those 16 lanes read
+byte 1 and the other 48 read byte 0. Whether the pattern repeats per 64-channel group was
+not isolated. With the byte in every lane the question does not arise, and the 128-channel
+shape above is bit-exact.
+
+### `DPU_BS_OW_OP` is the CPEND operand
+
+The TRM names `DPU_BS_OW_OP` the CPEND operand, and `DPU_BS_OW_CFG.OD_BYPASS` bypasses CPEND
+[TRM]. On the int8 depthwise path it must be 0 for symmetric weights, Mesa's `0x80 − Z_w` at
+the uint8-equivalent `Z_w = 128`. At 128, 3962 of 4096 outputs of a real layer are wrong
+[HW sweep, RK1]. That is the value the same formula gives when an int8 weight zero point of
+0 is read as a uint8 one. What CPEND computes was not isolated: a term in the weight zero
+point is the likely reading, since Mesa's formula carries one [expected]. The fp16 depthwise
+path runs bit-exact at 128.
+
+### Captures as oracles
+
+A capture from a reference driver is an oracle only for what that driver supports. The one
+int8 depthwise capture ran an int8 model through Mesa's uint8 formulas, so it records those
+formulas applied to int8 bytes. On an int8 byte, `u − 0x80` is the flip `x ^ 0x80`, which is
+not linear in `x`. Every one of the capture's 4096 outputs differs from TFLite's for the same
+model and input, by up to 133 [HW sweep, LiteRT 2.1.6 reference kernels].
+
+The capture's input is also constant zero, so it cannot see the input-cube addressing either.
+Replaying a register program over its buffers says the program is Mesa's, and says nothing
+about the function it computes. The oracle for the function is TFLite.
+
+### Runtime and delegate
+
+`rocket_conv2d_dw_int8` in rocket-userspace wraps the path. It packs the raw cubes and the
+bias fold, reads the output back raw, uses `G = 64` and tiles over channels. It takes
+per-tensor quant with symmetric weights. The `tflite-rocket` delegate routes a per-tensor,
+symmetric-pad int8 depthwise to it under `--option native_int8=1`. A per-channel filter
+needs the BS_MUL per-channel multiply and stays on the fp16 depthwise path.

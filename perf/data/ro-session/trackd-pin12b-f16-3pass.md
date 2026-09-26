@@ -1,0 +1,109 @@
+<!-- gemma4-12b F16 pinning intervention  TESTS='-p 2048 -n 0 -r 3'  PASSES=3
+     gguf=<data>/gemma4/gemma-4-12b-it-F16.gguf (23832065184 bytes)
+     THE CONTRARY CELL: a standing negative recorded taskset 0xf0 as prefill-FLAT on this model,
+     with no raw evidence file and no recorded protocol. This is that cell under the
+     rotated-interleaved protocol that found the 1.06-1.13x lever on two other models.
+     arms: unpinned  (base; llama-bench default -t 8 over all 8 CPUs)
+           pin76     PIN_MASK=0xf0 -- the four A76s, -t 8; the FAITHFUL reproduction
+           pin76t4   PIN_MASK=0xf0 -t 4 -- threads-per-core held at 1
+     22.18 GiB streams from mmap in every arm; librocketnpu pins its own workers to
+     the A76s in every arm.
+-->
+== gemma4-12b-f16-pin  Tue Sep  1 03:00:55 UTC 2026 ==
+### gemma4-12b-f16-pin [unpinned] pass 1  env=''  args=''  03:02:22  clk=600 MHz  MemAvail=31567252 kB
+<!--PRED 1	unpinned	memavail_kb=31567252	anonhuge_kb=0	hugepagesz_kb=2048	buddy=5434,6315,6064,5052,4832,4261,3028,2672,2250,498,449-->
+| model                          |       size |     params | backend    | ngl |            test |                  t/s |
+| ------------------------------ | ---------: | ---------: | ---------- | --: | --------------: | -------------------: |
+| gemma4 ?B F16                  |  22.18 GiB |    11.91 B | ROCKET     |  -1 |          pp2048 |         19.92 ± 0.09 |
+
+build: 171974745 (10558)
+<!--RO 1	unpinned	wall_s=417	busy=5482,5512,5469,5465,18433,12288,12933,15165	busy_tot=80747	busy_little_share=0.2716	a55_cpu_cycles=418904346747	a55_inst_retired=262560007470	context_switches=13140390	a76_cpu_cycles=1307623534259	a76_l3d_cache_refill=19098710320	a76_l2d_cache_refill=9230239475	cpu_migrations=41220	page_faults=969667	a76_dtlb_walk=1043450449	a76_mem_access=344999572536	a76_inst_retired=1597235729233	a76_l1d_cache_refill=20789149743	a55_inst_share=0.1412	a76_ipc=1.221	l2ref_pki=5.779	l3ref_pki=11.957	l1dref_pki=13.016	memacc_pki=216.00	dtlbw_pki=0.6533	pmu_enabled=100.0	pmu_cpu_s=3325.5	who=at_s=8,rss_pg=6045794,settled=2	pfn_zero_frac=0.0000	maps=3	sampled=73728	present_frac=0.8172	l2color_cv=0.0054	l3color_cv=0.0195	contig_frac=0.9237	mean_run=12.8	vapa16=0.0392	gib_regions=29	anon_pg=12296	anon_l2cv=0.0032	anon_contig=0.9826	anon_run=51.4	anon_gib=25	file_pg=24576	file_l2cv=0.0010	file_contig=0.9974	file_run=219.4	file_gib=24	other_pg=23382	other_l2cv=0.0136	other_contig=0.8151	other_run=5.4	other_gib=29	ro_cost_ms=80-->
+<!--DATA 1	unpinned	pp2048	19.92-->
+
+### gemma4-12b-f16-pin [pin76] pass 1  env='PIN_MASK=0xf0'  args=''  03:10:44  clk=600 MHz  MemAvail=31573820 kB
+<!--PRED 1	pin76	memavail_kb=31573528	anonhuge_kb=0	hugepagesz_kb=2048	buddy=3569,6257,5597,5169,4900,4275,2973,2495,2220,423,522-->
+| model                          |       size |     params | backend    | ngl |            test |                  t/s |
+| ------------------------------ | ---------: | ---------: | ---------- | --: | --------------: | -------------------: |
+| gemma4 ?B F16                  |  22.18 GiB |    11.91 B | ROCKET     |  -1 |          pp2048 |         20.84 ± 0.04 |
+
+build: 171974745 (10558)
+<!--RO 1	pin76	wall_s=399	busy=285,326,414,382,18998,13420,12995,14416	busy_tot=61236	busy_little_share=0.0230	a55_cpu_cycles=55852376175	a55_inst_retired=11035971622	context_switches=13228787	a76_cpu_cycles=1326696367609	a76_l3d_cache_refill=20306315323	a76_l2d_cache_refill=9412275665	cpu_migrations=66365	page_faults=949234	a76_dtlb_walk=1090135149	a76_mem_access=364536932831	a76_inst_retired=1679805967304	a76_l1d_cache_refill=22370499308	a55_inst_share=0.0065	a76_ipc=1.266	l2ref_pki=5.603	l3ref_pki=12.088	l1dref_pki=13.317	memacc_pki=217.01	dtlbw_pki=0.6490	pmu_enabled=100.0	pmu_cpu_s=3182.7	who=at_s=8,rss_pg=6045795,settled=2	pfn_zero_frac=0.0000	maps=3	sampled=73728	present_frac=0.8157	l2color_cv=0.0064	l3color_cv=0.0151	contig_frac=0.9360	mean_run=15.2	vapa16=0.2358	gib_regions=29	anon_pg=12295	anon_l2cv=0.0022	anon_contig=0.9880	anon_run=71.5	anon_gib=22	file_pg=24576	file_l2cv=0.0015	file_contig=0.9918	file_run=99.1	file_gib=27	other_pg=23272	other_l2cv=0.0162	other_contig=0.8496	other_run=6.6	other_gib=29	ro_cost_ms=84-->
+<!--DATA 1	pin76	pp2048	20.84-->
+
+### gemma4-12b-f16-pin [pin76t4] pass 1  env='PIN_MASK=0xf0'  args='-t 4'  03:18:46  clk=600 MHz  MemAvail=31560284 kB
+<!--PRED 1	pin76t4	memavail_kb=31559992	anonhuge_kb=0	hugepagesz_kb=2048	buddy=5210,6394,5882,5239,4942,4225,3000,2487,2218,411,522-->
+| model                          |       size |     params | backend    | ngl | threads |            test |                  t/s |
+| ------------------------------ | ---------: | ---------: | ---------- | --: | ------: | --------------: | -------------------: |
+| gemma4 ?B F16                  |  22.18 GiB |    11.91 B | ROCKET     |  -1 |       4 |          pp2048 |         21.26 ± 0.10 |
+
+build: 171974745 (10558)
+<!--RO 1	pin76t4	wall_s=391	busy=374,308,372,308,18745,12675,13227,16240	busy_tot=62249	busy_little_share=0.0219	a55_cpu_cycles=53858549385	a55_inst_retired=10538780036	context_switches=12958715	a76_cpu_cycles=1344667094902	a76_l3d_cache_refill=19956636158	a76_l2d_cache_refill=9404098346	cpu_migrations=25896	page_faults=949880	a76_dtlb_walk=1089562216	a76_mem_access=368951232912	a76_inst_retired=1710283070599	a76_l1d_cache_refill=26720599015	a55_inst_share=0.0061	a76_ipc=1.272	l2ref_pki=5.499	l3ref_pki=11.669	l1dref_pki=15.623	memacc_pki=215.73	dtlbw_pki=0.6371	pmu_enabled=100.0	pmu_cpu_s=3119.0	who=at_s=9,rss_pg=6044932,settled=2	pfn_zero_frac=0.0000	maps=3	sampled=73728	present_frac=0.8270	l2color_cv=0.0062	l3color_cv=0.0123	contig_frac=0.9435	mean_run=17.1	vapa16=0.0039	gib_regions=29	anon_pg=12893	anon_l2cv=0.0010	anon_contig=0.9986	anon_run=293.0	anon_gib=23	file_pg=24576	file_l2cv=0.0006	file_contig=0.9979	file_run=245.8	file_gib=27	other_pg=23504	other_l2cv=0.0163	other_contig=0.8564	other_run=6.9	other_gib=29	ro_cost_ms=62-->
+<!--DATA 1	pin76t4	pp2048	21.26-->
+
+### gemma4-12b-f16-pin [pin76] pass 2  env='PIN_MASK=0xf0'  args=''  03:26:43  clk=600 MHz  MemAvail=31568276 kB
+<!--PRED 2	pin76	memavail_kb=31568276	anonhuge_kb=0	hugepagesz_kb=2048	buddy=7169,6623,5971,5523,4954,3983,3019,2501,2230,420,516-->
+| model                          |       size |     params | backend    | ngl |            test |                  t/s |
+| ------------------------------ | ---------: | ---------: | ---------- | --: | --------------: | -------------------: |
+| gemma4 ?B F16                  |  22.18 GiB |    11.91 B | ROCKET     |  -1 |          pp2048 |         20.78 ± 0.06 |
+
+build: 171974745 (10558)
+<!--RO 2	pin76	wall_s=399	busy=357,319,341,355,19025,13287,13080,14534	busy_tot=61298	busy_little_share=0.0224	a55_cpu_cycles=54882166613	a55_inst_retired=10820429515	context_switches=13236329	a76_cpu_cycles=1325989588659	a76_l3d_cache_refill=20329305735	a76_l2d_cache_refill=9417904004	cpu_migrations=66033	page_faults=947097	a76_dtlb_walk=1100760950	a76_mem_access=364314477978	a76_inst_retired=1679252782270	a76_l1d_cache_refill=22391726678	a55_inst_share=0.0064	a76_ipc=1.266	l2ref_pki=5.608	l3ref_pki=12.106	l1dref_pki=13.334	memacc_pki=216.95	dtlbw_pki=0.6555	pmu_enabled=100.0	pmu_cpu_s=3189.3	who=at_s=8,rss_pg=6045785,settled=2	pfn_zero_frac=0.0000	maps=3	sampled=73728	present_frac=0.8140	l2color_cv=0.0047	l3color_cv=0.0157	contig_frac=0.9392	mean_run=15.9	vapa16=0.0475	gib_regions=29	anon_pg=12303	anon_l2cv=0.0026	anon_contig=0.9866	anon_run=64.4	anon_gib=24	file_pg=24576	file_l2cv=0.0006	file_contig=0.9975	file_run=223.4	file_gib=26	other_pg=23133	other_l2cv=0.0131	other_contig=0.8521	other_run=6.7	other_gib=29	ro_cost_ms=100-->
+<!--DATA 2	pin76	pp2048	20.78-->
+
+### gemma4-12b-f16-pin [pin76t4] pass 2  env='PIN_MASK=0xf0'  args='-t 4'  03:34:46  clk=600 MHz  MemAvail=31556868 kB
+<!--PRED 2	pin76t4	memavail_kb=31556868	anonhuge_kb=0	hugepagesz_kb=2048	buddy=6265,7035,6435,5836,4821,4080,3082,2498,2232,420,504-->
+| model                          |       size |     params | backend    | ngl | threads |            test |                  t/s |
+| ------------------------------ | ---------: | ---------: | ---------- | --: | ------: | --------------: | -------------------: |
+| gemma4 ?B F16                  |  22.18 GiB |    11.91 B | ROCKET     |  -1 |       4 |          pp2048 |         21.14 ± 0.08 |
+
+build: 171974745 (10558)
+<!--RO 2	pin76t4	wall_s=393	busy=383,296,349,308,18647,12691,13373,16323	busy_tot=62370	busy_little_share=0.0214	a55_cpu_cycles=54246627347	a55_inst_retired=10619106962	context_switches=12959664	a76_cpu_cycles=1348216958163	a76_l3d_cache_refill=19942143698	a76_l2d_cache_refill=9429887137	cpu_migrations=25852	page_faults=948435	a76_dtlb_walk=1089384430	a76_mem_access=368917810552	a76_inst_retired=1710042434174	a76_l1d_cache_refill=26752817112	a55_inst_share=0.0062	a76_ipc=1.268	l2ref_pki=5.514	l3ref_pki=11.662	l1dref_pki=15.645	memacc_pki=215.74	dtlbw_pki=0.6371	pmu_enabled=100.0	pmu_cpu_s=3136.3	who=at_s=8,rss_pg=6044931,settled=2	pfn_zero_frac=0.0000	maps=3	sampled=73728	present_frac=0.8266	l2color_cv=0.0063	l3color_cv=0.0185	contig_frac=0.9334	mean_run=14.6	vapa16=0.0216	gib_regions=29	anon_pg=12932	anon_l2cv=0.0009	anon_contig=0.9981	anon_run=258.6	anon_gib=20	file_pg=24576	file_l2cv=0.0012	file_contig=0.9851	file_run=59.5	file_gib=27	other_pg=23434	other_l2cv=0.0166	other_contig=0.8434	other_run=6.3	other_gib=29	ro_cost_ms=91-->
+<!--DATA 2	pin76t4	pp2048	21.14-->
+
+### gemma4-12b-f16-pin [unpinned] pass 2  env=''  args=''  03:42:49  clk=600 MHz  MemAvail=31562352 kB
+<!--PRED 2	unpinned	memavail_kb=31562352	anonhuge_kb=0	hugepagesz_kb=2048	buddy=6322,6132,6043,5324,5028,4319,3027,2495,2237,431,499-->
+| model                          |       size |     params | backend    | ngl |            test |                  t/s |
+| ------------------------------ | ---------: | ---------: | ---------- | --: | --------------: | -------------------: |
+| gemma4 ?B F16                  |  22.18 GiB |    11.91 B | ROCKET     |  -1 |          pp2048 |         20.04 ± 0.07 |
+
+build: 171974745 (10558)
+<!--RO 2	unpinned	wall_s=415	busy=5433,5421,5425,5430,18168,12549,12562,15581	busy_tot=80569	busy_little_share=0.2694	a55_cpu_cycles=416101839035	a55_inst_retired=261001185808	context_switches=13131332	a76_cpu_cycles=1304828511998	a76_l3d_cache_refill=19118202596	a76_l2d_cache_refill=9196519722	cpu_migrations=40584	page_faults=947979	a76_dtlb_walk=1045239724	a76_mem_access=344786143284	a76_inst_retired=1596162199532	a76_l1d_cache_refill=20848763404	a55_inst_share=0.1405	a76_ipc=1.223	l2ref_pki=5.762	l3ref_pki=11.978	l1dref_pki=13.062	memacc_pki=216.01	dtlbw_pki=0.6548	pmu_enabled=100.0	pmu_cpu_s=3309.4	who=at_s=8,rss_pg=6045794,settled=2	pfn_zero_frac=0.0000	maps=3	sampled=73728	present_frac=0.8183	l2color_cv=0.0047	l3color_cv=0.0170	contig_frac=0.9398	mean_run=16.1	vapa16=0.0732	gib_regions=29	anon_pg=12296	anon_l2cv=0.0018	anon_contig=0.9771	anon_run=40.1	anon_gib=23	file_pg=24576	file_l2cv=0.0014	file_contig=0.9939	file_run=124.8	file_gib=27	other_pg=23463	other_l2cv=0.0115	other_contig=0.8635	other_run=7.2	other_gib=29	ro_cost_ms=82-->
+<!--DATA 2	unpinned	pp2048	20.04-->
+
+### gemma4-12b-f16-pin [pin76t4] pass 3  env='PIN_MASK=0xf0'  args='-t 4'  03:51:08  clk=600 MHz  MemAvail=31559488 kB
+<!--PRED 3	pin76t4	memavail_kb=31559488	anonhuge_kb=0	hugepagesz_kb=2048	buddy=8253,6040,5461,4735,4441,4299,3034,2530,2239,433,507-->
+| model                          |       size |     params | backend    | ngl | threads |            test |                  t/s |
+| ------------------------------ | ---------: | ---------: | ---------- | --: | ------: | --------------: | -------------------: |
+| gemma4 ?B F16                  |  22.18 GiB |    11.91 B | ROCKET     |  -1 |       4 |          pp2048 |         21.12 ± 0.03 |
+
+build: 171974745 (10558)
+<!--RO 3	pin76t4	wall_s=393	busy=265,336,357,371,18767,12744,13282,16201	busy_tot=62323	busy_little_share=0.0213	a55_cpu_cycles=54416321922	a55_inst_retired=10673480499	context_switches=12968197	a76_cpu_cycles=1346946632975	a76_l3d_cache_refill=19976781104	a76_l2d_cache_refill=9417683969	cpu_migrations=26185	page_faults=952804	a76_dtlb_walk=1073141796	a76_mem_access=369018670564	a76_inst_retired=1710228637965	a76_l1d_cache_refill=26801304106	a55_inst_share=0.0062	a76_ipc=1.270	l2ref_pki=5.507	l3ref_pki=11.681	l1dref_pki=15.671	memacc_pki=215.77	dtlbw_pki=0.6275	pmu_enabled=100.0	pmu_cpu_s=3139.6	who=at_s=8,rss_pg=6044935,settled=2	pfn_zero_frac=0.0000	maps=3	sampled=73728	present_frac=0.8312	l2color_cv=0.0050	l3color_cv=0.0137	contig_frac=0.9421	mean_run=16.7	vapa16=0.2544	gib_regions=29	anon_pg=13022	anon_l2cv=0.0017	anon_contig=0.9987	anon_run=296.0	anon_gib=21	file_pg=24576	file_l2cv=0.0011	file_contig=0.9951	file_run=147.2	file_gib=27	other_pg=23682	other_l2cv=0.0132	other_contig=0.8560	other_run=6.9	other_gib=29	ro_cost_ms=92-->
+<!--DATA 3	pin76t4	pp2048	21.12-->
+
+### gemma4-12b-f16-pin [unpinned] pass 3  env=''  args=''  03:59:11  clk=600 MHz  MemAvail=31563416 kB
+<!--PRED 3	unpinned	memavail_kb=31563416	anonhuge_kb=0	hugepagesz_kb=2048	buddy=7485,7981,7399,5616,4278,4011,3079,2475,2241,430,507-->
+| model                          |       size |     params | backend    | ngl |            test |                  t/s |
+| ------------------------------ | ---------: | ---------: | ---------- | --: | --------------: | -------------------: |
+| gemma4 ?B F16                  |  22.18 GiB |    11.91 B | ROCKET     |  -1 |          pp2048 |         19.85 ± 0.09 |
+
+build: 171974745 (10558)
+<!--RO 3	unpinned	wall_s=417	busy=5484,5492,5421,5412,18349,12618,12447,15546	busy_tot=80769	busy_little_share=0.2700	a55_cpu_cycles=417821982269	a55_inst_retired=262793744037	context_switches=13143149	a76_cpu_cycles=1307073659376	a76_l3d_cache_refill=19084248182	a76_l2d_cache_refill=9213675155	cpu_migrations=40412	page_faults=947405	a76_dtlb_walk=1063561752	a76_mem_access=344339437010	a76_inst_retired=1594257465082	a76_l1d_cache_refill=20738484598	a55_inst_share=0.1415	a76_ipc=1.220	l2ref_pki=5.779	l3ref_pki=11.971	l1dref_pki=13.008	memacc_pki=215.99	dtlbw_pki=0.6671	pmu_enabled=100.0	pmu_cpu_s=3330.1	who=at_s=8,rss_pg=6045795,settled=2	pfn_zero_frac=0.0000	maps=3	sampled=73728	present_frac=0.8162	l2color_cv=0.0063	l3color_cv=0.0115	contig_frac=0.9140	mean_run=11.4	vapa16=0.0099	gib_regions=29	anon_pg=12303	anon_l2cv=0.0086	anon_contig=0.9806	anon_run=46.6	anon_gib=24	file_pg=24576	file_l2cv=0.0003	file_contig=0.9982	file_run=270.1	file_gib=25	other_pg=23300	other_l2cv=0.0157	other_contig=0.7901	other_run=4.7	other_gib=29	ro_cost_ms=110-->
+<!--DATA 3	unpinned	pp2048	19.85-->
+
+### gemma4-12b-f16-pin [pin76] pass 3  env='PIN_MASK=0xf0'  args=''  04:07:33  clk=600 MHz  MemAvail=31554864 kB
+<!--PRED 3	pin76	memavail_kb=31554864	anonhuge_kb=0	hugepagesz_kb=2048	buddy=6273,6426,6429,5627,5211,4087,3079,2455,2235,422,504-->
+| model                          |       size |     params | backend    | ngl |            test |                  t/s |
+| ------------------------------ | ---------: | ---------: | ---------- | --: | --------------: | -------------------: |
+| gemma4 ?B F16                  |  22.18 GiB |    11.91 B | ROCKET     |  -1 |          pp2048 |         20.93 ± 0.03 |
+
+build: 171974745 (10558)
+<!--RO 3	pin76	wall_s=397	busy=340,288,376,369,18996,13593,12997,14148	busy_tot=61107	busy_little_share=0.0225	a55_cpu_cycles=55310048913	a55_inst_retired=10769363406	context_switches=13226671	a76_cpu_cycles=1325191929626	a76_l3d_cache_refill=20341671826	a76_l2d_cache_refill=9447538920	cpu_migrations=65726	page_faults=944164	a76_dtlb_walk=1105205153	a76_mem_access=364220269616	a76_inst_retired=1679228763684	a76_l1d_cache_refill=22402805249	a55_inst_share=0.0064	a76_ipc=1.267	l2ref_pki=5.626	l3ref_pki=12.114	l1dref_pki=13.341	memacc_pki=216.90	dtlbw_pki=0.6582	pmu_enabled=100.0	pmu_cpu_s=3168.2	who=at_s=8,rss_pg=6045787,settled=2	pfn_zero_frac=0.0000	maps=3	sampled=73728	present_frac=0.8177	l2color_cv=0.0052	l3color_cv=0.0158	contig_frac=0.9243	mean_run=12.9	vapa16=0.0077	gib_regions=29	anon_pg=12303	anon_l2cv=0.0032	anon_contig=0.9775	anon_run=40.7	anon_gib=23	file_pg=24576	file_l2cv=0.0028	file_contig=0.9970	file_run=201.4	file_gib=25	other_pg=23412	other_l2cv=0.0159	other_contig=0.8201	other_run=5.5	other_gib=28	ro_cost_ms=91-->
+<!--DATA 3	pin76	pp2048	20.93-->
+
+#### summary: per-arm mean over 3 passes, ratios paired within a pass against [unpinned]
+| test | arm | mean t/s | n | min | max | paired ratio | per-pass ratios |
+|---|---|---:|---:|---:|---:|---:|---|
+| pp2048 | unpinned | 19.94 | 3 | 19.85 | 20.04 | -- | -- |
+| pp2048 | pin76 | 20.85 | 3 | 20.78 | 20.93 | 1.046x | 1.046 1.037 1.054 |
+| pp2048 | pin76t4 | 21.17 | 3 | 21.12 | 21.26 | 1.062x | 1.067 1.055 1.064 |
+

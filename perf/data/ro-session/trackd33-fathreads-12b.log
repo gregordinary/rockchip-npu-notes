@@ -1,0 +1,108 @@
+<!-- gemma4-12b F16, PINNED (PIN_MASK=0xf0 -t 4), streamed: threading the FA handler's host walks
+     TESTS='-p 2048 -n 0 -r 2'  PASSES=3  every arm -v and ROCKET_FA_TIMING=1, so neither is a difference
+     gguf=<data>/gemma4/gemma-4-12b-it-F16.gguf (23832065184 bytes)
+     so=0c716831d47055d1a99749b79fc10bf5
+     G_k = (gather+scatter) ms from the ROCKET FA total line, divided by the prefill count
+     PREDICTION 2026-09-07: r = G_4/G_1 = 0.29-0.44, wall ratio t_1/t_4 = 1.032-1.041.
+       Thresholds: r < 0.29 refutes the memory-traffic floor; 0.44-0.63 says bandwidth caps
+       it harder; r > 0.63 retires the 5.6% cap as a cap on THIS lever.
+     CONTROL: every arm streamed (0 resident lines) and every arm the same FA op count
+-->
+== gemma4-12b-f16-fathreads  Mon Sep  7 14:54:16 UTC 2026 ==
+### gemma4-12b-f16-fathreads [fa_t1] pass 1  env='ROCKET_FA_THREADS=1 ROCKET_FA_TIMING=1 PIN_MASK=0xf0'  args='-t 4 -v'  14:55:39  clk=600 MHz  MemAvail=31782280 kB
+<!--PRED 1	fa_t1	memavail_kb=31782280	anonhuge_kb=0	hugepagesz_kb=2048	buddy=1894,1625,1706,1238,1118,846,793,612,327,161,1749-->
+| model                          |       size |     params | backend    | ngl | threads |            test |                  t/s |
+| ------------------------------ | ---------: | ---------: | ---------- | --: | ------: | --------------: | -------------------: |
+| gemma4 ?B F16                  |  22.18 GiB |    11.91 B | ROCKET     |  -1 |       4 |          pp2048 |         21.16 ± 0.01 |
+
+build: 171974745 (10558)
+<!--RO 1	fa_t1	wall_s=296	busy=273,306,305,286,14024,9846,9975,11982	busy_tot=46997	busy_little_share=0.0249	a55_cpu_cycles=43725911282	a55_inst_retired=9705606406	context_switches=9713327	a76_cpu_cycles=1014405157611	a76_l3d_cache_refill=14973040744	a76_l2d_cache_refill=7033136451	cpu_migrations=20007	page_faults=972496	a76_dtlb_walk=803120512	a76_mem_access=287428452283	a76_inst_retired=1298677539023	a76_l1d_cache_refill=20086658812	a55_inst_share=0.0074	a76_ipc=1.280	l2ref_pki=5.416	l3ref_pki=11.529	l1dref_pki=15.467	memacc_pki=221.32	dtlbw_pki=0.6184	pmu_enabled=100.0	pmu_cpu_s=2360.7	who=at_s=9,rss_pg=6044917,settled=2	pfn_zero_frac=0.0000	maps=3	sampled=73728	present_frac=0.8226	l2color_cv=0.0075	l3color_cv=0.0150	contig_frac=0.9455	mean_run=17.7	vapa16=0.0240	gib_regions=29	anon_pg=12932	anon_l2cv=0.0019	anon_contig=0.9984	anon_run=275.1	anon_gib=9	file_pg=24576	file_l2cv=0.0009	file_contig=0.9973	file_run=217.5	file_gib=26	other_pg=23140	other_l2cv=0.0196	other_contig=0.8608	other_run=7.1	other_gib=18	ro_cost_ms=88-->
+<!--DATA 1	fa_t1	pp2048	21.16-->
+
+### gemma4-12b-f16-fathreads [fa_t2] pass 1  env='ROCKET_FA_THREADS=2 ROCKET_FA_TIMING=1 PIN_MASK=0xf0'  args='-t 4 -v'  15:01:59  clk=600 MHz  MemAvail=31776256 kB
+<!--PRED 1	fa_t2	memavail_kb=31777672	anonhuge_kb=0	hugepagesz_kb=2048	buddy=1607,1623,1551,1522,1209,998,821,570,358,145,1744-->
+| model                          |       size |     params | backend    | ngl | threads |            test |                  t/s |
+| ------------------------------ | ---------: | ---------: | ---------- | --: | ------: | --------------: | -------------------: |
+| gemma4 ?B F16                  |  22.18 GiB |    11.91 B | ROCKET     |  -1 |       4 |          pp2048 |         21.78 ± 0.03 |
+
+build: 171974745 (10558)
+<!--RO 1	fa_t2	wall_s=287	busy=325,240,260,300,15197,10024,9343,11382	busy_tot=47071	busy_little_share=0.0239	a55_cpu_cycles=42689961696	a55_inst_retired=9482243956	context_switches=9726677	a76_cpu_cycles=1016269688159	a76_l3d_cache_refill=14985492432	a76_l2d_cache_refill=7019424382	cpu_migrations=19928	page_faults=970471	a76_dtlb_walk=803392379	a76_mem_access=287353332264	a76_inst_retired=1298833806404	a76_l1d_cache_refill=20024025847	a55_inst_share=0.0072	a76_ipc=1.278	l2ref_pki=5.404	l3ref_pki=11.538	l1dref_pki=15.417	memacc_pki=221.24	dtlbw_pki=0.6185	pmu_enabled=100.0	pmu_cpu_s=2293.1	who=at_s=8,rss_pg=6044919,settled=2	pfn_zero_frac=0.0000	maps=3	sampled=73728	present_frac=0.8261	l2color_cv=0.0041	l3color_cv=0.0106	contig_frac=0.9278	mean_run=13.5	vapa16=0.0055	gib_regions=29	anon_pg=12909	anon_l2cv=0.0007	anon_contig=0.9987	anon_run=300.2	anon_gib=10	file_pg=24576	file_l2cv=0.0019	file_contig=0.9977	file_run=234.1	file_gib=27	other_pg=23424	other_l2cv=0.0109	other_contig=0.8155	other_run=5.4	other_gib=19	ro_cost_ms=87-->
+<!--DATA 1	fa_t2	pp2048	21.78-->
+
+### gemma4-12b-f16-fathreads [fa_t4] pass 1  env='ROCKET_FA_THREADS=4 ROCKET_FA_TIMING=1 PIN_MASK=0xf0'  args='-t 4 -v'  15:08:10  clk=600 MHz  MemAvail=31780072 kB
+<!--PRED 1	fa_t4	memavail_kb=31779780	anonhuge_kb=0	hugepagesz_kb=2048	buddy=1472,1973,2189,1602,1455,1087,808,586,374,126,1738-->
+| model                          |       size |     params | backend    | ngl | threads |            test |                  t/s |
+| ------------------------------ | ---------: | ---------: | ---------- | --: | ------: | --------------: | -------------------: |
+| gemma4 ?B F16                  |  22.18 GiB |    11.91 B | ROCKET     |  -1 |       4 |          pp2048 |         21.88 ± 0.02 |
+
+build: 171974745 (10558)
+<!--RO 1	fa_t4	wall_s=285	busy=291,285,343,292,14490,9820,10013,11736	busy_tot=47270	busy_little_share=0.0256	a55_cpu_cycles=44283321970	a55_inst_retired=9907465801	context_switches=9743127	a76_cpu_cycles=1017473470505	a76_l3d_cache_refill=14977782565	a76_l2d_cache_refill=7016666317	cpu_migrations=20525	page_faults=977856	a76_dtlb_walk=808922495	a76_mem_access=287470330892	a76_inst_retired=1298825728871	a76_l1d_cache_refill=20134504280	a55_inst_share=0.0076	a76_ipc=1.277	l2ref_pki=5.402	l3ref_pki=11.532	l1dref_pki=15.502	memacc_pki=221.33	dtlbw_pki=0.6228	pmu_enabled=100.0	pmu_cpu_s=2281.3	who=at_s=8,rss_pg=6044917,settled=2	pfn_zero_frac=0.0000	maps=3	sampled=73728	present_frac=0.8232	l2color_cv=0.0072	l3color_cv=0.0146	contig_frac=0.9470	mean_run=18.2	vapa16=0.1132	gib_regions=29	anon_pg=12925	anon_l2cv=0.0007	anon_contig=0.9983	anon_run=269.3	anon_gib=13	file_pg=24576	file_l2cv=0.0005	file_contig=0.9987	file_run=303.4	file_gib=27	other_pg=23194	other_l2cv=0.0190	other_contig=0.8636	other_run=7.2	other_gib=19	ro_cost_ms=90-->
+<!--DATA 1	fa_t4	pp2048	21.88-->
+
+### gemma4-12b-f16-fathreads [fa_t2] pass 2  env='ROCKET_FA_THREADS=2 ROCKET_FA_TIMING=1 PIN_MASK=0xf0'  args='-t 4 -v'  15:14:21  clk=600 MHz  MemAvail=31778304 kB
+<!--PRED 2	fa_t2	memavail_kb=31778304	anonhuge_kb=0	hugepagesz_kb=2048	buddy=2008,2281,2007,1669,1321,1136,878,619,385,114,1732-->
+| model                          |       size |     params | backend    | ngl | threads |            test |                  t/s |
+| ------------------------------ | ---------: | ---------: | ---------- | --: | ------: | --------------: | -------------------: |
+| gemma4 ?B F16                  |  22.18 GiB |    11.91 B | ROCKET     |  -1 |       4 |          pp2048 |         21.69 ± 0.08 |
+
+build: 171974745 (10558)
+<!--RO 2	fa_t2	wall_s=288	busy=266,301,277,240,15101,9936,9568,11248	busy_tot=46937	busy_little_share=0.0231	a55_cpu_cycles=42132149542	a55_inst_retired=9050207345	context_switches=9736228	a76_cpu_cycles=1014039542083	a76_l3d_cache_refill=14988073361	a76_l2d_cache_refill=7024364995	cpu_migrations=19510	page_faults=957731	a76_dtlb_walk=810781441	a76_mem_access=287298854365	a76_inst_retired=1298757178795	a76_l1d_cache_refill=20008793385	a55_inst_share=0.0069	a76_ipc=1.281	l2ref_pki=5.409	l3ref_pki=11.540	l1dref_pki=15.406	memacc_pki=221.21	dtlbw_pki=0.6243	pmu_enabled=100.0	pmu_cpu_s=2302.4	who=at_s=8,rss_pg=6044914,settled=2	pfn_zero_frac=0.0000	maps=3	sampled=73728	present_frac=0.8309	l2color_cv=0.0055	l3color_cv=0.0123	contig_frac=0.9340	mean_run=14.7	vapa16=0.0072	gib_regions=29	anon_pg=12942	anon_l2cv=0.0020	anon_contig=0.9589	anon_run=23.2	anon_gib=14	file_pg=24576	file_l2cv=0.0003	file_contig=0.9989	file_run=327.7	file_gib=27	other_pg=23739	other_l2cv=0.0139	other_contig=0.8532	other_run=6.7	other_gib=20	ro_cost_ms=96-->
+<!--DATA 2	fa_t2	pp2048	21.69-->
+
+### gemma4-12b-f16-fathreads [fa_t4] pass 2  env='ROCKET_FA_THREADS=4 ROCKET_FA_TIMING=1 PIN_MASK=0xf0'  args='-t 4 -v'  15:20:33  clk=600 MHz  MemAvail=31776564 kB
+<!--PRED 2	fa_t4	memavail_kb=31776564	anonhuge_kb=0	hugepagesz_kb=2048	buddy=1160,2054,1847,1504,1300,1130,950,634,370,117,1731-->
+| model                          |       size |     params | backend    | ngl | threads |            test |                  t/s |
+| ------------------------------ | ---------: | ---------: | ---------- | --: | ------: | --------------: | -------------------: |
+| gemma4 ?B F16                  |  22.18 GiB |    11.91 B | ROCKET     |  -1 |       4 |          pp2048 |         22.14 ± 0.01 |
+
+build: 171974745 (10558)
+<!--RO 2	fa_t4	wall_s=283	busy=277,242,320,282,14688,9840,9723,11661	busy_tot=47033	busy_little_share=0.0238	a55_cpu_cycles=42297562568	a55_inst_retired=9101462569	context_switches=9733347	a76_cpu_cycles=1016259620223	a76_l3d_cache_refill=14977390145	a76_l2d_cache_refill=7008933977	cpu_migrations=20291	page_faults=954884	a76_dtlb_walk=804255319	a76_mem_access=287368570528	a76_inst_retired=1298662958906	a76_l1d_cache_refill=20081400240	a55_inst_share=0.0070	a76_ipc=1.278	l2ref_pki=5.397	l3ref_pki=11.533	l1dref_pki=15.463	memacc_pki=221.28	dtlbw_pki=0.6193	pmu_enabled=100.0	pmu_cpu_s=2257.5	who=at_s=8,rss_pg=6044915,settled=2	pfn_zero_frac=0.0000	maps=3	sampled=73728	present_frac=0.8247	l2color_cv=0.0075	l3color_cv=0.0169	contig_frac=0.9278	mean_run=13.5	vapa16=0.0076	gib_regions=29	anon_pg=13054	anon_l2cv=0.0022	anon_contig=0.9592	anon_run=23.4	anon_gib=13	file_pg=24576	file_l2cv=0.0005	file_contig=0.9988	file_run=315.1	file_gib=26	other_pg=23172	other_l2cv=0.0194	other_contig=0.8349	other_run=6.0	other_gib=21	ro_cost_ms=95-->
+<!--DATA 2	fa_t4	pp2048	22.14-->
+
+### gemma4-12b-f16-fathreads [fa_t1] pass 2  env='ROCKET_FA_THREADS=1 ROCKET_FA_TIMING=1 PIN_MASK=0xf0'  args='-t 4 -v'  15:26:40  clk=600 MHz  MemAvail=31776284 kB
+<!--PRED 2	fa_t1	memavail_kb=31776284	anonhuge_kb=0	hugepagesz_kb=2048	buddy=1914,2275,1962,1494,1348,985,885,748,395,122,1714-->
+| model                          |       size |     params | backend    | ngl | threads |            test |                  t/s |
+| ------------------------------ | ---------: | ---------: | ---------- | --: | ------: | --------------: | -------------------: |
+| gemma4 ?B F16                  |  22.18 GiB |    11.91 B | ROCKET     |  -1 |       4 |          pp2048 |         21.20 ± 0.01 |
+
+build: 171974745 (10558)
+<!--RO 2	fa_t1	wall_s=295	busy=281,241,319,301,13975,9377,9924,12705	busy_tot=47123	busy_little_share=0.0242	a55_cpu_cycles=42406936510	a55_inst_retired=9303359560	context_switches=9713517	a76_cpu_cycles=1015398032358	a76_l3d_cache_refill=14980363636	a76_l2d_cache_refill=7037496733	cpu_migrations=19549	page_faults=959297	a76_dtlb_walk=801248162	a76_mem_access=287359689247	a76_inst_retired=1298506161698	a76_l1d_cache_refill=20081229395	a55_inst_share=0.0071	a76_ipc=1.279	l2ref_pki=5.420	l3ref_pki=11.537	l1dref_pki=15.465	memacc_pki=221.30	dtlbw_pki=0.6171	pmu_enabled=100.0	pmu_cpu_s=2355.5	who=at_s=8,rss_pg=6044911,settled=2	pfn_zero_frac=0.0000	maps=3	sampled=73728	present_frac=0.8227	l2color_cv=0.0055	l3color_cv=0.0166	contig_frac=0.9415	mean_run=16.5	vapa16=0.0217	gib_regions=29	anon_pg=12942	anon_l2cv=0.0012	anon_contig=0.9985	anon_run=275.4	anon_gib=16	file_pg=24576	file_l2cv=0.0003	file_contig=0.9989	file_run=332.1	file_gib=26	other_pg=23140	other_l2cv=0.0148	other_contig=0.8485	other_run=6.5	other_gib=20	ro_cost_ms=88-->
+<!--DATA 2	fa_t1	pp2048	21.20-->
+
+### gemma4-12b-f16-fathreads [fa_t4] pass 3  env='ROCKET_FA_THREADS=4 ROCKET_FA_TIMING=1 PIN_MASK=0xf0'  args='-t 4 -v'  15:32:59  clk=600 MHz  MemAvail=31770880 kB
+<!--PRED 3	fa_t4	memavail_kb=31770296	anonhuge_kb=0	hugepagesz_kb=2048	buddy=1356,2123,1858,1777,1394,1152,1015,704,374,126,1706-->
+| model                          |       size |     params | backend    | ngl | threads |            test |                  t/s |
+| ------------------------------ | ---------: | ---------: | ---------- | --: | ------: | --------------: | -------------------: |
+| gemma4 ?B F16                  |  22.18 GiB |    11.91 B | ROCKET     |  -1 |       4 |          pp2048 |         22.20 ± 0.04 |
+
+build: 171974745 (10558)
+<!--RO 3	fa_t4	wall_s=282	busy=261,294,276,278,14392,9900,10072,11593	busy_tot=47066	busy_little_share=0.0236	a55_cpu_cycles=42262743479	a55_inst_retired=9116255122	context_switches=9727062	a76_cpu_cycles=1016194074257	a76_l3d_cache_refill=14984146259	a76_l2d_cache_refill=6998672443	cpu_migrations=20137	page_faults=960493	a76_dtlb_walk=802879676	a76_mem_access=287558804068	a76_inst_retired=1299194266741	a76_l1d_cache_refill=20115417806	a55_inst_share=0.0070	a76_ipc=1.278	l2ref_pki=5.387	l3ref_pki=11.533	l1dref_pki=15.483	memacc_pki=221.34	dtlbw_pki=0.6180	pmu_enabled=100.0	pmu_cpu_s=2253.4	who=at_s=8,rss_pg=6044917,settled=2	pfn_zero_frac=0.0000	maps=3	sampled=73728	present_frac=0.8264	l2color_cv=0.0060	l3color_cv=0.0112	contig_frac=0.9258	mean_run=13.1	vapa16=0.0228	gib_regions=29	anon_pg=12932	anon_l2cv=0.0009	anon_contig=0.9983	anon_run=269.4	anon_gib=13	file_pg=24576	file_l2cv=0.0011	file_contig=0.9972	file_run=210.1	file_gib=28	other_pg=23424	other_l2cv=0.0149	other_contig=0.8109	other_run=5.2	other_gib=22	ro_cost_ms=87-->
+<!--DATA 3	fa_t4	pp2048	22.20-->
+
+### gemma4-12b-f16-fathreads [fa_t1] pass 3  env='ROCKET_FA_THREADS=1 ROCKET_FA_TIMING=1 PIN_MASK=0xf0'  args='-t 4 -v'  15:39:05  clk=600 MHz  MemAvail=31777760 kB
+<!--PRED 3	fa_t1	memavail_kb=31777760	anonhuge_kb=0	hugepagesz_kb=2048	buddy=1667,2147,1773,1419,1354,1168,982,669,369,145,1709-->
+| model                          |       size |     params | backend    | ngl | threads |            test |                  t/s |
+| ------------------------------ | ---------: | ---------: | ---------- | --: | ------: | --------------: | -------------------: |
+| gemma4 ?B F16                  |  22.18 GiB |    11.91 B | ROCKET     |  -1 |       4 |          pp2048 |         21.38 ± 0.02 |
+
+build: 171974745 (10558)
+<!--RO 3	fa_t1	wall_s=293	busy=232,297,323,290,14274,9459,9829,12205	busy_tot=46909	busy_little_share=0.0243	a55_cpu_cycles=42373540859	a55_inst_retired=9264198573	context_switches=9723167	a76_cpu_cycles=1009991232725	a76_l3d_cache_refill=14971708405	a76_l2d_cache_refill=7019925549	cpu_migrations=19698	page_faults=959153	a76_dtlb_walk=793539322	a76_mem_access=287344768069	a76_inst_retired=1298417174554	a76_l1d_cache_refill=20063974038	a55_inst_share=0.0071	a76_ipc=1.286	l2ref_pki=5.407	l3ref_pki=11.531	l1dref_pki=15.453	memacc_pki=221.30	dtlbw_pki=0.6112	pmu_enabled=100.0	pmu_cpu_s=2337.8	who=at_s=8,rss_pg=6044913,settled=2	pfn_zero_frac=0.0000	maps=3	sampled=73728	present_frac=0.8338	l2color_cv=0.0067	l3color_cv=0.0134	contig_frac=0.9416	mean_run=16.6	vapa16=0.2014	gib_regions=29	anon_pg=12932	anon_l2cv=0.0009	anon_contig=0.9984	anon_run=275.1	anon_gib=15	file_pg=24576	file_l2cv=0.0020	file_contig=0.9906	file_run=88.1	file_gib=28	other_pg=23970	other_l2cv=0.0160	other_contig=0.8606	other_run=7.1	other_gib=23	ro_cost_ms=93-->
+<!--DATA 3	fa_t1	pp2048	21.38-->
+
+### gemma4-12b-f16-fathreads [fa_t2] pass 3  env='ROCKET_FA_THREADS=2 ROCKET_FA_TIMING=1 PIN_MASK=0xf0'  args='-t 4 -v'  15:45:22  clk=600 MHz  MemAvail=31781792 kB
+<!--PRED 3	fa_t2	memavail_kb=31781792	anonhuge_kb=0	hugepagesz_kb=2048	buddy=1708,1760,1575,1472,1260,941,804,709,385,168,1710-->
+| model                          |       size |     params | backend    | ngl | threads |            test |                  t/s |
+| ------------------------------ | ---------: | ---------: | ---------- | --: | ------: | --------------: | -------------------: |
+| gemma4 ?B F16                  |  22.18 GiB |    11.91 B | ROCKET     |  -1 |       4 |          pp2048 |         21.74 ± 0.08 |
+
+build: 171974745 (10558)
+<!--RO 3	fa_t2	wall_s=288	busy=230,293,286,290,14830,9995,9738,11211	busy_tot=46873	busy_little_share=0.0234	a55_cpu_cycles=41964290734	a55_inst_retired=8962759447	context_switches=9742898	a76_cpu_cycles=1013163565558	a76_l3d_cache_refill=15008669751	a76_l2d_cache_refill=7012803489	cpu_migrations=19419	page_faults=959665	a76_dtlb_walk=806532757	a76_mem_access=287406386201	a76_inst_retired=1299284883041	a76_l1d_cache_refill=19999598980	a55_inst_share=0.0069	a76_ipc=1.282	l2ref_pki=5.397	l3ref_pki=11.551	l1dref_pki=15.393	memacc_pki=221.20	dtlbw_pki=0.6208	pmu_enabled=100.0	pmu_cpu_s=2297.8	who=at_s=8,rss_pg=6044911,settled=2	pfn_zero_frac=0.0000	maps=3	sampled=73728	present_frac=0.8269	l2color_cv=0.0057	l3color_cv=0.0130	contig_frac=0.9492	mean_run=18.9	vapa16=0.0218	gib_regions=29	anon_pg=12909	anon_l2cv=0.0007	anon_contig=0.9986	anon_run=293.4	anon_gib=16	file_pg=24576	file_l2cv=0.0012	file_contig=0.9975	file_run=223.4	file_gib=28	other_pg=23477	other_l2cv=0.0142	other_contig=0.8715	other_run=7.7	other_gib=22	ro_cost_ms=98-->
+<!--DATA 3	fa_t2	pp2048	21.74-->
+
+#### summary: per-arm mean over 3 passes, ratios paired within a pass against [fa_t1]
+| test | arm | mean t/s | n | min | max | paired ratio | per-pass ratios |
+|---|---|---:|---:|---:|---:|---:|---|
+| pp2048 | fa_t1 | 21.25 | 3 | 21.16 | 21.38 | -- | -- |
+| pp2048 | fa_t2 | 21.74 | 3 | 21.69 | 21.78 | 1.023x | 1.029 1.023 1.017 |
+| pp2048 | fa_t4 | 22.07 | 3 | 21.88 | 22.20 | 1.039x | 1.034 1.044 1.038 |
+

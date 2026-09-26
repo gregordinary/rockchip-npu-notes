@@ -622,12 +622,16 @@ and must **not** be pre-divided by it; getting the order backwards scales the bi
 the wrong channel gain, which is a plausible surface rather than a fault.
 [HW sweep, H96, `tests/rk3576_coeff_c.c`]
 
-**That product is int32 and saturates.** Walking `(acc + A)*C` across `2^31` at a fixed
-accumulator, every inexact cell implies the same ceiling, 2.147e9 to 2.158e9 against
-`2^31` = 2.1475e9, and none of them wraps. So `|(acc + A)*C| <= INT32_MAX` is a bound a
-planner can stay inside rather than a cliff, and it is what caps how much precision a
-per-channel gain can carry: `C[oc] <= INT32_MAX / max|acc + A|`, which falls as the
-layer's fan-in grows. [HW sweep, H96]
+**The BS result saturates at int32, after the shift word, not before it.** With the shift word
+at zero, walk `(acc + A)*C` across `2^31` at a fixed accumulator. Every inexact cell implies the
+same ceiling, 2.147e9 to 2.158e9 against `2^31` = 2.1475e9, and none of them wraps [HW sweep,
+H96]. So with no shift, `C[oc] <= INT32_MAX / max(abs(acc + A))`, which falls as the layer's
+fan-in grows.
+
+Under a nonzero shift the multiply is held wide. At a shift of 14 and `C = 16384`, products from
+2.6e9 to 3.3e13 read back exactly [HW sweep, H96 MAX M9, `tests/rk3576_coeff_c.c shift`,
+2026-09-23]. A saturate-first product reads 131071 there. The bound is therefore
+`((acc + A)*C) >> s <= INT32_MAX`, and with a shift C can use its int16 field at any fan-in.
 
 **`C` is genuinely per channel, and it gates the whole BS stage.** Every one of 32
 channels reads its own `C` at 32 distinct values. At `C=1` the datapath is
@@ -1541,8 +1545,10 @@ one already established:
   `1`, `2` and `3`, the three 2-byte codes, all compute; `0` (a 1-byte element)
   writes an entirely zero surface. So an fp16 and a bf16 program are indistinguishable
   in this field.
-- **CORE `0x3018` is what pins the operand type.** Only `2` computes; `3` (bf16)
-  returns a wrong surface against fp16 data.
+- **CORE `0x3018` is what pins the operand type.** `2` is fp16 and `3` is bf16, and
+  each returns a wrong surface on the other's bytes. Fed bf16 bytes, `3` contracts
+  bit-exactly in the matmul-form program, the case
+  [rk3576.md](rk3576.md) §"The precision fork" records.
 
 ### The output is fp16 only with the float narrowing enabled
 
@@ -1920,6 +1926,16 @@ accumulator of +64 to +16 and one of -64 to -16, and a field of 8 or more flushe
 that sign to zero. The two sides are genuinely independent, the field selection
 follows the sign of the **accumulator**, not the sign of the weight, so swapping
 the feature sign swaps which output channels move. [HW sweep, H96]
+
+**The shift applies to the BS product, and it rounds half to even** [HW sweep, H96 MAX M9,
+`tests/rk3576_coeff_c.c shift`, 2026-09-23]. The stage computes `((acc + A)*C) >> s`. Take
+`C = 24576`, a shift of 14 and an accumulator of 160000, which is not a multiple of `2^14`. The
+part returns the multiply-then-shift value rather than `(acc >> 14)*C`, and the product is held
+wide, as the coefficient buffer above records.
+
+An exact half rounds to the even side. With `C = 1` and a shift of 1, 32 odd values of A over
+both signs round this way, and of five candidate rules only half to even fits every channel. So
+a per-channel C carries a fixed-point gain with the shift as its binary point.
 
 Every capture stores 0 here, for the same reason every capture stores 0 for the
 feature, weight, output and bias bases: it is an address the vendor runtime
@@ -2465,6 +2481,17 @@ gate to 0, and the damage outlives the setting, the part stays wedged until the 
 is reloaded. The driver's own timeout path resets inside `drm_sched_stop()`, an IOMMU
 detach and a re-attach, and it is that surrounding re-init the bare call is missing. The
 vendor `rknpu` driver never resets per job either. [HW, H96 MAX M9, measured 2026-07-27]
+
+The vendor's recovery reset covers the CBUF, and `rocket`'s does not. `rknpu_soft_reset()`
+runs on a job timeout or on request, never per job. It sleeps 100 ms, then asserts all four
+of the node's resets for 10 us: `SRST_A_RKNN0`, `SRST_A_RKNN1`, `SRST_A_RKNN_CBUF` and
+`SRST_H_RKNN_CBUF`. It then detaches and re-attaches the IOMMU and re-runs its `state_init`
+[source-confirmed: BSP `rknpu_reset.c` and `rk3576.dtsi`, unchanged in `develop-6.12`].
+
+`rocket`'s binding names the core's `srst_a` alone, so the CBUF has never been reset here
+short of a power cycle. Whether a CBUF reset inside the timeout path's detach and re-attach
+clears the poisoning is untested. If the latched state lives in the CBUF, it clears without
+cycling the domain [expected].
 
 ## The IOMMU wedge
 
@@ -3376,9 +3403,9 @@ padding:
 | `0x601C` | output height minus 1 |
 | `0x6020` | output channels minus 1, same rounding |
 | `0x6024` | mode: `0x11` max, `0x10` average, `0x18` average with the pad excluded from the divisor |
-| `0x6034` | `(sy-1)<<20 | (sx-1)<<16 | (kh-1)<<8 | (kw-1)` |
+| `0x6034` | `(sy-1)<<20 \| (sx-1)<<16 \| (kh-1)<<8 \| (kw-1)` |
 | `0x6038` / `0x603C` | `1/kw`, `1/kh` in Q16, `0x8000` at k2, `0x5555` at k3; zero for max |
-| `0x6040` | four pad nibbles, `right|left|bottom|top` |
+| `0x6040` | four pad nibbles, `right\|left\|bottom\|top` |
 | `0x6044`-`0x6050` | pad values: `-128` (as `0x0007ff80`, sign-extended in a 19-bit field) for max; the input zero point times 1, 2, 3, 4 for average |
 | `0x607C`, `0x6084` | `round4(ow*oh) * 16`, the destination surface stride per 16-channel group, the SAME round-to-four the convolution's `0x401C` takes |
 | `0x6054`, `0x6058`, `0x605C`, `0x6070`, `0x60DC` | zero in every capture |

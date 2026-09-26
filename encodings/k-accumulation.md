@@ -84,12 +84,40 @@ adds and never an integer add, so every approach fails:
    past fp32's exact-integer range (2²⁴ ~16.7M), so accumulating the int32 partials as fp32
    drops the low bits. int16 EW-add cannot hold them either.
 
-**Net (HW + source-confirmed):** the per-element SDP stage is float-only, and the one type
-it can accumulate (fp32) cannot represent an int32 K-sum exactly. There is **no bit-exact
-on-device integer K-accum**, for int8->int32 or int16.
+**The "float-only EW ALU" premise is contradicted by the TRM and by an external silicon
+result, and both probes above are candidates for partial-register-bundle negatives.**
+DPU `0x4010` (`RKNN_dpu_data_format`) enumerates `out_precision`, `in_precision` and
+`proc_precision` identically and explicitly: `3'd0` Integer 8bit, `3'd1` Integer 16bit,
+`3'd2` Float point 16bit, `3'd3` Bfloat 16bit, **`3'd4` Integer 32bit**, `3'd5` Float point
+32bit, `3'd6` Integer 4bit [TRM, `Rockchip RK3588 TRM V1.0-Part1`]. There is a documented
+integer-32 processing precision. Probes 1 and 2 varied `DPU_EW_CFG` -- the ALU algorithm and
+the operand element size -- and the symptom they report, "the EW adds the int32 bit patterns
+*as float*", is exactly what a correct integer operand fed to a stage still carrying
+`proc_precision = 2` (fp16) would produce. Neither probe records setting the precision triple.
 
-**Do not reattempt integer EW K-accum on this hardware.** The output pattern is
-universal (int8->int32, int4->int16, fp16->fp32) and nobody does on-device integer K-accum.
+`allbilly/rk3588` reaches the opposite result on the same silicon: same-format integer
+**MAX, MIN, ADD, MINUS, ABS and NEG for INT8, INT16 and INT32**, across widths 1/2/3 and
+partial and complete C1WC2 surfaces, with INT8/INT16 saturating, INT32 ADD saturating, and
+ABS/NEG preserving `INT32_MIN`; MUL passes for INT8/INT16 while its INT32 second operand is
+signed 16-bit. Their configuration writes the precision as a matched set rather than one
+field: `proc_precision`, `in_precision` and `out_precision` all `4` in DPU `0x4010`, the same
+value again in `RDMA_FEATURE_MODE_CFG`'s input and proc fields, `EDATA_SIZE`/ERDMA
+`DATA_SIZE` at the 32-bit code, the EW converter bypassed with scale 1, and BRDMA/NRDMA
+explicitly disabled so neither fetches through a stale address
+[their HW, Orange Pi RK3588, `examples/expt/elementwise_int.py`; not reproduced here; see
+SOURCES.md].
+
+**So "no on-device integer EW add" is not established, and should not be cited as a hardware
+ceiling.** What remains true and independent of it: fp32 cannot represent an int32 K-sum
+exactly (a Kt=768 tile reaches ~12M and the full K-sum ~248M, past 2^24), so the float route
+was never the answer; and the int8 readback lever this was blocking was separately measured
+not to move the wall, because the wall is not readback
+([../perf/not-mac-bound.md](../perf/not-mac-bound.md)). The perf argument stands on its own.
+The capability claim does not.
+
+**Before reattempting, set the whole precision bundle, not the ALU algorithm.** A negative
+established by moving part of a register bundle is not established -- the rule this IP has
+already forced on us for float mode, which is three registers that must move together.
 
 ## int4's int16 output: feasible in principle, but moot
 

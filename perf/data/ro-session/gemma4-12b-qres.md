@@ -1,0 +1,80 @@
+<!-- gemma4-12b-qres  class=qres  fp16-resident-fits=1  MODE=headline  TESTS='-p 2048 -n 0 -r 3'
+     gguf=<data>/gemma4/gemma-4-12b-it-Q4_K_M.gguf (7381382304 bytes)
+     note: the PARTIAL-residency case: places 73-74%, so the streamed remainder still pays the per-micro-batch dequant
+-->
+== gemma4-12b-qres  Mon Aug 31 22:07:47 UTC 2026 ==
+### gemma4-12b-qres [stock] pass 1  env=''  args=''  22:09:16  clk=600 MHz  MemAvail=31561616 kB
+<!--PRED 1	stock	memavail_kb=31561616	anonhuge_kb=0	hugepagesz_kb=2048	buddy=5627,6216,6028,5401,4968,4043,3164,2738,2291,521,4339-->
+| model                          |       size |     params | backend    | ngl |            test |                  t/s |
+| ------------------------------ | ---------: | ---------: | ---------- | --: | --------------: | -------------------: |
+| gemma4 ?B Q4_K - Medium        |   6.86 GiB |    11.91 B | ROCKET     |  -1 |          pp2048 |         12.80 ± 0.03 |
+
+build: 171974745 (10558)
+<!--RO 1	stock	wall_s=643	busy=6373,5688,5621,5658,39221,34704,33449,35235	busy_tot=165949	busy_little_share=0.1406	a55_cpu_cycles=446405636793	a55_inst_retired=277388634621	context_switches=13217183	a76_cpu_cycles=3072730668994	a76_l3d_cache_refill=23992133256	a76_l2d_cache_refill=10116137697	cpu_migrations=45909	page_faults=956542	a76_dtlb_walk=1135622122	a76_mem_access=817082189420	a76_inst_retired=6531292101697	a76_l1d_cache_refill=29485530386	a55_inst_share=0.0407	a76_ipc=2.126	l2ref_pki=1.549	l3ref_pki=3.673	l1dref_pki=4.515	memacc_pki=125.10	dtlbw_pki=0.1739	pmu_enabled=100.0	pmu_cpu_s=5144.9	who=at_s=8,rss_pg=2050734,settled=2	pfn_zero_frac=0.0000	maps=4	sampled=98304	present_frac=0.8655	l2color_cv=0.0031	l3color_cv=0.0087	contig_frac=0.8878	mean_run=8.8	vapa16=0.0453	gib_regions=29	anon_pg=36800	anon_l2cv=0.0012	anon_contig=0.9416	anon_run=16.6	anon_gib=27	file_pg=24576	file_l2cv=0.0026	file_contig=0.9961	file_run=170.7	file_gib=27	other_pg=23709	other_l2cv=0.0105	other_contig=0.6922	other_run=3.2	other_gib=29	ro_cost_ms=111-->
+<!--DATA 1	stock	pp2048	12.80-->
+
+### gemma4-12b-qres [qres512] pass 1  env='ROCKET_QUANT_RESIDENT=auto'  args=''  22:21:53  clk=600 MHz  MemAvail=31495732 kB
+<!--PRED 1	qres512	memavail_kb=31495936	anonhuge_kb=0	hugepagesz_kb=2048	buddy=5166,6775,6338,5672,5207,4095,3179,2914,2335,600,4240-->
+| model                          |       size |     params | backend    | ngl |            test |                  t/s |
+| ------------------------------ | ---------: | ---------: | ---------- | --: | --------------: | -------------------: |
+| gemma4 ?B Q4_K - Medium        |   6.86 GiB |    11.91 B | ROCKET     |  -1 |          pp2048 |         17.95 ± 0.05 |
+
+build: 171974745 (10558)
+<!--RO 1	qres512	wall_s=504	busy=5788,5531,5537,5479,21207,17919,19729,19761	busy_tot=100951	busy_little_share=0.2212	a55_cpu_cycles=421348139118	a55_inst_retired=267973684860	context_switches=13144749	a76_cpu_cycles=1720817794019	a76_l3d_cache_refill=15735367913	a76_l2d_cache_refill=6719143069	cpu_migrations=48045	page_faults=25181663	a76_dtlb_walk=835758047	a76_mem_access=534364526643	a76_inst_retired=3405368389166	a76_l1d_cache_refill=22735299656	a55_inst_share=0.0730	a76_ipc=1.979	l2ref_pki=1.973	l3ref_pki=4.621	l1dref_pki=6.676	memacc_pki=156.92	dtlbw_pki=0.2454	pmu_enabled=100.0	pmu_cpu_s=4029.7	who=at_s=8,rss_pg=2022248,settled=2	pfn_zero_frac=0.0000	maps=4	sampled=98304	present_frac=0.8647	l2color_cv=0.0018	l3color_cv=0.0109	contig_frac=0.5996	mean_run=2.5	vapa16=0.2108	gib_regions=29	anon_pg=36662	anon_l2cv=0.0009	anon_contig=0.3054	anon_run=1.4	anon_gib=28	file_pg=24576	file_l2cv=0.0024	file_contig=0.9885	file_run=74.2	file_gib=27	other_pg=23768	other_l2cv=0.0056	other_contig=0.6512	other_run=2.9	other_gib=29	ro_cost_ms=114-->
+<!--DATA 1	qres512	pp2048	17.95-->
+    [f16-resident] admission first declined at 17790MB resident: MemAvailable 9531MB fell below the 9535MB reserve floor
+    [f16-resident] weights offered to the resident route: 282 resident on the NPU (17790MB), 46 streamed via the per-call pack -- 86% resident
+    [rocket] ROCKET_QUANT_RESIDENT=auto -> resident budget 21128MB (MemAvailable 30663MB - reserve 9535MB, no swap)
+
+### gemma4-12b-qres [qres512] pass 2  env='ROCKET_QUANT_RESIDENT=auto'  args=''  22:32:09  clk=600 MHz  MemAvail=31559736 kB
+<!--PRED 2	qres512	memavail_kb=31559736	anonhuge_kb=0	hugepagesz_kb=2048	buddy=6309,6067,6231,5838,5342,4343,3469,3023,2394,555,4221-->
+| model                          |       size |     params | backend    | ngl |            test |                  t/s |
+| ------------------------------ | ---------: | ---------: | ---------- | --: | --------------: | -------------------: |
+| gemma4 ?B Q4_K - Medium        |   6.86 GiB |    11.91 B | ROCKET     |  -1 |          pp2048 |         17.74 ± 0.03 |
+
+build: 171974745 (10558)
+<!--RO 2	qres512	wall_s=510	busy=5734,5474,5498,5501,21475,18291,19182,20053	busy_tot=101208	busy_little_share=0.2194	a55_cpu_cycles=421374551407	a55_inst_retired=266848021027	context_switches=13139481	a76_cpu_cycles=1728775873579	a76_l3d_cache_refill=16207189369	a76_l2d_cache_refill=6769088733	cpu_migrations=47857	page_faults=24970688	a76_dtlb_walk=834506575	a76_mem_access=531733058997	a76_inst_retired=3377564571295	a76_l1d_cache_refill=23280299427	a55_inst_share=0.0732	a76_ipc=1.954	l2ref_pki=2.004	l3ref_pki=4.798	l1dref_pki=6.893	memacc_pki=157.43	dtlbw_pki=0.2471	pmu_enabled=100.0	pmu_cpu_s=4078.9	who=at_s=8,rss_pg=2022255,settled=2	pfn_zero_frac=0.0000	maps=4	sampled=98304	present_frac=0.8631	l2color_cv=0.0013	l3color_cv=0.0071	contig_frac=0.6310	mean_run=2.7	vapa16=0.0418	gib_regions=28	anon_pg=36590	anon_l2cv=0.0011	anon_contig=0.3424	anon_run=1.5	anon_gib=28	file_pg=24576	file_l2cv=0.0007	file_contig=0.9972	file_run=211.9	file_gib=26	other_pg=23676	other_l2cv=0.0053	other_contig=0.6969	other_run=3.3	other_gib=28	ro_cost_ms=114-->
+<!--DATA 2	qres512	pp2048	17.74-->
+    [f16-resident] admission first declined at 17853MB resident: MemAvailable 9432MB fell below the 9535MB reserve floor
+    [f16-resident] weights offered to the resident route: 284 resident on the NPU (17853MB), 44 streamed via the per-call pack -- 87% resident
+    [rocket] ROCKET_QUANT_RESIDENT=auto -> resident budget 21138MB (MemAvailable 30673MB - reserve 9535MB, no swap)
+
+### gemma4-12b-qres [stock] pass 2  env=''  args=''  22:42:10  clk=600 MHz  MemAvail=31570280 kB
+<!--PRED 2	stock	memavail_kb=31570280	anonhuge_kb=0	hugepagesz_kb=2048	buddy=6092,6271,6135,5610,5266,3977,3251,2882,2346,588,4265-->
+| model                          |       size |     params | backend    | ngl |            test |                  t/s |
+| ------------------------------ | ---------: | ---------: | ---------- | --: | --------------: | -------------------: |
+| gemma4 ?B Q4_K - Medium        |   6.86 GiB |    11.91 B | ROCKET     |  -1 |          pp2048 |         12.84 ± 0.05 |
+
+build: 171974745 (10558)
+<!--RO 2	stock	wall_s=642	busy=6361,5654,5551,5616,39271,34570,33526,35212	busy_tot=165761	busy_little_share=0.1399	a55_cpu_cycles=445725194403	a55_inst_retired=277556652954	context_switches=13214624	a76_cpu_cycles=3072310916533	a76_l3d_cache_refill=24004513587	a76_l2d_cache_refill=10086097423	cpu_migrations=45741	page_faults=951208	a76_dtlb_walk=1141111929	a76_mem_access=817031940515	a76_inst_retired=6530956786419	a76_l1d_cache_refill=29461182945	a55_inst_share=0.0408	a76_ipc=2.126	l2ref_pki=1.544	l3ref_pki=3.675	l1dref_pki=4.511	memacc_pki=125.10	dtlbw_pki=0.1747	pmu_enabled=100.0	pmu_cpu_s=5127.0	who=at_s=8,rss_pg=2050732,settled=2	pfn_zero_frac=0.0000	maps=4	sampled=98304	present_frac=0.8599	l2color_cv=0.0036	l3color_cv=0.0119	contig_frac=0.9590	mean_run=23.3	vapa16=0.0066	gib_regions=29	anon_pg=36504	anon_l2cv=0.0009	anon_contig=0.9847	anon_run=57.7	anon_gib=26	file_pg=24576	file_l2cv=0.0005	file_contig=0.9969	file_run=198.2	file_gib=27	other_pg=23455	other_l2cv=0.0123	other_contig=0.8792	other_run=8.2	other_gib=29	ro_cost_ms=139-->
+<!--DATA 2	stock	pp2048	12.84-->
+
+### gemma4-12b-qres [stock] pass 3  env=''  args=''  22:54:22  clk=600 MHz  MemAvail=31599612 kB
+<!--PRED 3	stock	memavail_kb=31599612	anonhuge_kb=0	hugepagesz_kb=2048	buddy=5582,6357,6031,5797,5238,4015,3126,2845,2332,535,4313-->
+| model                          |       size |     params | backend    | ngl |            test |                  t/s |
+| ------------------------------ | ---------: | ---------: | ---------- | --: | --------------: | -------------------: |
+| gemma4 ?B Q4_K - Medium        |   6.86 GiB |    11.91 B | ROCKET     |  -1 |          pp2048 |         12.83 ± 0.03 |
+
+build: 171974745 (10558)
+<!--RO 3	stock	wall_s=643	busy=6284,5564,5556,5562,39182,35147,33331,35036	busy_tot=165662	busy_little_share=0.1386	a55_cpu_cycles=442350245716	a55_inst_retired=275049087508	context_switches=13219987	a76_cpu_cycles=3073759672456	a76_l3d_cache_refill=24008486412	a76_l2d_cache_refill=10114557104	cpu_migrations=44262	page_faults=948089	a76_dtlb_walk=1155734104	a76_mem_access=817608524689	a76_inst_retired=6533616487634	a76_l1d_cache_refill=29451020364	a55_inst_share=0.0404	a76_ipc=2.126	l2ref_pki=1.548	l3ref_pki=3.675	l1dref_pki=4.508	memacc_pki=125.14	dtlbw_pki=0.1769	pmu_enabled=100.0	pmu_cpu_s=5131.2	who=at_s=8,rss_pg=2050739,settled=2	pfn_zero_frac=0.0000	maps=4	sampled=98304	present_frac=0.8650	l2color_cv=0.0029	l3color_cv=0.0096	contig_frac=0.9525	mean_run=20.2	vapa16=0.2865	gib_regions=29	anon_pg=36744	anon_l2cv=0.0006	anon_contig=0.9808	anon_run=47.2	anon_gib=25	file_pg=24576	file_l2cv=0.0007	file_contig=0.9968	file_run=195.0	file_gib=26	other_pg=23714	other_l2cv=0.0110	other_contig=0.8626	other_run=7.2	other_gib=29	ro_cost_ms=125-->
+<!--DATA 3	stock	pp2048	12.83-->
+
+### gemma4-12b-qres [qres512] pass 3  env='ROCKET_QUANT_RESIDENT=auto'  args=''  23:06:57  clk=600 MHz  MemAvail=31515332 kB
+<!--PRED 3	qres512	memavail_kb=31515584	anonhuge_kb=0	hugepagesz_kb=2048	buddy=6225,6524,6372,6052,5386,4325,3367,3007,2364,557,4222-->
+| model                          |       size |     params | backend    | ngl |            test |                  t/s |
+| ------------------------------ | ---------: | ---------: | ---------- | --: | --------------: | -------------------: |
+| gemma4 ?B Q4_K - Medium        |   6.86 GiB |    11.91 B | ROCKET     |  -1 |          pp2048 |         16.92 ± 0.03 |
+
+build: 171974745 (10558)
+<!--RO 3	qres512	wall_s=531	busy=5844,5525,5528,5454,23363,19455,21313,21845	busy_tot=108327	busy_little_share=0.2063	a55_cpu_cycles=423557889670	a55_inst_retired=268705131719	context_switches=13155636	a76_cpu_cycles=1873516283262	a76_l3d_cache_refill=17018437768	a76_l2d_cache_refill=6970416398	cpu_migrations=48330	page_faults=27166094	a76_dtlb_walk=852199054	a76_mem_access=566739528130	a76_inst_retired=3731616499988	a76_l1d_cache_refill=23900429377	a55_inst_share=0.0672	a76_ipc=1.992	l2ref_pki=1.868	l3ref_pki=4.561	l1dref_pki=6.405	memacc_pki=151.88	dtlbw_pki=0.2284	pmu_enabled=100.0	pmu_cpu_s=4242.1	who=at_s=8,rss_pg=2022255,settled=2	pfn_zero_frac=0.0000	maps=3	sampled=73728	present_frac=0.8231	l2color_cv=0.0035	l3color_cv=0.0094	contig_frac=0.8392	mean_run=6.2	vapa16=0.0187	gib_regions=29	anon_pg=12295	anon_l2cv=0.0023	anon_contig=0.9800	anon_run=45.4	anon_gib=26	file_pg=24576	file_l2cv=0.0022	file_contig=0.9959	file_run=166.1	file_gib=26	other_pg=23812	other_l2cv=0.0069	other_contig=0.6047	other_run=2.5	other_gib=29	ro_cost_ms=61-->
+<!--DATA 3	qres512	pp2048	16.92-->
+    [f16-resident] admission first declined at 17077MB resident: MemAvailable 9471MB fell below the 9535MB reserve floor
+    [f16-resident] weights offered to the resident route: 272 resident on the NPU (17077MB), 56 streamed via the per-call pack -- 83% resident
+    [rocket] ROCKET_QUANT_RESIDENT=auto -> resident budget 21129MB (MemAvailable 30664MB - reserve 9535MB, no swap)
+
+#### summary: per-arm mean over 3 passes, ratios paired within a pass against [stock]
+| test | arm | mean t/s | n | min | max | paired ratio | per-pass ratios |
+|---|---|---:|---:|---:|---:|---:|---|
+| pp2048 | stock | 12.82 | 3 | 12.80 | 12.84 | -- | -- |
+| pp2048 | qres512 | 17.54 | 3 | 16.92 | 17.95 | 1.368x | 1.402 1.382 1.319 |
+

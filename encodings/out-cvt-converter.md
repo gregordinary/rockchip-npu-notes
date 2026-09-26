@@ -1,13 +1,15 @@
 # DPU OUT_CVT, the output converter (int32 accumulator -> output)
 
-The last stage of the DPU before write-back is the **output converter** (NVDLA SDP lineage:
-`y = sat((x − offset) * scale >> shift)`). It is driven by three registers:
+The last stage of the DPU before write-back is the **output converter**, from the NVDLA SDP
+lineage. NVDLA documents it as `y = sat((x − offset) * scale >> shift)`. On the RK3588's
+integer path the offset is added after the shift instead (below). It is driven by three
+registers:
 
 | reg | addr | fields |
 |---|---|---|
-| `DPU_OUT_CVT_OFFSET` | `0x4080` | signed 32-bit pre-subtract offset (int8-out: `out_zp − 0x80`) |
+| `DPU_OUT_CVT_OFFSET` | `0x4080` | signed 32-bit offset, added after the shift on the integer path: the output zero point |
 | `DPU_OUT_CVT_SCALE`  | `0x4084` | `[15:0]` uint16 scale (multiplier); `[16]` `FP32TOFP16_EN` |
-| `DPU_OUT_CVT_SHIFT`  | `0x4088` | `[5:0]` integer shift; `[19:12]` `minus_exp`; `[31]` `cvt_type` |
+| `DPU_OUT_CVT_SHIFT`  | `0x4088` | `[5:0]` integer shift; `[19:12]` `minus_exp`; `[30]` `CVT_ROUND`, the tie rule; `[31]` `cvt_type` |
 
 ## Two operating modes (cvt_type)
 
@@ -28,41 +30,54 @@ out = (float_or_int)( round_half_to_even( (acc_i32 * SCALE) >> SHIFT ) )
   operand read as **uint16** (`0x3800 -> ×14336`), redundant with `SCALE` here.
 
 This is exactly the QNNPACK **requantization** form (15-bit multiplier + shift + zero-point
-offset -> int8/int16). `gen_conv2d_int8_fill(int8_out=1)` uses it to emit requantized int8
-bit-exact vs Teflon.
+offset -> int8/int16). `gen_conv2d_int8_fill(int8_out=1)` uses it to emit requantized int8,
+within one of TFLite at a rounding boundary ([depthwise-conv.md](../depthwise-conv.md)).
 
-### The tie rounds to even
+With an int8 output the order is `sat8(round_half_to_even(acc * SCALE >> SHIFT) + OFFSET)`: the
+offset lands after the rounding shift, and saturation comes after the offset. The int8
+depthwise path is bit-exact against that model at output zero points from -128 to 127, at two
+scales [HW sweep, RK1, measured 2026-09-23]. Under the NVDLA order, subtracting before the
+multiply, the zero point scales down to a fraction of one.
 
-`acc*SCALE >> SHIFT` rounds to nearest, and an exact half lands on the **even** side:
-0.5 -> 0, 1.5 -> 2, −0.5 -> 0, −1.5 -> −2. Measured over 40 exact ties at two shifts, both
-signs, all four candidate rules discriminated [HW sweep, H96 MAX M9, RK3576,
-`tests/requant_round_probe.c`]. So it is banker's rounding, matching QNNPACK's *precise*
-requantization, whose scale derivation the emitters already copy, and **not** the
-round-half-**away-from-zero** the ancestor IP's documentation specifies
-([nvdla-lineage.md](../nvdla-lineage.md)), nor the round-half-**up** that
-`(x + half) >> shift` gives and that every CPU model in this tree used to spell.
-`tests/requant_model.h` is now the one model and carries the rule.
+### The tie rule is `CVT_ROUND`
+
+`acc*SCALE >> SHIFT` rounds to nearest, and **bit 30 of `OUT_CVT_SHIFT` decides where an exact
+half goes**:
+
+| `CVT_ROUND` | Tie rule | 0.5, 1.5, -0.5, -1.5 go to |
+|---|---|---|
+| 0 | half to even, QNNPACK's *precise* requantization | 0, 2, 0, -2 |
+| 1 | half away from zero, the NVDLA documentation's rule and TFLite's | 1, 2, -1, -2 |
+
+Measured on both parts, each run leaving exactly one of five candidate rules (half up, half
+away, half even, truncation, floor) consistent with every element [HW sweep,
+`tests/requant_round_probe.c`, 2026-09-23]:
+
+- **RK3576**, bit 30 of `0x40B4`: 160 tie elements per setting at two shifts, both signs,
+  through `rocket_matmul_int8_rk3576` [H96 MAX M9].
+- **RK3588**, bit 30 of `0x4088`: 128 tie elements per setting at shifts 1 and 3, both signs,
+  through the int8 matmul's integer convert (`ROCKET_INT8_DEQ=1`, `CVTTYPE=0`, `SCALE=1`),
+  whose fp32 output carries the rounded value exactly [Turing RK1 at 600 MHz].
+
+**Every entry in this tree writes 0, and so do the vendor's programs**: none of the 206
+`OUT_CVT_SHIFT` writes in the RK3576 vendor-capture corpus sets bit 30. So the shipped rule is
+half to even, and neither setting is the round-half-**up** that `(x + half) >> shift` gives
+and that every CPU model in this tree used to spell. `tests/requant_model.h` is the one model
+and carries the half-to-even rule. `ROCKET_OUT_CVT_ROUND=1` sets the bit on every integer
+`OUT_CVT_SHIFT` write, for the probe.
 
 **Reaching a tie needs a deliberately chosen scale.** The derivation ends in `+1`
 (`MUL = ((bits>>9) & 0x7fff) + 1`, bit 14 forced), so `MUL` is **odd** for every round scale
 including every power of two, and an odd multiplier moves an exact half off the tie in the
-outward direction, so the rounder never sees one. That is why no gate has ever exercised the
-case, and why the probe picks a scale whose top 14 mantissa bits are all ones under an even
-exponent field, which is what makes `MUL` exactly `2^14`.
+outward direction, so the rounder never sees one. So no ordinary gate reaches the case.
+`requant_round_probe` does: it picks a scale whose top 14 mantissa bits are all ones under an
+even exponent field, which makes `MUL` exactly `2^14`, and it asserts the rule on both parts.
 
 **How often it matters in practice.** With `MUL` odd, ties are one accumulator residue in
 `2^SHIFT`, and the two rules differ on half of those: about `2^-(SHIFT+1)` of a surface.
 At a typical `SHIFT` of 15-20 that is nothing in a small gate case and tens of elements in a
 large prefill: one count each, sparse, present in every configuration. Exactly the standing
 noise that has made single-element int8 disagreements unreadable.
-
-**Scope.** Measured on the RK3576. The RK3588 is **unmeasured**: its int8 matmul writes a raw
-int32 accumulator and requants on the host, so the only entry with the on-chip requant there
-is the depthwise int8 conv, and `tests/requant_round_probe.c`'s RK3588 arm does not yet drive
-its accumulator (it says so at runtime rather than reporting a rule it has not earned).
-Since the scale derivation, the register triple and the IP are shared, the RK3576 rule is the
-prediction for the RK3588, and it is a prediction: no probe run there has separated
-truncation from round-to-even.
 
 **Float-affine convert (the LUT-activation path).** When the converter's *input* is already a
 Q-format value in the float/EW datapath (e.g. a LUT output `q`), `cvt_type=1` selects
@@ -76,7 +91,7 @@ integer accumulator, which is why `minus_exp` is inert on the plain matmul path.
 |---|---|---|---|
 | int32 | `7` / `stride*8` | 4 | the default raw-accumulator readback |
 | fp32  | `7` / `stride*8` | 4 | **bit-exact cast** of the int32 acc (`ROCKET_INT8_FP32_OUT`) |
-| fp16  | `3` / `stride*2` | 8 | small single-tile shapes only; **range-limited** `|acc|<=2048` |
+| fp16  | `3` / `stride*2` | 8 | small single-tile shapes only; **range-limited** `\|acc\|<=2048` |
 
 - **fp32 cast + integer scale** fold cleanly and generally (any shape, bit-exact).
 - **fp16** halves the output readback but its writer geometry is only correct for small
@@ -121,13 +136,13 @@ The per-channel converter the chip *does* have is the **CNA input** path (`CVT_C
 normalizes input features/weights as they stream into CBUF, **not** the output requant. Don't
 mistake it for a per-OC output requant.
 
-**Consequence.** On-chip int8 requant matches **Teflon** (which uses this same NVDLA
-single-shift form, and is itself **per-tensor** only) but diverges from CPU TFLite by up to
-**~143** on full-range int8, the measured Teflon-vs-CPU gap [HW sweep],
-[depthwise-conv.md](../depthwise-conv.md). A native per-channel int8 depthwise was declined on
-that basis (COCO mAP parity showed the fp16-approx depthwise costs ~0 accuracy). The same
-ceiling governs **keeping int8 activations resident between conv ops** (the delegate's
-NCHW-resident int8 inter-op lever): doing the inter-op requant on-chip would drift from the
-int8 reference unboundedly across ops, so that lever is **mAP-gated (an accuracy decision),
-not bit-exact-gateable**, which is why it sits with the calibration-accuracy cluster, not the
-on-device bit-exact gates.
+**Consequence.** A per-tensor on-chip requant matches CPU TFLite's accumulator exactly and
+its output within one at a rounding boundary: 11 of 4096 outputs of a real int8 depthwise layer
+differ by one, none by more [HW sweep, RK1], [depthwise-conv.md](../depthwise-conv.md). A
+per-axis requant also carries the single-shift limit above, so it cannot match TFLite
+channel-for-channel. Both bound **keeping int8 activations resident between conv ops** (the
+delegate's NCHW-resident int8 inter-op lever). An on-chip inter-op requant differs from TFLite's
+by at most one per op per-tensor, and how that compounds across a chain of ops is unmeasured.
+Per-axis, the lever is gated by an accuracy measure such as COCO mAP rather than bit-exactly.
+A native per-channel int8 depthwise is not built: COCO mAP parity showed the fp16 depthwise
+costs ~0 accuracy on the detectors measured.

@@ -102,9 +102,11 @@ and the write outstanding count.
 ## What does not transfer
 
 **The rounding rule, and this is the sharp one.** NVDLA specifies that both the convertor and
-the truncate stage round **half away from zero**. The RK3576 measurably rounds **half to
-even** (0.5 -> 0, 1.5 -> 2, −0.5 -> 0, −1.5 -> −2) over 40 exact ties at two shifts
-[HW sweep, H96 MAX M9, `tests/requant_round_probe.c`]. See
+the truncate stage round **half away from zero**. The RK parts add a select, `OUT_CVT_SHIFT[30]`.
+Every program here and in the vendor's corpus clears it, which rounds **half to even**
+(0.5 -> 0, 1.5 -> 2, −0.5 -> 0, −1.5 -> −2), and setting it gives NVDLA's rule. Both settings are
+measured on the RK3576 and the RK3588, and the RK3576's BS-stage shift also rounds half to even
+[HW sweep, `tests/requant_round_probe.c`, `tests/rk3576_coeff_c.c`]. See
 [encodings/out-cvt-converter.md](encodings/out-cvt-converter.md) for what that costs and why no
 gate had ever exercised it.
 

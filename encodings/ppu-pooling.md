@@ -91,28 +91,80 @@ TFLite C-API headers (`-DTFLITE_DIR`, version-matched: sparse-clone the TF tag's
 install must include the internal headers `npu_dpu.h`/`npu_cna.h`/`npu_hw.h` (added to
 `ROCKETNPU_PUBLIC_HEADERS`).
 
-## int8 / uint8 pooling: no native int8 PPU precision
+## int8 / uint8 pooling: the PPU pools natively in int8
 
-**NPU fact.** The PPU has **no native int8 pooling mode** [HW sweep]. A pool job
-with `PPU_DATA_FORMAT.PROC_PRECISION = int8 (0)` and `PPU_RDMA_DATA_FORMAT.IN_PRECISION = 0` over a
-packed **int8 C2=16** cube does not pool in int8: the HW reads the byte stream as **fp16** and
-emits garbage (small, near-constant values = two int8 bytes mis-read as one fp16). Measured on the
-RK1 2026-06-22: native-int8 max/avg over C2=16 cubes failed every shape (`maxd` ~100+ vs int8
-golden). Every pool therefore uses `PROC_PRECISION(2)` / `IN_PRECISION(2)` = **fp16**, even inside
-int8 models.
+**The PPU has a native int8 pooling precision, and MAX, MIN and AVG are all bit-exact on
+it** [HW sweep, Turing RK1, 2026-09-20, `tests/pool_int8_native_probe.c`]. The configuration
+is a PAIR of precision fields plus two encodings that are dtype-dependent and easy to miss:
 
-**Therefore int8/uint8 pooling routes through the fp16 PPU path** (`rocket_pool_int8` /
-`rocket_pool_uint8`, `src/rocket_pool.c`): every int8 (−128..127) and uint8 (0..255) value is
-**exactly representable in fp16**, so lifting the feature to fp16, running the fp16 PPU job, and
-narrowing back is:
-- **MAX: bit-exact** (fp16 max of exact integers == int max; round-trip lossless).
-- **AVG: the fp16(65536/k) recip**, then round-to-nearest int8 (matches the fp16 path).
-- **uint8**: recentered by −128 before pooling (MAX is shift-invariant; `avg(x−128)+128==avg(x)`)
-  so the fp16 domain stays small; output clamped to [0,255].
+| what | register | int8 value | the fp16 path's value |
+|---|---|---|---|
+| processing precision | `PPU_DATA_FORMAT[2:0]` (`0x6084`) | **0** | 2 |
+| input storage width | `PPU_RDMA_DATA_FORMAT[1:0]` (`0x7030`) | **1** | 2 |
+| average reciprocal | `PPU_RECIP_KERNEL_W/H` (`0x6038`/`0x603C`) | **integer Q16 `0x10000/k`** | `fp16(65536/k)` bits |
+| MAX pad fill | `PPU_PADDING_VALUE_1_CFG` (`0x6044`) | **`0x0007FF80`** (−128, sign-extended in the 19-bit field) | `0xFC00` (fp16 −inf) |
 
-`gen_pool_fp16` / the regcmd are unchanged (no int8 precision plumbing; it does not work). The
-standalone int8 pool is **not** a perf win over host pooling (it adds int8↔fp16 conversion around
-the same fp16 job); its value is (a) a cube-resident int8/uint8 pooling primitive for the
-fused-partition path, and (b) this documented negative. HW gate `tests/pool_int8_rocket.c`
-(CTest `pool_int8_rocket`, 13/13): int8 & uint8 MAX (single/multi-C-plane, stride, global,
-same-pad, C-not-%16) bit-exact; int8 AVG within ±1 ULP.
+The feature cube is the packed int8 **C2=16** cube, one byte an element, with the line and
+surface strides in bytes as usual.
+
+**What each field is, and the trap in the storage width.** `PROC_PRECISION` is the dtype
+selector and is the load-bearing one: every cell with `PROC_PRECISION = 0` and a non-zero
+storage width is exact, and every cell at 1 (int16) or 2 (fp16) over an int8 cube is wrong.
+`IN_PRECISION` is a storage width — the TRM enumerates `0x7030[1:0]` as `2'd0: 4bit;
+2'd1: 8bit; 2'd2: 16bit; 2'd3: 32bit` [TRM, RK3588 Part1] — but it does **not** behave as a
+strict element-width selector here, and the measured map is the thing to program against
+rather than the enumeration:
+
+- `IN_PRECISION = 0` (4-bit) is wrong on **every** method. This is the value to avoid.
+- `1` (8-bit) is exact on MAX, MIN and AVG. **Use 1**: it is the value the enumeration calls
+  for and the only one exact everywhere.
+- `2` is also exact on all three, which is why nothing forces the issue on a MAX-only corpus.
+- `3` is exact on MAX and MIN but **fails on AVG**, and its failure is not stable run to run.
+  Do not read "1, 2 and 3 are equivalent" off a max-pooling gate.
+
+**The average's reciprocal must be the integer one.** With `fp16(65536/k)` in the register the
+int8 average is wrong by up to 44 on the shapes measured, so this is not a tolerance question.
+The integer Q16 `0x10000/k` is exact, including on an asymmetric 2×3 window whose per-axis
+reciprocal does not divide 65536.
+
+**And the average's rounding is the sibling part's model, unchanged.** The RK3588 PPU
+reproduces `rocket_pool_rk3576.c`'s `r76p_avg_round` bit for bit: round half away from zero,
+except that an even window whose remainder is exactly half steps back toward zero — always
+when the Q16 reciprocal is inexact, and only for an odd quotient when it is exact, which is
+round-half-to-even. A naive round-half-away model disagrees with the hardware on 20% of
+outputs at ±1 while the chip model is exact, so **score an integer average against that model,
+not against a plain rounded division**. This is a machine-parameter-independent algebra that
+ported between the two parts without change.
+
+**The forward-looking trap.** A wrong precision pair here computes a full, correctly sized,
+entirely plausible surface — the failing cells in the map return values in range, not zeros or
+faults, and one of them returns an all-zero surface that a gate scoring only "did it write"
+would pass. Gate an integer pool against a CPU model of the chip's own arithmetic, along the
+method axis (max **and** min **and** avg) and with at least one padded and one asymmetric
+window, because the pad fill and the reciprocal are separately dtype-dependent and each
+corrupts only part of the surface.
+
+**Measured envelope** [HW sweep, Turing RK1, 2026-09-20; identical across three full runs, the
+exact-cell set stable]. MAX: 2×2 s2, 3×3 s1, asymmetric 2×3 s1, C=32 (two channel groups), and
+a padded 2×2 — bit-exact. MIN: 2×2 s2 — bit-exact. AVG: 2×2 s2, 4×4 s4, asymmetric 2×3 s1 —
+bit-exact against the chip rounding model. Run-to-run variation exists only in the *invalid*
+cells (`PROC_PRECISION = 1` over an int8 cube), which is what an undefined combination reading
+a byte stream at the wrong width looks like.
+
+## What ships, and what this changes
+
+`rocket_pool_int8` / `rocket_pool_uint8` (`src/rocket_pool.c`) still **route through the fp16
+PPU path**, and remain correct: every int8 (−128..127) and uint8 (0..255) value is exactly
+representable in fp16, so lifting the feature to fp16, running the fp16 job and narrowing back
+gives MAX bit-exact and AVG within ±1 ULP. The uint8 entry recenters by −128 before pooling
+(MAX is shift-invariant; `avg(x−128)+128 == avg(x)`) and clamps to [0,255].
+
+The native path is a **capability that is now measured but not yet plumbed**. What it is worth
+is the int8↔fp16 conversion on either side of the job and a cube-resident int8 primitive for
+the fused-partition path — not the pool itself, which is not a win over host pooling either
+way. `gen_pool_fp16` carries no int8 precision plumbing; a native entry would be a second
+generator or a precision parameter on that one.
+
+HW gate `tests/pool_int8_rocket.c` (CTest `pool_int8_rocket`) covers the shipping fp16-routed
+path: int8 and uint8 MAX (single/multi-C-plane, stride, global, same-pad, C-not-%16) bit-exact,
+int8 AVG within ±1 ULP. `tests/pool_int8_native_probe.c` is the precision map above.

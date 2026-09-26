@@ -1,0 +1,272 @@
+<!-- qwen35-08b-f16  class=f16  fp16-resident-fits=1  MODE=headline  TESTS='-p 2048 -n 0 -r 3'
+     gguf=<data>/qwen35/Qwen3.5-0.8B-F16.gguf (1516744736 bytes)
+-->
+== qwen35-08b-f16  Mon Aug 31 11:39:34 UTC 2026 ==
+### qwen35-08b-f16 [f16-stock] pass 1  env=''  args=''  11:39:47  clk=600 MHz  MemAvail=31405152 kB
+<!--PRED 1	f16-stock	memavail_kb=31405152	anonhuge_kb=0	hugepagesz_kb=2048	buddy=5829,6424,5663,4718,3880,4024,3422,2963,2172,2059,4942-->
+| model                          |       size |     params | backend    | ngl |            test |                  t/s |
+| ------------------------------ | ---------: | ---------: | ---------- | --: | --------------: | -------------------: |
+| qwen35 0.8B F16                |   1.40 GiB |   752.39 M | ROCKET     |  -1 |          pp2048 |        116.71 ± 0.40 |
+
+build: 171974745 (10558)
+<!--DATA 1	f16-stock	pp2048	116.71-->
+    [f16-resident] weights offered to the resident route: 126 resident on the NPU (780MB), 0 streamed via the per-call pack -- 100% resident
+
+### qwen35-08b-f16 [f16-res] pass 1  env='ROCKET_F16_RESIDENT=auto'  args=''  11:41:14  clk=600 MHz  MemAvail=31236904 kB
+<!--PRED 1	f16-res	memavail_kb=31236904	anonhuge_kb=0	hugepagesz_kb=2048	buddy=5492,5847,5633,4153,3375,3553,3091,2823,2257,2050,4952-->
+| model                          |       size |     params | backend    | ngl |            test |                  t/s |
+| ------------------------------ | ---------: | ---------: | ---------- | --: | --------------: | -------------------: |
+| qwen35 0.8B F16                |   1.40 GiB |   752.39 M | ROCKET     |  -1 |          pp2048 |        131.22 ± 0.59 |
+
+build: 171974745 (10558)
+<!--DATA 1	f16-res	pp2048	131.22-->
+    [f16-resident] weights offered to the resident route: 150 resident on the NPU (948MB), 0 streamed via the per-call pack -- 100% resident
+    [rocket] ROCKET_F16_RESIDENT=auto -> resident budget 20875MB (MemAvailable 30411MB - reserve 9535MB, no swap)
+
+### qwen35-08b-f16 [f16-res] pass 2  env='ROCKET_F16_RESIDENT=auto'  args=''  11:42:33  clk=600 MHz  MemAvail=31432044 kB
+<!--PRED 2	f16-res	memavail_kb=31432044	anonhuge_kb=0	hugepagesz_kb=2048	buddy=6418,6884,5995,5707,3982,3908,3108,2737,2281,2059,4961-->
+| model                          |       size |     params | backend    | ngl |            test |                  t/s |
+| ------------------------------ | ---------: | ---------: | ---------- | --: | --------------: | -------------------: |
+| qwen35 0.8B F16                |   1.40 GiB |   752.39 M | ROCKET     |  -1 |          pp2048 |        117.12 ± 0.76 |
+
+build: 171974745 (10558)
+<!--DATA 2	f16-res	pp2048	117.12-->
+    [f16-resident] weights offered to the resident route: 150 resident on the NPU (948MB), 0 streamed via the per-call pack -- 100% resident
+    [rocket] ROCKET_F16_RESIDENT=auto -> resident budget 21080MB (MemAvailable 30615MB - reserve 9535MB, no swap)
+
+### qwen35-08b-f16 [f16-stock] pass 2  env=''  args=''  11:44:00  clk=600 MHz  MemAvail=31372208 kB
+<!--PRED 2	f16-stock	memavail_kb=31372208	anonhuge_kb=0	hugepagesz_kb=2048	buddy=4481,5986,6127,3367,3872,3739,3132,2768,2294,2061,4966-->
+| model                          |       size |     params | backend    | ngl |            test |                  t/s |
+| ------------------------------ | ---------: | ---------: | ---------- | --: | --------------: | -------------------: |
+| qwen35 0.8B F16                |   1.40 GiB |   752.39 M | ROCKET     |  -1 |          pp2048 |        116.79 ± 0.76 |
+
+build: 171974745 (10558)
+<!--DATA 2	f16-stock	pp2048	116.79-->
+    [f16-resident] weights offered to the resident route: 126 resident on the NPU (780MB), 0 streamed via the per-call pack -- 100% resident
+
+### qwen35-08b-f16 [f16-stock] pass 3  env=''  args=''  11:45:27  clk=600 MHz  MemAvail=31410448 kB
+<!--PRED 3	f16-stock	memavail_kb=31410448	anonhuge_kb=0	hugepagesz_kb=2048	buddy=6190,6725,5727,4147,4213,3646,3056,2780,2289,2048,4976-->
+| model                          |       size |     params | backend    | ngl |            test |                  t/s |
+| ------------------------------ | ---------: | ---------: | ---------- | --: | --------------: | -------------------: |
+| qwen35 0.8B F16                |   1.40 GiB |   752.39 M | ROCKET     |  -1 |          pp2048 |        116.39 ± 0.06 |
+
+build: 171974745 (10558)
+<!--DATA 3	f16-stock	pp2048	116.39-->
+    [f16-resident] weights offered to the resident route: 126 resident on the NPU (780MB), 0 streamed via the per-call pack -- 100% resident
+
+### qwen35-08b-f16 [f16-res] pass 3  env='ROCKET_F16_RESIDENT=auto'  args=''  11:46:54  clk=600 MHz  MemAvail=31416132 kB
+<!--PRED 3	f16-res	memavail_kb=31416132	anonhuge_kb=0	hugepagesz_kb=2048	buddy=5043,5874,5758,5126,4352,3825,3089,2731,2277,2028,4982-->
+| model                          |       size |     params | backend    | ngl |            test |                  t/s |
+| ------------------------------ | ---------: | ---------: | ---------- | --: | --------------: | -------------------: |
+| qwen35 0.8B F16                |   1.40 GiB |   752.39 M | ROCKET     |  -1 |          pp2048 |        131.06 ± 0.17 |
+
+build: 171974745 (10558)
+<!--DATA 3	f16-res	pp2048	131.06-->
+    [f16-resident] weights offered to the resident route: 150 resident on the NPU (948MB), 0 streamed via the per-call pack -- 100% resident
+    [rocket] ROCKET_F16_RESIDENT=auto -> resident budget 21050MB (MemAvailable 30586MB - reserve 9535MB, no swap)
+
+### qwen35-08b-f16 [f16-res] pass 4  env='ROCKET_F16_RESIDENT=auto'  args=''  11:48:14  clk=600 MHz  MemAvail=31313632 kB
+<!--PRED 4	f16-res	memavail_kb=31313632	anonhuge_kb=0	hugepagesz_kb=2048	buddy=4339,5916,5753,4878,3065,3605,3147,2685,2289,2025,4987-->
+| model                          |       size |     params | backend    | ngl |            test |                  t/s |
+| ------------------------------ | ---------: | ---------: | ---------- | --: | --------------: | -------------------: |
+| qwen35 0.8B F16                |   1.40 GiB |   752.39 M | ROCKET     |  -1 |          pp2048 |        127.17 ± 0.08 |
+
+build: 171974745 (10558)
+<!--DATA 4	f16-res	pp2048	127.17-->
+    [f16-resident] weights offered to the resident route: 150 resident on the NPU (948MB), 0 streamed via the per-call pack -- 100% resident
+    [rocket] ROCKET_F16_RESIDENT=auto -> resident budget 20941MB (MemAvailable 30476MB - reserve 9535MB, no swap)
+
+### qwen35-08b-f16 [f16-stock] pass 4  env=''  args=''  11:49:35  clk=600 MHz  MemAvail=31371684 kB
+<!--PRED 4	f16-stock	memavail_kb=31371392	anonhuge_kb=0	hugepagesz_kb=2048	buddy=5490,5838,5828,4306,3682,3738,3079,2690,2268,2035,4994-->
+| model                          |       size |     params | backend    | ngl |            test |                  t/s |
+| ------------------------------ | ---------: | ---------: | ---------- | --: | --------------: | -------------------: |
+| qwen35 0.8B F16                |   1.40 GiB |   752.39 M | ROCKET     |  -1 |          pp2048 |        115.65 ± 0.69 |
+
+build: 171974745 (10558)
+<!--DATA 4	f16-stock	pp2048	115.65-->
+    [f16-resident] weights offered to the resident route: 126 resident on the NPU (780MB), 0 streamed via the per-call pack -- 100% resident
+
+### qwen35-08b-f16 [f16-stock] pass 5  env=''  args=''  11:51:03  clk=600 MHz  MemAvail=31382024 kB
+<!--PRED 5	f16-stock	memavail_kb=31382024	anonhuge_kb=0	hugepagesz_kb=2048	buddy=5964,6172,5748,3571,3809,3743,3029,2737,2267,2035,4997-->
+| model                          |       size |     params | backend    | ngl |            test |                  t/s |
+| ------------------------------ | ---------: | ---------: | ---------- | --: | --------------: | -------------------: |
+| qwen35 0.8B F16                |   1.40 GiB |   752.39 M | ROCKET     |  -1 |          pp2048 |        130.20 ± 0.62 |
+
+build: 171974745 (10558)
+<!--DATA 5	f16-stock	pp2048	130.20-->
+    [f16-resident] weights offered to the resident route: 126 resident on the NPU (780MB), 0 streamed via the per-call pack -- 100% resident
+
+### qwen35-08b-f16 [f16-res] pass 5  env='ROCKET_F16_RESIDENT=auto'  args=''  11:52:23  clk=600 MHz  MemAvail=31412840 kB
+<!--PRED 5	f16-res	memavail_kb=31412840	anonhuge_kb=0	hugepagesz_kb=2048	buddy=5165,5793,5666,5045,4335,3841,3093,2715,2271,1998,5000-->
+| model                          |       size |     params | backend    | ngl |            test |                  t/s |
+| ------------------------------ | ---------: | ---------: | ---------- | --: | --------------: | -------------------: |
+| qwen35 0.8B F16                |   1.40 GiB |   752.39 M | ROCKET     |  -1 |          pp2048 |        120.55 ± 0.42 |
+
+build: 171974745 (10558)
+<!--DATA 5	f16-res	pp2048	120.55-->
+    [f16-resident] weights offered to the resident route: 150 resident on the NPU (948MB), 0 streamed via the per-call pack -- 100% resident
+    [rocket] ROCKET_F16_RESIDENT=auto -> resident budget 21049MB (MemAvailable 30585MB - reserve 9535MB, no swap)
+
+### qwen35-08b-f16 [f16-res] pass 6  env='ROCKET_F16_RESIDENT=auto'  args=''  11:53:48  clk=600 MHz  MemAvail=31264720 kB
+<!--PRED 6	f16-res	memavail_kb=31264720	anonhuge_kb=0	hugepagesz_kb=2048	buddy=5520,6110,5792,4451,3031,3621,3105,2651,2255,2001,5004-->
+| model                          |       size |     params | backend    | ngl |            test |                  t/s |
+| ------------------------------ | ---------: | ---------: | ---------- | --: | --------------: | -------------------: |
+| qwen35 0.8B F16                |   1.40 GiB |   752.39 M | ROCKET     |  -1 |          pp2048 |        129.00 ± 0.51 |
+
+build: 171974745 (10558)
+<!--DATA 6	f16-res	pp2048	129.00-->
+    [f16-resident] weights offered to the resident route: 150 resident on the NPU (948MB), 0 streamed via the per-call pack -- 100% resident
+    [rocket] ROCKET_F16_RESIDENT=auto -> resident budget 20926MB (MemAvailable 30461MB - reserve 9535MB, no swap)
+
+### qwen35-08b-f16 [f16-stock] pass 6  env=''  args=''  11:55:09  clk=600 MHz  MemAvail=31322940 kB
+<!--PRED 6	f16-stock	memavail_kb=31323184	anonhuge_kb=0	hugepagesz_kb=2048	buddy=5356,5835,5682,3188,3622,3825,3052,2642,2259,2017,5009-->
+| model                          |       size |     params | backend    | ngl |            test |                  t/s |
+| ------------------------------ | ---------: | ---------: | ---------- | --: | --------------: | -------------------: |
+| qwen35 0.8B F16                |   1.40 GiB |   752.39 M | ROCKET     |  -1 |          pp2048 |        116.69 ± 0.47 |
+
+build: 171974745 (10558)
+<!--DATA 6	f16-stock	pp2048	116.69-->
+    [f16-resident] weights offered to the resident route: 126 resident on the NPU (780MB), 0 streamed via the per-call pack -- 100% resident
+
+#### summary: per-arm mean over 6 passes, ratios paired within a pass against [f16-stock]
+| test | arm | mean t/s | n | min | max | paired ratio | per-pass ratios |
+|---|---|---:|---:|---:|---:|---:|---|
+| pp2048 | f16-stock | 118.74 | 6 | 115.65 | 130.20 | -- | -- |
+| pp2048 | f16-res | 126.02 | 6 | 117.12 | 131.22 | 1.064x | 1.124 1.003 1.126 1.100 0.926 1.105 |
+
+<!-- qwen35-08b-f16  class=f16  fp16-resident-fits=1  MODE=headline  TESTS='-p 2048 -n 0 -r 3'
+     gguf=<data>/qwen35/Qwen3.5-0.8B-F16.gguf (1516744736 bytes)
+-->
+== qwen35-08b-f16  Mon Aug 31 11:56:22 UTC 2026 ==
+### qwen35-08b-f16 [f16-stock] pass 1  env=''  args=''  11:56:36  clk=600 MHz  MemAvail=31352052 kB
+<!--PRED 1	f16-stock	memavail_kb=31352052	anonhuge_kb=0	hugepagesz_kb=2048	buddy=6596,7186,4081,4035,4062,3980,2808,2683,2276,2008,5010-->
+| model                          |       size |     params | backend    | ngl |            test |                  t/s |
+| ------------------------------ | ---------: | ---------: | ---------- | --: | --------------: | -------------------: |
+| qwen35 0.8B F16                |   1.40 GiB |   752.39 M | ROCKET     |  -1 |          pp2048 |        129.76 ± 0.77 |
+
+build: 171974745 (10558)
+<!--DATA 1	f16-stock	pp2048	129.76-->
+    [f16-resident] weights offered to the resident route: 126 resident on the NPU (780MB), 0 streamed via the per-call pack -- 100% resident
+
+### qwen35-08b-f16 [f16-res] pass 1  env='ROCKET_F16_RESIDENT=auto'  args=''  11:57:56  clk=600 MHz  MemAvail=31451576 kB
+<!--PRED 1	f16-res	memavail_kb=31451924	anonhuge_kb=0	hugepagesz_kb=2048	buddy=5849,6765,6312,5769,4007,3590,3050,2669,2290,2007,5011-->
+| model                          |       size |     params | backend    | ngl |            test |                  t/s |
+| ------------------------------ | ---------: | ---------: | ---------- | --: | --------------: | -------------------: |
+| qwen35 0.8B F16                |   1.40 GiB |   752.39 M | ROCKET     |  -1 |          pp2048 |        128.98 ± 1.30 |
+
+build: 171974745 (10558)
+<!--DATA 1	f16-res	pp2048	128.98-->
+    [f16-resident] weights offered to the resident route: 150 resident on the NPU (948MB), 0 streamed via the per-call pack -- 100% resident
+    [rocket] ROCKET_F16_RESIDENT=auto -> resident budget 21092MB (MemAvailable 30627MB - reserve 9535MB, no swap)
+
+### qwen35-08b-f16 [f16-res] pass 2  env='ROCKET_F16_RESIDENT=auto'  args=''  11:59:17  clk=600 MHz  MemAvail=31473440 kB
+<!--PRED 2	f16-res	memavail_kb=31473440	anonhuge_kb=0	hugepagesz_kb=2048	buddy=5780,6789,5938,5724,4824,3744,3092,2615,2255,2008,5013-->
+| model                          |       size |     params | backend    | ngl |            test |                  t/s |
+| ------------------------------ | ---------: | ---------: | ---------- | --: | --------------: | -------------------: |
+| qwen35 0.8B F16                |   1.40 GiB |   752.39 M | ROCKET     |  -1 |          pp2048 |        122.70 ± 0.89 |
+
+build: 171974745 (10558)
+<!--DATA 2	f16-res	pp2048	122.70-->
+    [f16-resident] weights offered to the resident route: 150 resident on the NPU (948MB), 0 streamed via the per-call pack -- 100% resident
+    [rocket] ROCKET_F16_RESIDENT=auto -> resident budget 21145MB (MemAvailable 30681MB - reserve 9535MB, no swap)
+
+### qwen35-08b-f16 [f16-stock] pass 2  env=''  args=''  12:00:40  clk=600 MHz  MemAvail=31372476 kB
+<!--PRED 2	f16-stock	memavail_kb=31372476	anonhuge_kb=0	hugepagesz_kb=2048	buddy=5690,6285,4596,3413,4300,4031,3026,2600,2263,2010,5014-->
+| model                          |       size |     params | backend    | ngl |            test |                  t/s |
+| ------------------------------ | ---------: | ---------: | ---------- | --: | --------------: | -------------------: |
+| qwen35 0.8B F16                |   1.40 GiB |   752.39 M | ROCKET     |  -1 |          pp2048 |        122.88 ± 0.55 |
+
+build: 171974745 (10558)
+<!--DATA 2	f16-stock	pp2048	122.88-->
+    [f16-resident] weights offered to the resident route: 126 resident on the NPU (780MB), 0 streamed via the per-call pack -- 100% resident
+
+### qwen35-08b-f16 [f16-stock] pass 3  env=''  args=''  12:02:04  clk=600 MHz  MemAvail=31435264 kB
+<!--PRED 3	f16-stock	memavail_kb=31435504	anonhuge_kb=0	hugepagesz_kb=2048	buddy=5749,6196,6006,3709,4276,3882,2978,2689,2261,2020,5015-->
+| model                          |       size |     params | backend    | ngl |            test |                  t/s |
+| ------------------------------ | ---------: | ---------: | ---------- | --: | --------------: | -------------------: |
+| qwen35 0.8B F16                |   1.40 GiB |   752.39 M | ROCKET     |  -1 |          pp2048 |        118.46 ± 0.28 |
+
+build: 171974745 (10558)
+<!--DATA 3	f16-stock	pp2048	118.46-->
+    [f16-resident] weights offered to the resident route: 126 resident on the NPU (780MB), 0 streamed via the per-call pack -- 100% resident
+
+### qwen35-08b-f16 [f16-res] pass 3  env='ROCKET_F16_RESIDENT=auto'  args=''  12:03:30  clk=600 MHz  MemAvail=31447348 kB
+<!--PRED 3	f16-res	memavail_kb=31447348	anonhuge_kb=0	hugepagesz_kb=2048	buddy=6375,6794,6175,5430,4365,3782,3050,2652,2255,1999,5016-->
+| model                          |       size |     params | backend    | ngl |            test |                  t/s |
+| ------------------------------ | ---------: | ---------: | ---------- | --: | --------------: | -------------------: |
+| qwen35 0.8B F16                |   1.40 GiB |   752.39 M | ROCKET     |  -1 |          pp2048 |        117.25 ± 0.32 |
+
+build: 171974745 (10558)
+<!--DATA 3	f16-res	pp2048	117.25-->
+    [f16-resident] weights offered to the resident route: 150 resident on the NPU (948MB), 0 streamed via the per-call pack -- 100% resident
+    [rocket] ROCKET_F16_RESIDENT=auto -> resident budget 21096MB (MemAvailable 30632MB - reserve 9535MB, no swap)
+
+### qwen35-08b-f16 [f16-res] pass 4  env='ROCKET_F16_RESIDENT=auto'  args=''  12:04:57  clk=600 MHz  MemAvail=31436244 kB
+<!--PRED 4	f16-res	memavail_kb=31436244	anonhuge_kb=0	hugepagesz_kb=2048	buddy=6363,6267,5856,5232,4033,3793,3108,2629,2257,2008,5016-->
+| model                          |       size |     params | backend    | ngl |            test |                  t/s |
+| ------------------------------ | ---------: | ---------: | ---------- | --: | --------------: | -------------------: |
+| qwen35 0.8B F16                |   1.40 GiB |   752.39 M | ROCKET     |  -1 |          pp2048 |        131.67 ± 0.80 |
+
+build: 171974745 (10558)
+<!--DATA 4	f16-res	pp2048	131.67-->
+    [f16-resident] weights offered to the resident route: 150 resident on the NPU (948MB), 0 streamed via the per-call pack -- 100% resident
+    [rocket] ROCKET_F16_RESIDENT=auto -> resident budget 21158MB (MemAvailable 30694MB - reserve 9535MB, no swap)
+
+### qwen35-08b-f16 [f16-stock] pass 4  env=''  args=''  12:06:16  clk=600 MHz  MemAvail=31275184 kB
+<!--PRED 4	f16-stock	memavail_kb=31275184	anonhuge_kb=0	hugepagesz_kb=2048	buddy=5801,5737,2655,3407,3565,3993,3007,2588,2257,2011,5016-->
+| model                          |       size |     params | backend    | ngl |            test |                  t/s |
+| ------------------------------ | ---------: | ---------: | ---------- | --: | --------------: | -------------------: |
+| qwen35 0.8B F16                |   1.40 GiB |   752.39 M | ROCKET     |  -1 |          pp2048 |        130.18 ± 0.31 |
+
+build: 171974745 (10558)
+<!--DATA 4	f16-stock	pp2048	130.18-->
+    [f16-resident] weights offered to the resident route: 126 resident on the NPU (780MB), 0 streamed via the per-call pack -- 100% resident
+
+### qwen35-08b-f16 [f16-stock] pass 5  env=''  args=''  12:07:35  clk=600 MHz  MemAvail=31364332 kB
+<!--PRED 5	f16-stock	memavail_kb=31364332	anonhuge_kb=0	hugepagesz_kb=2048	buddy=5468,6251,3633,3282,4520,3703,2912,2704,2255,2018,5017-->
+| model                          |       size |     params | backend    | ngl |            test |                  t/s |
+| ------------------------------ | ---------: | ---------: | ---------- | --: | --------------: | -------------------: |
+| qwen35 0.8B F16                |   1.40 GiB |   752.39 M | ROCKET     |  -1 |          pp2048 |        116.88 ± 0.51 |
+
+build: 171974745 (10558)
+<!--DATA 5	f16-stock	pp2048	116.88-->
+    [f16-resident] weights offered to the resident route: 126 resident on the NPU (780MB), 0 streamed via the per-call pack -- 100% resident
+
+### qwen35-08b-f16 [f16-res] pass 5  env='ROCKET_F16_RESIDENT=auto'  args=''  12:09:02  clk=600 MHz  MemAvail=31394140 kB
+<!--PRED 5	f16-res	memavail_kb=31393996	anonhuge_kb=0	hugepagesz_kb=2048	buddy=5407,6223,5954,4653,3873,3498,3122,2653,2254,2011,5018-->
+| model                          |       size |     params | backend    | ngl |            test |                  t/s |
+| ------------------------------ | ---------: | ---------: | ---------- | --: | --------------: | -------------------: |
+| qwen35 0.8B F16                |   1.40 GiB |   752.39 M | ROCKET     |  -1 |          pp2048 |        116.75 ± 0.17 |
+
+build: 171974745 (10558)
+<!--DATA 5	f16-res	pp2048	116.75-->
+    [f16-resident] weights offered to the resident route: 150 resident on the NPU (948MB), 0 streamed via the per-call pack -- 100% resident
+    [rocket] ROCKET_F16_RESIDENT=auto -> resident budget 21051MB (MemAvailable 30587MB - reserve 9535MB, no swap)
+
+### qwen35-08b-f16 [f16-res] pass 6  env='ROCKET_F16_RESIDENT=auto'  args=''  12:10:29  clk=600 MHz  MemAvail=31266456 kB
+<!--PRED 6	f16-res	memavail_kb=31266660	anonhuge_kb=0	hugepagesz_kb=2048	buddy=5251,5959,5401,3829,3167,3806,3072,2578,2248,1994,5020-->
+| model                          |       size |     params | backend    | ngl |            test |                  t/s |
+| ------------------------------ | ---------: | ---------: | ---------- | --: | --------------: | -------------------: |
+| qwen35 0.8B F16                |   1.40 GiB |   752.39 M | ROCKET     |  -1 |          pp2048 |        116.65 ± 0.72 |
+
+build: 171974745 (10558)
+<!--DATA 6	f16-res	pp2048	116.65-->
+    [f16-resident] weights offered to the resident route: 150 resident on the NPU (948MB), 0 streamed via the per-call pack -- 100% resident
+    [rocket] ROCKET_F16_RESIDENT=auto -> resident budget 20996MB (MemAvailable 30532MB - reserve 9535MB, no swap)
+
+### qwen35-08b-f16 [f16-stock] pass 6  env=''  args=''  12:11:56  clk=600 MHz  MemAvail=31537976 kB
+<!--PRED 6	f16-stock	memavail_kb=31537976	anonhuge_kb=0	hugepagesz_kb=2048	buddy=6399,6595,5823,5276,4936,3930,3098,2669,2256,2003,5020-->
+| model                          |       size |     params | backend    | ngl |            test |                  t/s |
+| ------------------------------ | ---------: | ---------: | ---------- | --: | --------------: | -------------------: |
+| qwen35 0.8B F16                |   1.40 GiB |   752.39 M | ROCKET     |  -1 |          pp2048 |        116.55 ± 0.27 |
+
+build: 171974745 (10558)
+<!--DATA 6	f16-stock	pp2048	116.55-->
+    [f16-resident] weights offered to the resident route: 126 resident on the NPU (780MB), 0 streamed via the per-call pack -- 100% resident
+
+#### summary: per-arm mean over 6 passes, ratios paired within a pass against [f16-stock]
+| test | arm | mean t/s | n | min | max | paired ratio | per-pass ratios |
+|---|---|---:|---:|---:|---:|---:|---|
+| pp2048 | f16-stock | 122.45 | 6 | 116.55 | 130.18 | -- | -- |
+| pp2048 | f16-res | 122.33 | 6 | 116.65 | 131.67 | 0.999x | 0.994 0.999 0.990 1.011 0.999 1.001 |
+

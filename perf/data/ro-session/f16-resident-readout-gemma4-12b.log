@@ -1,0 +1,28 @@
+<!-- f16-resident readout, gemma4-12b F16, RK1, 600 MHz, 2026-09-01.
+     One warm-up-sized process per arm (-p 512 -n 0 -r 1), ROCKET_LOG_STDERR=1, stderr kept,
+     drop_caches between arms. Generator: perf/data/f16-resident-readout.sh.
+     STOCK RESIDENTS ZERO: no [f16-resident] line at all, which by that line's own condition
+     means nothing was offered to the route -- this model's K is above the default prepack
+     gate. That is what makes the pinning campaign's arms the STREAMED configuration.
+     THE KNOB REACHES 87%, and admission stops at the NPU IOVA window rather than at the
+     21127 MB budget, so 'a 12B F16 cannot be held resident on this board' is retired.
+-->
+== gemma4-12b-f16 ==
+  stock:
+  ROCKET_F16_RESIDENT=auto:
+    [f16-resident] weights offered to the resident route: 286 resident on the NPU (18078MB), 42 streamed via the per-call pack -- 87% resident
+    [f16-resident] admission first declined at 18078MB resident: the NPU IOVA window filled (raise ROCKET_N_THREADS for more fds)
+
+stderr kept under <data>/f16-resident-readout
+
+--- stock.err ---
+load_backend: loaded CPU backend from ~/npu/llama.cpp/build/bin/libggml-cpu.so
+load_backend: loaded ROCKET backend from ~/npu/ggml-rocket/build-dl/libggml-rocket.so
+--- auto.err ---
+load_backend: loaded CPU backend from ~/npu/llama.cpp/build/bin/libggml-cpu.so
+load_backend: loaded ROCKET backend from ~/npu/ggml-rocket/build-dl/libggml-rocket.so
+[rocket] ROCKET_F16_RESIDENT=auto -> resident budget 21127MB (MemAvailable 30662MB - reserve 9535MB, no swap)
+ROCKET_CREATE_BO(23625728): No space left on device
+rocket_weights_pack: wt BO alloc failed (worker 0, 22MB)
+[f16-resident] weights offered to the resident route: 286 resident on the NPU (18078MB), 42 streamed via the per-call pack -- 87% resident
+[f16-resident] admission first declined at 18078MB resident: the NPU IOVA window filled (raise ROCKET_N_THREADS for more fds)

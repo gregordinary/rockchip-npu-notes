@@ -33,9 +33,22 @@
 # the start of the timed run: MemAvailable, AnonHugePages/Hugepagesize, and the per-order free-page
 # vector from /proc/buddyinfo. They cost two file reads and no process, and they are there so that
 # the per-process spread can be attacked from rows already taken rather than from a campaign run
-# later. PRED_SAMPLE=1 adds a per-thread last-CPU histogram, which is NOT free -- see pred_sample. The outcome half is load-bearing: a residency arm
-# that silently placed nothing produces the same rows and the same t/s as one that placed
+# later. PRED_SAMPLE=1 adds a per-thread last-CPU histogram, which is NOT free -- see pred_sample.
+# These are RECORDED, NOT PREDICTIVE: over 177 joined rows they stay flat to <1.2% across 8-13%
+# t/s swings, which is why the readout below exists. The outcome half is load-bearing: a residency
+# arm that silently placed nothing produces the same rows and the same t/s as one that placed
 # everything and gained nothing, and only the teardown split tells them apart.
+#
+# THE GOVERNOR, AND WHETHER THE BACKEND LOADED. The script refuses to run while any cpufreq policy
+# is unpinned (see pinned_or_refuse), every PRED line records each policy's governor and floor, and
+# an arm fails without the ROCKET registration line in its stderr (the `cpu` arm fails WITH one).
+#
+# THE PER-PROCESS READOUT. Every timed arm also emits a <!--RO pass arm k=v ...--> line covering
+# what the board snapshot above cannot see -- where the work RAN (per-cluster instructions, per-CPU
+# jiffies) and where its pages LANDED (cache colour, physical contiguity). See the block above
+# ro_line() for the mechanism and ro-pagemap.py for the placement columns; RO=0 turns all of it
+# off. Read `pmu_enabled` and `pfn_zero_frac` before quoting any of it: both failure modes are
+# silent and produce a full, plausible line.
 set -u
 SO=${SO:-$HOME/ggml-rocket/build-dl/libggml-rocket.so}
 BIN=${BIN:-$HOME/llama.cpp/build/bin/llama-bench}
@@ -48,6 +61,9 @@ ARMS=${ARMS:-}
 PASSES=${PASSES:-3}
 
 MODEL="$1"; LABEL="$2"; shift 2
+# LABEL names every file an arm writes. A path separator in it points the stderr redirect at a
+# directory that does not exist, and the arm then never runs.
+case "$LABEL" in */*) echo "bench-llm.sh: LABEL '$LABEL' names files and cannot contain '/'" >&2; exit 2 ;; esac
 EXTRA="$*"                                    # e.g. "-b 2048 -ub 2048" for quant streaming
 # TESTS is overridable because the flag axis multiplies the cost by the number of arms: the
 # headline "what does tuning buy" table needs only the pp2048 row, and paying for the decode and
@@ -57,11 +73,14 @@ TESTS=${TESTS:-"-p 512,1024,2048 -n 64 -pg 2048,128 -r 2"}
 run() { # $1 = npu|cpu
   local mode="$1" envs=""
   [ "$mode" = npu ] && envs="GGML_BACKEND_PATH=$SO ROCKET_KACC=1"
+  mkdir -p "$ERRD"
   reset_mem
   # discarded warmup: spin the NPU clock off idle before the measured run
   env $envs $BIN -m "$MODEL" -p 512 -n 8 -r 1 $EXTRA >/dev/null 2>&1
-  echo "### $LABEL  [$mode]  $(date +%T)  clk=$(sudo cat /sys/kernel/debug/clk/clk_summary 2>/dev/null | awk '/scmi_clk_npu/{printf "%d MHz",$5/1e6; exit}')" | tee -a "$OUT"
-  env $envs $BIN -m "$MODEL" $TESTS $EXTRA -o md 2>/dev/null | tee -a "$OUT"
+  echo "### $LABEL  [$mode]  $(date +%T)  clk=$(sudo cat /sys/kernel/debug/clk/clk_summary 2>/dev/null | awk '/scmi_clk_npu/{printf "%d MHz",$5/1e6; exit}')  cpufreq=$(cpufreq_state)" | tee -a "$OUT"
+  env $envs $BIN -m "$MODEL" $TESTS $EXTRA -o md 2>"$ERRD/$LABEL.$mode.err" | tee -a "$OUT"
+  registered_ok "$mode" "$ERRD/$LABEL.$mode.err" || \
+    echo "    ARM FAILED: the [$mode] run's ROCKET registration line is $([ "$mode" = cpu ] && echo present || echo absent) -- see $ERRD/$LABEL.$mode.err" | tee -a "$OUT"
   echo | tee -a "$OUT"
 }
 clk() { sudo cat /sys/kernel/debug/clk/clk_summary 2>/dev/null | awk '/scmi_clk_npu/{printf "%d MHz",$5/1e6; exit}'; }
@@ -82,6 +101,56 @@ clk() { sudo cat /sys/kernel/debug/clk/clk_summary 2>/dev/null | awk '/scmi_clk_
 # drift underneath them.
 reset_mem() { sync; echo 3 | sudo tee /proc/sys/vm/drop_caches >/dev/null 2>&1
               echo 1 | sudo tee /proc/sys/vm/compact_memory >/dev/null 2>&1; }
+
+# THE GOVERNOR IS PART OF THE OPERATING POINT, not hygiene. An offloading process blocks with its
+# threads off the run queue, so a load-sampling governor parks the big cores at scaling_min_freq
+# and the host half of the work runs there, while a CPU-only arm keeps every core busy and fast.
+# Unpinned, an NPU arm read up to 3.2x slow against a CPU arm that lost nothing [HW sweep, RK1,
+# perf/cpu-governor-and-offload.md]. A policy counts as pinned when its governor is `performance`
+# or its floor equals its ceiling. The floor is the size of the effect, so it is recorded too.
+# CPUFREQ_DIR is overridable so the dry run can hand the script a pinned and an unpinned tree.
+CPUFREQ_DIR=${CPUFREQ_DIR:-/sys/devices/system/cpu/cpufreq}
+cpufreq_state() {  # one token: policyN:governor:min-max, comma-separated
+  local p s=""
+  for p in "$CPUFREQ_DIR"/policy*; do
+    [ -r "$p/scaling_governor" ] || continue
+    s="$s${s:+,}$(basename "$p"):$(cat "$p/scaling_governor"):$(cat "$p/scaling_min_freq")-$(cat "$p/scaling_max_freq")"
+  done
+  echo "${s:-none}"
+}
+unpinned_policies() {  # the policies neither under `performance` nor with the floor at the ceiling
+  local p out=""
+  for p in "$CPUFREQ_DIR"/policy*; do
+    [ -r "$p/scaling_governor" ] || continue
+    [ "$(cat "$p/scaling_governor")" = performance ] && continue
+    [ "$(cat "$p/scaling_min_freq")" = "$(cat "$p/scaling_max_freq")" ] && continue
+    out="$out${out:+ }$(basename "$p")"
+  done
+  echo "$out"
+}
+# Refuse an unpinned board unless ALLOW_UNPINNED=1 says the run is meant to be unpinned, as every
+# campaign number in the tuning matrix is. Either way the state lands on each PRED line.
+pinned_or_refuse() {
+  local unp; unp=$(unpinned_policies)
+  [ -z "$unp" ] && return 0
+  if [ "${ALLOW_UNPINNED:-0}" = 1 ]; then
+    echo "bench-llm.sh: running UNPINNED ($unp) because ALLOW_UNPINNED=1: $(cpufreq_state)" | tee -a "$OUT"
+    return 0
+  fi
+  echo "bench-llm.sh: refusing to run, cpufreq policies not pinned ($unp): $(cpufreq_state)" >&2
+  echo "  pin them (governor performance, or scaling_min_freq = scaling_max_freq)," >&2
+  echo "  or set ALLOW_UNPINNED=1 for a deliberately unpinned run" >&2
+  exit 2
+}
+
+# WHETHER THE BACKEND LOADED. ggml prints `load_backend: loaded ROCKET backend from <path>` when
+# GGML_BACKEND_PATH resolves, and a wrong path prints only a `failed to load` line. So an NPU arm
+# without the line ran on the CPU under an NPU label, and a `cpu` arm with it ran the NPU under a
+# CPU label (an inherited GGML_BACKEND_PATH does that). Either one's numbers are kept out of DATA.
+registered_ok() {  # $1 = arm label, $2 = the arm's stderr file
+  if [ "$1" = cpu ]; then ! grep -q "loaded ROCKET backend" "$2" 2>/dev/null
+  else grep -q "loaded ROCKET backend" "$2" 2>/dev/null; fi
+}
 
 # PASSIVE PREDICTORS for the per-process spread, recorded at the START of the timed run (after the
 # warm-up, so this arm's residency ingest and its page faults are already paid). One <!--PRED-->
@@ -109,7 +178,8 @@ reset_mem() { sync; echo 3 | sudo tee /proc/sys/vm/drop_caches >/dev/null 2>&1
 # analysis picks its own order, and a kernel with a different MAX_ORDER cannot silently shift a
 # column under a fixed one.
 predictors() {  # $1 = pass, $2 = arm label
-  awk -v p="$1" -v l="$2" '
+  local pinned=1; [ -n "$(unpinned_policies)" ] && pinned=0
+  awk -v p="$1" -v l="$2" -v cf="$(cpufreq_state)" -v pin="$pinned" '
     FILENAME ~ /meminfo/ {
       if ($1 == "MemAvailable:")  m = $2
       if ($1 == "AnonHugePages:") a = $2
@@ -123,6 +193,7 @@ predictors() {  # $1 = pass, $2 = arm label
       printf "<!--PRED %s\t%s\tmemavail_kb=%d\tanonhuge_kb=%d\thugepagesz_kb=%d\tbuddy=",
              p, l, m+0, a+0, h+0
       for (i = 1; i <= n; i++) printf "%s%d", (i > 1 ? "," : ""), f[i] + 0
+      printf "\tpinned=%d\tcpufreq=%s", pin, cf
       printf "%s", "-->\n"
     }' /proc/meminfo /proc/buddyinfo 2>/dev/null
 }
@@ -155,6 +226,124 @@ pred_sample() {  # $1 = output file. Backgrounded; exits when llama-bench does.
   done | sort -n | uniq -c | sort -rn | awk '{ printf "%s%s:%s", (NR > 1 ? "," : ""), $2, $1 }' > "$1"
 }
 
+# THE PER-PROCESS READOUT. The predictors above are a snapshot of the BOARD, and as
+# predictors of the per-process wall spread they are closed: over 177 joined rows plus a 24-arm
+# re-run, MemAvailable and the whole buddyinfo vector stay flat to <1.2% across 8-13% t/s swings.
+# What that leaves is what the allocator and the scheduler hand THIS PROCESS, which no snapshot of
+# the board can see. So this reads the process, and it reads it DURING the timed run:
+#
+#   RO_PMU=1   system-wide `perf stat` across exactly the timed region, on BOTH cluster PMUs.
+#              Per-cluster inst_retired is the thread-placement readout -- an A55 is roughly a
+#              third of an A76 here, so a run whose threads drift onto the little cluster is
+#              slower for a reason that has nothing to do with the knob under test. The A76
+#              memory events (l2d/l3d refill, mem_access, dtlb_walk), normalised PER INSTRUCTION
+#              so they do not merely restate how much work ran, are the cache-congruence readout.
+#              System-wide and not per-task deliberately: it leaves the workload's own command
+#              line, user and environment untouched, and the board is audited idle anyway. Its
+#              own cost is a counter program plus one wakeup -- it sleeps for the whole run.
+#   RO_PM=1    one bounded ro-pagemap.py sample once the process's RSS has stopped growing: where
+#              its pages actually landed, as cache colour and physical contiguity. See that file
+#              for what each column means and for the positive control it has to pass first.
+#   busy=      per-CPU jiffies delta across the timed region, from two /proc/stat reads. Free, and
+#              it is the cross-check on the PMU's cluster split: two instruments disagreeing about
+#              where the work ran is a fact about the instruments.
+#
+# ALL OF IT IS BEST-EFFORT AND NONE OF IT CAN FAIL AN ARM. Every piece is backgrounded or guarded,
+# `sudo -n` so a missing credential fails fast instead of hanging a detached campaign, and the
+# timed command's own rc is captured before any of this is read. A readout that can break the
+# measurement it annotates is worse than no readout.
+#
+# READ pmu_enabled BEFORE QUOTING A COUNTER. The A76 list is sized to its six programmable
+# counters exactly; add an event and perf multiplexes, which scales every count silently. Below
+# 99 means the numbers are estimates.
+#
+# AND pmu_cpu_s IS NOT THE ARM'S WALL. perf reports a counter's running time SUMMED OVER THE CPUS
+# THE EVENT RAN ON, so a system-wide software event on this part reads ~8x the elapsed seconds and
+# a cluster PMU event ~4x. It is a duration proxy and a correct RATIO between arms; the arm's
+# actual elapsed time is `wall_s`, taken from the shell around the timed command.
+RO=${RO:-1}
+RO_PMU=${RO_PMU:-1}
+RO_PM=${RO_PM:-1}
+A76=armv8_cortex_a76
+A55=armv8_cortex_a55
+RO_EVENTS=${RO_EVENTS:-"$A76/inst_retired/,$A76/cpu_cycles/,$A76/l2d_cache_refill/,$A76/l1d_cache_refill/,$A76/mem_access/,$A76/dtlb_walk/,$A76/l3d_cache_refill/,$A55/inst_retired/,$A55/cpu_cycles/,context-switches,cpu-migrations,page-faults"}
+
+# Per-CPU busy jiffies (user+nice+system+irq+softirq), one line, no forks.
+ro_cpu_snapshot() {
+  local cpu u n s rest
+  while read -r cpu u n s rest; do
+    case $cpu in cpu[0-9]*) printf '%s ' "$((u + n + s))" ;; cpu) ;; *) break ;; esac
+  done < /proc/stat
+  echo
+}
+
+# Wait for the timed process, let it warm in, take ONE placement sample, exit. Polls
+# /proc/PID/statm with the read builtin -- no process per poll, unlike pred_sample.
+#
+# THE DEADLINE IS LOAD-BEARING, and waiting for RSS to SETTLE alone is a silent no-op. Every arm
+# is preceded by drop_caches, so the mmapped GGUF faults in off NVMe for the whole run and the
+# resident size never stops growing: the first build of this waited for two consecutive stable
+# reads, never got them, fell out of the loop only when the process EXITED, and wrote an empty
+# file. It emitted `pagemap=absent` on a perfectly healthy arm -- an instrument that silently
+# measures nothing looks exactly like one whose column is flat. So the wait ends at whichever
+# comes first, settled or RO_PM_MAX polls, and the sample carries `ro_at_s`: which phase of the
+# run it describes is part of the datum, not an assumption the reader has to make.
+RO_PM_MAX=${RO_PM_MAX:-30}     # polls of 2 s before sampling regardless
+ro_pagemap_sample() { # $1 = output file
+  local p= i=0 prev=0 now=0 stable=0 t0=$SECONDS junk
+  while [ "$i" -lt 200 ]; do p=$(pgrep -x llama-bench | head -1); [ -n "$p" ] && break; i=$((i+1)); sleep 0.2; done
+  [ -n "$p" ] || { : > "$1"; return; }
+  i=0
+  while [ "$i" -lt "$RO_PM_MAX" ] && [ -d "/proc/$p" ]; do
+    sleep 2; i=$((i+1))
+    read -r junk now junk < /proc/"$p"/statm 2>/dev/null || break
+    [ "${now:-0}" -gt 0 ] || break
+    if [ "$prev" -gt 0 ] && [ $((now - prev)) -lt $((now / 50)) ]; then
+      stable=$((stable+1)); [ "$stable" -ge 2 ] && break
+    else stable=0; fi
+    prev=$now
+  done
+  [ -d "/proc/$p" ] || { : > "$1"; return; }
+  sudo -n python3 "$RO_PAGEMAP" "$p" \
+       --label "at_s=$((SECONDS - t0)),rss_pg=$now,settled=$stable" > "$1" 2>/dev/null \
+    || : > "$1"
+}
+RO_PAGEMAP=${RO_PAGEMAP:-$(dirname "${BASH_SOURCE[0]}")/ro-pagemap.py}
+
+# One <!--RO pass arm k=v ...--> line per timed arm, beside <!--DATA--> and <!--PRED-->. Raw
+# counts AND the derived ratios are both emitted: the ratios are what a spread is read from, and
+# the raw counts are what lets a later analysis pick a different denominator without re-running
+# the board. The memory events are normalised per THOUSAND A76 instructions -- an arm that simply
+# ran more work would otherwise show more refills and read as worse placement.
+ro_line() { # $1 pass, $2 arm, $3 cpu snapshot before, $4 after, $5 pmu csv, $6 pagemap, $7 wall s
+  local pass="$1" label="$2" before="$3" after="$4" pmuf="$5" pmf="$6" wall="${7:-0}"
+  printf '<!--RO %s\t%s\twall_s=%s\t' "$pass" "$label" "$wall"
+  awk -v b="$before" -v a="$after" 'BEGIN{
+    nb=split(b,B," "); na=split(a,A," "); n=(nb<na?nb:na); tot=0; lit=0; s=""
+    for(i=1;i<=n;i++){d=A[i]-B[i]; if(d<0)d=0; s=s (i>1?",":"") d; tot+=d; if(i<=4) lit+=d}
+    printf "busy=%s\tbusy_tot=%d\tbusy_little_share=%.4f\t", s, tot, (tot>0?lit/tot:0) }'
+  if [ -s "$pmuf" ]; then
+    awk -F, 'function key(e,  k){k=e; sub(/^armv8_cortex_/,"",k); sub(/\/$/,"",k);
+                                 gsub(/\//,"_",k); gsub(/-/,"_",k); return k}
+      BEGIN{minen=101; secs=0}
+      $3 != "" && $1 !~ /^#/ { v = ($1 ~ /^[0-9]/) ? $1+0 : -1; c[key($3)] = v
+                               if ($5+0 > 0 && $5+0 < minen) minen = $5+0
+                               if ($4+0 > secs) secs = $4+0 }
+      END{
+        for (k in c) printf "%s=%d\t", k, c[k]
+        i76=c["a76_inst_retired"]; i55=c["a55_inst_retired"]
+        if (i76+i55 > 0) printf "a55_inst_share=%.4f\t", i55/(i76+i55)
+        if (c["a76_cpu_cycles"] > 0) printf "a76_ipc=%.3f\t", i76/c["a76_cpu_cycles"]
+        if (i76 > 0) printf "l2ref_pki=%.3f\tl3ref_pki=%.3f\tl1dref_pki=%.3f\tmemacc_pki=%.2f\tdtlbw_pki=%.4f\t",
+              1000*c["a76_l2d_cache_refill"]/i76, 1000*c["a76_l3d_cache_refill"]/i76,
+              1000*c["a76_l1d_cache_refill"]/i76, 1000*c["a76_mem_access"]/i76,
+              1000*c["a76_dtlb_walk"]/i76
+        printf "pmu_enabled=%.1f\tpmu_cpu_s=%.1f\t", (minen>100?0:minen), secs/1e9 }' "$pmuf"
+  else printf 'pmu=absent\t'; fi
+  if [ -s "$pmf" ]; then tr -d '\n' < "$pmf"; else printf 'pagemap=absent'; fi
+  printf '%s' "-->"; echo
+}
+
 arm() { # $1 = label, $2 = env assignments, $3 = extra llama-bench args, $4 = pass number
   local label="$1" envs="$2" args="$3" pass="${4:-1}" tag
   tag="$LABEL.$label.p$pass"
@@ -174,21 +363,66 @@ arm() { # $1 = label, $2 = env assignments, $3 = extra llama-bench args, $4 = pa
   predictors "$pass" "$label" | tee -a "$OUT"
   local spid=
   if [ "${PRED_SAMPLE:-0}" = 1 ]; then pred_sample "$ERRD/$tag.cpu" & spid=$!; fi
+  # --- readout opens; nothing below may fail the arm
+  local perfpid= ropid= cpu0= cpu1=
+  local t_arm0=$SECONDS
+  if [ "$RO" = 1 ]; then
+    cpu0=$(ro_cpu_snapshot)
+    if [ "$RO_PMU" = 1 ]; then
+      # perf counts system-wide for exactly as long as its WORKLOAD lives, and the workload here
+      # is a `cat` blocked on a fifo. Ending the region is then a write, not a signal. The signal
+      # route was tried and is a trap: backgrounding `sudo perf ...` gives you sudo's pid, so the
+      # SIGINT lands on sudo, perf never sees it, and the arm blocks in `wait` behind a `sleep`
+      # with 24 hours to run -- after the timed run has already finished and printed its rows.
+      rm -f "$ERRD/$tag.fifo"; mkfifo "$ERRD/$tag.fifo" 2>/dev/null
+      sudo -n perf stat -a -x, -e "$RO_EVENTS" -o "$ERRD/$tag.pmu" -- cat "$ERRD/$tag.fifo" >/dev/null 2>&1 &
+      perfpid=$!
+    fi
+    if [ "$RO_PM" = 1 ] && [ -r "$RO_PAGEMAP" ]; then ro_pagemap_sample "$ERRD/$tag.pm" & ropid=$!; fi
+  fi
   env $envs ROCKET_LOG_STDERR=1 $BIN -m "$MODEL" $TESTS $args -o md 2>"$ERRD/$tag.err" | tee -a "$OUT" | tee "$ERRD/$tag.md" >/dev/null
   local rc=${PIPESTATUS[0]}
+  if [ "$RO" = 1 ]; then
+    cpu1=$(ro_cpu_snapshot)
+    # perf prints its counts on SIGINT; the `sleep` it wraps has to go with it. Give it a
+    # moment to flush, then read the file -- an unflushed -o file reads as no PMU line at all.
+    if [ -n "$perfpid" ]; then
+      echo end > "$ERRD/$tag.fifo" 2>/dev/null &
+      local wpid=$!
+      # Bounded: a readout must never be able to hang a detached campaign, so the wait has a
+      # deadline and the arm goes on without a PMU line rather than stopping.
+      local w=0
+      while [ $w -lt 60 ] && kill -0 "$perfpid" 2>/dev/null; do sleep 0.5; w=$((w+1)); done
+      kill -0 "$perfpid" 2>/dev/null && sudo -n pkill -x -INT perf >/dev/null 2>&1
+      wait "$perfpid" 2>/dev/null; kill "$wpid" 2>/dev/null; wait "$wpid" 2>/dev/null
+      rm -f "$ERRD/$tag.fifo"
+    fi
+    [ -n "$ropid" ] && wait "$ropid" 2>/dev/null
+    ro_line "$pass" "$label" "$cpu0" "$cpu1" "$ERRD/$tag.pmu" "$ERRD/$tag.pm" \
+            "$((SECONDS - t_arm0))" | tee -a "$OUT"
+  fi
   if [ -n "$spid" ]; then
     wait "$spid" 2>/dev/null
     [ -s "$ERRD/$tag.cpu" ] && printf '<!--PRED %s\t%s\tlastcpu=%s-->\n' \
         "$pass" "$label" "$(cat "$ERRD/$tag.cpu")" | tee -a "$OUT"
   fi
   [ "$rc" -eq 0 ] || echo "    ARM FAILED rc=$rc -- see $ERRD/$tag.err" | tee -a "$OUT"
+  local reg=1
+  if ! registered_ok "$label" "$ERRD/$tag.err"; then
+    reg=0
+    if [ "$label" = cpu ]; then
+      echo "    ARM FAILED: the cpu arm loaded the ROCKET backend (GGML_BACKEND_PATH inherited?) -- no DATA rows" | tee -a "$OUT"
+    else
+      echo "    ARM FAILED: no 'loaded ROCKET backend' line in $ERRD/$tag.err, so it ran on the CPU -- no DATA rows" | tee -a "$OUT"
+    fi
+  fi
   # One machine-readable datum per (pass, arm, test), so the summary below is computed from the
   # numbers rather than re-parsed out of prose. Kept as an HTML comment: the file is markdown.
-  awk -F'|' -v p="$pass" -v l="$label" 'NF>6 && $(NF-2) ~ /pp|tg/ {
+  [ "$reg" = 1 ] && awk -F'|' -v p="$pass" -v l="$label" 'NF>6 && $(NF-2) ~ /pp|tg/ {
         t=$(NF-2); v=$(NF-1); gsub(/ /,"",t); gsub(/ /,"",v); sub(/±.*/,"",v);
         if (v+0 > 0) printf "<!--DATA %s\t%s\t%s\t%s-->\n", p, l, t, v }' \
       "$ERRD/$tag.md" | tee -a "$OUT"
-  grep -hE "residency pre-flight|resident on the NPU|streamed via|admission first declined|budget reached|experts exercised|resident budget|MM_ASYM|K-accum" \
+  grep -hE "residency pre-flight|resident on the NPU|streamed via|admission first declined|budget reached|experts exercised|resident budget|MM_ASYM|K-accum|dq-cache" \
        "$ERRD/$tag.err" 2>/dev/null | sort -u | sed 's/^/    /' | tee -a "$OUT"
   echo | tee -a "$OUT"
 }
@@ -221,7 +455,8 @@ summarize() {
   echo | tee -a "$OUT"
 }
 
-echo "== $LABEL  $(date) ==" | tee -a "$OUT"
+pinned_or_refuse
+echo "== $LABEL  $(date)  cpufreq=$(cpufreq_state) ==" | tee -a "$OUT"
 if [ -n "$ARMS" ]; then
   # PASSES interleaved repeats, the arm order ROTATED by one each pass. Rotation is what stops an
   # arm's position in the sequence from being confounded with the arm: run in a fixed order, the

@@ -166,12 +166,25 @@ MACs. Proof it is **transfer-bound, not exp-compute-bound**: swapping the on-NPU
 skips the three NPU jobs (exp/row-sum/scale) and their host↔NPU transfers of the [Tp,Tn] score
 matrix. (`ROCKET_ATTN_HOST_SOFTMAX=1` keeps this option.)
 
-**Conclusion: the deep resident-fusion rewrite is not justified for a Whisper perf win.** The
+**Conclusion: this fused path is not a Whisper perf win.** The
 matmul-only offload (the current drop-in) already **beats** the CPU encoder at 1.18x (tiny.en), rising
 to 2.14x (large-v3), the win growing with model size ([perf/benchmarks.md](../perf/benchmarks.md) ASR
 section, [perf/data/whisper-encoder.md](../perf/data/whisper-encoder.md)), so this fused whole-block
-path (3.4-4.4x *slower*) is strictly worse, and a fully resident fused encoder would at best land near
-the drop-in (the per-op readback floor is fundamental; see not-mac-bound.md). The fused path's value is the proven correctness milestone + a substrate
+path (3.4-4.4x *slower*) is strictly worse. The per-op readback floor
+([not-mac-bound.md](../perf/not-mac-bound.md)) bounds any composition that returns each
+intermediate to the host. It does not bound a resident encoder, and an outside measurement puts
+one well under the drop-in on this silicon.
+
+**A whole-graph vendor compile runs the 20 s whisper-base encoder in ~250 ms.** That is Seeed's
+measurement of `rknn_model_zoo`'s fp16 encoder on all three cores of an RK3588 at 1 GHz. It is
+not reproduced here ([SOURCES.md](../SOURCES.md)).
+
+The drop-in takes 619 ms at the same window, against 883 ms on the CPU [HW sweep, Turing RK1, 600 MHz, 2026-09-26]. The
+encoder at 1000 positions is 52.1 GFLOP, so theirs runs at ~210 GFLOP/s and ours at ~84. Both are
+under the ~460 GOP/s the fp16 matmul sustains, so their figure is plausible for this datapath.
+The clocks differ, and no same-board comparison has been run.
+
+The fused path's value is the proven correctness milestone + a substrate
 for future fusion. If ever pursued, the lever is to keep all intermediates on-NPU across the block
 (scores in a BO, on-NPU PPU row-max so softmax needs no host round-trip, cube-resident
 `matmul->act->⊙->matmul`, fold scale/bias into the matmul pack; see rmsnorm-onnpu.md, ffn-block.md).

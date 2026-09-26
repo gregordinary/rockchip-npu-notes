@@ -77,7 +77,7 @@ something to move.
 per-pass ratios agree in sign, so a missing unit means not measured or not resolved, never
 measured-and-flat.
 
-## What each f16 unit's knob actually moves, read without a timed run
+## What each f16 unit's knob moves, read without a timed run
 
 Unit 2 cost seven passes to land unresolved for a reason its own teardown line states, so the same
 line was read for every f16 unit before any of them got board time — one warm-up-sized process per
@@ -316,7 +316,7 @@ the experts back on the CPU and costs 40% of prefill, so AUTO's expert route is 
 over experts-on-CPU on this model. The triage's ~0.41x appears to have come from the **0.42x** in
 `ggml-rocket.cpp`'s comment, which measures something else entirely — the abandoned fp16
 *streaming* expert route against the CPU (5.33 against 12.56 t/s), not AUTO's resident-int8 route
-against stock [inference from the two figures' agreement to 0.01, not established]. The handover's
+against stock [inference from the two figures' agreement to 0.01, not established]. The plan's
 own timing cell for this model implied ~0.55x, which is near this measurement and far from 0.41x,
 so the two figures in that basis cell already disagreed.
 
@@ -360,17 +360,196 @@ Two MoE models, the same four arms, and the same flag buying two different thing
 This reproduces, with placement counts rather than inference, the known statement that gpt-oss
 offloads from `-ub 512` up while DeepSeek-V2-Lite needs ~1250+ tokens in a micro-batch.
 
-**It also warns against a decomposition this matrix cannot do for the dense models.** Nine dense
-units report one `-ub` number each with no mechanism control beside it, and nothing in those rows
-says how much of each is dequant amortization versus some other threshold being crossed. The MoE
-units have a control arm; the dense units do not, and the 0.94-1.53x range should be read as "what
-the flag buys", not "what the dequant costs".
+**The dense units now have the same control** — see "The dense `-ub` lever decomposed" below. The
+dense rows in the main table remain "what the flag buys"; the dqc units are what turned three of
+them into "what the dequant costs".
 
 **`ROCKET_MOE=1` adds almost nothing here** — 1.332x against 1.323x, and identical placement (4779
 experts, 14959 MB) on both arms. Unlike gpt-oss, where FORCED placed 264 more expert stacks and
 bought 1.197x, this model's AUTO route already takes everything FORCED would, so the two states
 coincide. **That is a per-model property and not a general one**: the same two arms differ by 20%
 on one model and 0.7% on the other.
+
+## The dense `-ub` lever decomposed: the dqc mechanism control
+
+The dense analogue of the MoE units' `ROCKET_MOE=0` arm now exists: **`ROCKET_DEQUANT_CACHE_MB`**
+holds each streaming quant weight's dequantized fp16 form host-side (dequant once per process),
+leaving the per-call pack, the submit and the placement exactly the shipped path. Four arms per
+unit — stock, `ub2048`, and the same pair under the cache — so `dqc2048/dqc512` paired within a
+pass is the `-ub` lever with the dequant term removed, and `full / control` is the dequant
+component. Greedy output under the cache is byte-identical to the streaming path, and every arm's
+`[dq-cache]` teardown line reported full engagement (150 / 200 / 165 weights, 0 still-streaming)
+[HW sweep 2026-08-31, RK1, 600 MHz, governor `performance`, three rotated passes, 0 failed arms]:
+
+| unit | full `-ub` lever | dequant component | non-dequant residue (control lever) | per-pass control |
+|---|---:|---:|---:|---|
+| `qwen35-9b` | **1.430x** | **1.378x** | **1.038x** | 1.031 1.039 1.044 |
+| `smolvlm2` | **0.946x** | **1.199x** | **0.789x** | 0.796 0.785 0.787 |
+| `qwen35-08b` | 1.066x | ~1.10x | **unresolved** | 1.020 0.920 0.979 |
+| `llama32-3b` | 1.085x | 1.258x | **0.863x** | 0.846 0.879 0.864 |
+| `ministral3-3b` | 1.035x | 1.239x | **0.835x** | 0.837 0.835 0.834 |
+| `phi4mini` | 1.107x | 1.282x | **0.864x** | 0.855 0.870 0.866 |
+
+The last three landed 2026-08-31 in a second campaign (stock arms replicating the matrix epoch
+to <= 1.3%, idle audited, dq-cache fully engaged on every arm, raw files in `dqc-session/`).
+**Every sub-4B model measured — four of four — carries a real 14-21% non-dequant loss at
+`-ub 2048` that a larger dequant win masks**, and the 9B's 1.038x residue is the outlier, not
+the rule. The dequant term removed at the DEFAULT `-ub` (dqc512-vs-stock) reads **1.369x /
+1.338x / 1.373x** on the three 3B-class units — well above their stacked-recipe measurements
+(1.212x / 1.132x / 1.211x) — which is what put the unstacked-residency question on the board
+for the whole class rather than for smolvlm2 alone.
+
+- **On the 9B the documented mechanism is the mechanism.** 1.378 of the 1.430 is dequant
+  amortization — ~90% of the lever in log terms — and the residue is 1.038x. The stock arm
+  replicated the matrix row across the campaign (19.06 against 19.14 t/s), so the two epochs are
+  directly comparable.
+- **On `smolvlm2` the flag's loss is NOT a dequant effect, and dequant amortization is what was
+  hiding most of it.** With the dequant term removed, `-ub 2048` loses **0.789x** — a real 21%
+  non-dequant cost at the larger micro-batch (mechanism open) — and the shipped 0.946x is that
+  loss with a 1.199x dequant win partly masking it. The unit's best arm is `dqc512` at **1.266x**:
+  on this model the win is removing the dequant at the DEFAULT `-ub`, not raising `-ub`.
+- **The 0.8B cannot resolve its control lever.** Its per-pass control ratios straddle 1.00
+  (0.920-1.020) and its stock arm spans 8.4% across processes — the same small-model per-process
+  spread unit 2 showed. Reported unresolved rather than averaged.
+
+**The actionable form of the smolvlm2 finding is residency at the DEFAULT `-ub`, and it was
+hiding behind the arm stacking.** The matrix's `qresident` arm stacks on `-b 2048 -ub 2048`, so on
+this model it measured residency on top of the loss and read 1.002x flat. Unstacked
+[HW sweep 2026-08-31, RK1, 600 MHz, three rotated passes, 165 resident (2976 MB), 0 streamed]:
+`ROCKET_QUANT_RESIDENT=auto` at stock `-ub 512` reads **1.346x** (1.346 1.337 1.353) — above the
+dqc512 control's 1.266x, as removing the per-call pack on top of the dequant should be. On a
+model whose `-ub` residue is a loss, the recipe inverts: residency INSTEAD OF `-ub 2048`, not on
+top of it.
+
+**The inversion is now measured across the whole sub-4B class, and it holds on every unit**
+[HW sweep 2026-08-31, RK1, 600 MHz, three rotated passes per unit, all arms 100% resident /
+0 streamed, stock arms replicating the matrix epoch to <= 0.7%; raw files
+`dqc-session/*-qres512.md`]:
+
+| unit | qres512-vs-stock | dqc512 control | stacked recipe (matrix) | unstacked over stacked |
+|---|---:|---:|---:|---:|
+| `llama32-3b` | **1.472x** (1.450-1.492) | 1.369x | 1.212x | +21% |
+| `ministral3-3b` | **1.445x** (1.416-1.463) | 1.338x | 1.132x | +28% |
+| `phi4mini` | **1.508x** (1.491-1.520) | 1.373x | 1.211x | +25% |
+| `smolvlm2` | **1.346x** (1.337-1.353) | 1.266x | 1.002x | +34% |
+| `ministral3-8b` | **1.651x** (1.630-1.674) | — | 1.325x | +25% |
+| `qwen35-9b` | **1.752x** (1.737-1.771) | — | 1.661x | +5.5% |
+| `gemma4-12b` | **1.368x** (1.319-1.402) | — | 1.322x | +3.5% |
+
+Each sub-4B unit's qres512 sits above its own dqc512 control (pack removal on top of the
+dequant, the predicted ordering), and 21-34% above the stacked recipe the guide shipped.
+
+**Seven of seven models prefer the unstacked form, and that is what licenses a class rule.**
+The set spans 2.2-11.9 B, both signs of the non-dequant residue, and both full and partial
+residency, and no model measured both ways prefers stacking. So the recipe for a quantized
+GGUF is **`ROCKET_QUANT_RESIDENT=auto` at the DEFAULT `-ub` whenever the fp16 image fits
+resident, wholly or partly**, and `-b 2048 -ub 2048` is the lever only for a model that cannot
+go resident at all. **One model with a resident arm is still outside that statement**:
+`qwen35-08b` cannot resolve a ratio of this size at any affordable pass count in its class.
+The rule was deliberately not re-cut on the 9B alone, because one model's ratio does not read
+across: the same lesson the MoE work floor taught.
+
+`gemma4-12b` is the only row here whose arms did NOT run at the same residency, and the reason
+is the finding below. Its +3.5% is the narrowest margin in the set.
+
+**The 9B row is the class edge, and it settles a question the sub-4B rows could not.** It is
+the only measured model whose non-dequant `-ub` residue is a WIN (1.038x), so it is the case
+where the residue argument predicts stacking should hold. It does not: unstacked reads
+**1.752x** against the stacked **1.661x**, resolved the same way on all three passes, with the
+stock arm replicating the matrix epoch to 0.2% and every pass 100% resident
+[HW sweep 2026-08-31, RK1, 600 MHz, three rotated passes, raw in
+`ro-session/qwen35-9b-qres512.md`]. So the earlier expectation recorded here — that stacking
+barely matters on a model with a winning residue — was wrong by 5.5%, and in the direction of
+unstacked.
+
+### The unstacked recipe also buys RESIDENCY on a partly-placed model, which is a third mechanism
+
+`gemma4-12b` was expected to be the case where the class rule breaks, because it places only
+part of its weights and the streamed remainder still pays the per-micro-batch dequant that the
+unstacked form exists to avoid. It does not break, and the reason is a term the six
+fully-placed models could not show [HW sweep 2026-08-31, RK1, 600 MHz, three rotated passes,
+raw in `ro-session/gemma4-12b-qres.md`]:
+
+| arm | `-ub` | weights resident | MB resident | pp2048 |
+|---|---|---:|---:|---:|
+| stacked (matrix epoch) | 2048 | 239 / 240 / 243 of 328 | 15018-15255 | 1.322x |
+| unstacked | default | 282 / 284 / 272 of 328 | 17077-17853 | **1.368x** |
+
+**The unstacked arm places 9-13 points more of the model.** Both arms stop at the same place,
+the runtime's 9535 MB `MemAvailable` reserve floor rather than the 21129 MB resident-weight
+budget, and the unstacked arm reaches that floor about 2.6-2.8 GB later. The difference is the
+activation and compute buffers, which `-b 2048 -ub 2048` grows about 4x. On a model where the
+budget never binds, that RAM is spent on the micro-batch instead of on weights.
+
+So on a partly-placed model the two arms are not the same placement with a different
+micro-batch. Raising `-ub` costs residency directly, and a comparison here has to read the
+`[f16-resident]` outcome line per arm rather than assume the arms are comparable.
+
+**This unit's per-pass spread is the widest of the seven, and placement is the candidate.** Its
+ratios are 1.402 / 1.382 / 1.319, a 6.3% spread against 1-3% on the fully-placed units, and the
+pass with the lowest ratio is also the pass with the lowest placement (83% against 86% and
+87%). Three points cannot establish that relation — a monotone column over three points scores
+a degenerate rank correlation — so this is a candidate and not a measurement [hypothesis]. What
+it does say is that a partly-placed model's ratio carries a placement term that a fully-placed
+one does not, and a future unit on this model wants more passes than three.
+
+**The mechanism is the per-call pack, and it explains why the residue alone under-predicts.**
+Write `k` for the factor by which unstacked beats what a residue correction alone gives,
+`k = (unstacked/stock) x residue / (stacked/stock)`. It is above 1 on every model measured
+because residency removes the per-call pack and upload as well as the dequant, and at the
+default `-ub` there are four times as many micro-batch calls for it to remove. **`k` is not a
+constant: it rises with model size** — 1.048 / 1.060 / 1.066 / 1.076 on the four sub-4B units
+and **1.095** on the 9B. A band built on a flat `k` fitted at one size will read low at a
+larger one, which is how this cell's own registered band missed on the high side.
+
+**The smolvlm2 non-dequant residue is bounded by a profiled A/B of the dqc pair, and half of
+it is the output de-tile** [HW sweep 2026-08-31, RK1, 600 MHz, one profiled process per arm,
+`ROCKET_MM_PROFILE=1 ROCKET_FA_TIMING=1`, both arms under the cache; the profiled arms
+reproduce the campaign ratio to 0.1% (65.14/51.48 = 0.790 against 0.789), raw in
+`dqc-session/smolvlm2.dqc{512,2048}-prof.{out,err}`]:
+
+| driver bucket | dqc512 | dqc2048 | delta |
+|---|---:|---:|---:|
+| read (readback + C de-tile) | 28.2 s | 46.3 s | **+18.0 s** |
+| wait | 154.2 s | 189.9 s | **+35.7 s** |
+| pack (packA + packB) | 57.8 s | 43.8 s | **-14.1 s** |
+| everything else (gen/sync/submit/pack_act/unpack_out/dequant) | 14.3 s | 13.8 s | ~0 |
+
+The accounted delta (+39.7 s per process) closes against the measured wall loss (~33.5 s)
+within the profiler's own overhead. Two of the three candidates are now placed:
+
+- **The C de-tile at [2048,N] is real and is ~half the residue.** `read` grows 64% at
+  byte-identical output elements (5083M both arms), and per job-batch it is 1.76 -> 10.9 ms —
+  the de-tile is superlinear in M on this model's N geometry.
+- **The attention-chunk-across-the-FA-gate candidate is dead as framed**: `ROCKET_FA_TIMING`
+  printed nothing on either arm because llama-bench runs `-fa 0`, so the whole campaign —
+  including the 0.789x residue itself — contains **no FLASH_ATTN ops at all**. Scope: a
+  deployment running `-fa` on is a different configuration this table does not price.
+- **The remainder sits in `wait`** (+23% at identical MAC work, 9.6 -> 44.6 ms per batch),
+  net of the pack saving — consistent with the fewer, larger batches overlapping less host
+  work with NPU time, which is the scheduler-shaped candidate [hypothesis, not isolated].
+
+**The dequant share is a live term, not a constant.** The weight_dequant profile bucket, read in
+the same session on an idle board, is 2.47 / 33.9 / 7.6 s per `-ub 512` pass (08b / 9B /
+smolvlm2) against walls of 20.7 / 107 / 39.4 s, and a bucket-removal model on those covariates
+predicted the measured `dqc2048`-vs-`ub2048` ratios to 0.5% on all three units and smolvlm2's
+control lever to 1%. The same buckets read under a one-core tenant (below) were 1.5-2.1x larger.
+
+**The accidental load experiment: a single busy core flips the flag's sign on smolvlm2.** The
+first take of this campaign unknowingly ran behind a leaked spinner process holding one core at
+100%. Those runs are kept (`*-dqc.tenant-loaded.md`) as a labeled measurement of host-load bias,
+because the contrast is a finding [HW, same board, same binary, tenant present throughout]:
+
+| unit | `-ub` lever, idle | `-ub` lever, one-core tenant | control lever idle -> loaded |
+|---|---:|---:|---|
+| `qwen35-08b` | 1.066x | **1.484x** | unresolved -> 1.229 |
+| `qwen35-9b` | 1.430x | 1.526x | 1.038 -> 1.135 |
+| `smolvlm2` | **0.946x** | **1.120x** | 0.789 -> 0.882 |
+
+A tenant steals exactly the resource the stock arm uses four times as often (the A76-pinned
+dequant pool), so it inflates the flag on every unit and takes smolvlm2's loss to a win. The
+practical reading for the tuning guide: the `-ub 2048` recipe's value GROWS on a loaded host, and
+a benchmark taken with any background load overstates it for an idle deployment.
 
 ## The largest model in the matrix is the one where every tuned arm loses
 
@@ -463,7 +642,7 @@ item is about is the case where the memory disappears *after* the budget freezes
 streamed** on all three passes — the same count and the same footprint as `llama32-3b-f16`'s
 `ROCKET_F16_RESIDENT=auto` arm above. The two routes reach it from different files (a 1.87 GiB
 `Q4_K_M` GGUF dequantized once, against a 6.4 GiB F16 one packed directly) and converge on the
-identical placement, which is the expected behaviour of a shared fp16 prepack and a cheap check
+identical placement, which is the expected behavior of a shared fp16 prepack and a cheap check
 that the quant route is not silently placing a different tensor set.
 
 The speeds do not converge, and should not: the same 193 resident weights run **47.21** t/s from
@@ -488,7 +667,1353 @@ between the discarded warm-up and the timed run, and they touch neither arm's wo
 correlation of the buddyinfo tail against t/s has six arms to work with rather than eighteen, and
 the two units with the widest spread on record (unit 2, ~11%) are among those that carry nothing.
 
+### The predictors do not predict the spread, and the re-run says what would
+
+The correlation has now been run, and unit 2 re-run under the predictor-carrying harness
+[HW sweep 2026-08-31, RK1, 600 MHz, governor `performance`; raw rows in
+`qwen35-08b-f16-rerun.md`, two 6-pass campaigns, 24 predictor-carrying arms].
+
+**The recorded covariates cannot carry the spread.** Over 177 joined (PRED, t/s) rows — the
+matrix's 153 plus the re-run's 24 — the loud groups swing 8-13% in t/s while their recorded
+pre-state is statistically flat: MemAvailable varies under 0.9%, the buddyinfo high-order tail
+under 1.2%, and the within-group correlations are weak with inconsistent signs (|r| <= 0.5,
+both directions across groups). The board's post-reset state is also uniformly unfragmented
+everywhere — 85-89% of free pages sit at order >= 8 in every group — so the `compact_memory`
+half of the reset is doing its job and fragmentation *as buddyinfo records it* does not vary
+enough between processes to explain anything. Scope: this closes the recorded covariates as
+predictors of the mode; it says nothing about axes the PRED line does not record (physical
+page placement of the BOs and mmap, thread placement).
+
+**The spread replicated in both campaigns, and its shape narrows the mechanism.** Each arm
+spans 11.7-12.9% across 12 processes, structured as a tight floor near 116.5 t/s (repeats to
+0.3%) with fast excursions to 129-132 (+12%) and a few intermediate levels. The mode is not
+noise around a mean — it is which level a process lands on. In campaign 1 the level flipped
+between the two processes of a pass (per-pass ratios 0.93-1.13); in campaign 2 adjacent
+processes shared it (all six ratios 0.99-1.01). Same board, same binary, same hour. A
+mechanism that survives those two patterns is one decided per process at startup by something
+the allocator hands the process — where the working set physically lands — with whatever
+history-dependence made campaign 2's processes correlate. That candidate class (BO/mmap
+physical placement, cache congruence, thread placement) needs a per-process **readout**, not
+more rows of these predictors.
+
+**That readout now exists and every timed arm carries it**: a `<!--RO-->` line beside the
+`<!--DATA-->` row, holding both cluster PMUs across the timed region, a per-CPU jiffy delta,
+and one bounded `pagemap` sample of where the process's pages landed. What it can and cannot
+score, and the positive controls it had to pass first, are in
+[../per-process-readout.md](../per-process-readout.md); [ro-join.py](ro-join.py) joins those
+lines back to the t/s rows and marks a covariate FLAT when its own range is too small for a
+correlation over it to mean anything.
+
+### The L3 column is a within-arm covariate, the level is thread placement, and one intervention separates them
+
+The readout has now been taken on the unit it was built for [HW sweep 2026-08-31, RK1, 600 MHz,
+governor `performance`, `qwen35-08b-f16`, six rotated passes over two arms, memory reset before
+every arm, `pfn_zero_frac`=0.0000 and `pmu_enabled`=100 on all twelve processes; raw rows in
+`ro-session/trackd-08b-f16-6pass.md`]. Both arms reproduced the mode at the depth the unit was
+picked for: `f16-stock` spans 115.56-131.23 t/s (12.4%) and `f16-res` 117.23-130.27 (11.1%).
+
+**One covariate tracks the wall, and it sits at the L3-to-DRAM boundary.** Pooled over all twelve
+processes, `l3ref_pki` has a 23.1% range and a rank correlation of **-0.972** against t/s, and the
+ordering is close to monotone: 8.02 at the fastest process, 10.35 at the slowest, with the one
+intermediate wall (122.03 t/s) carrying an intermediate 9.34. Everything upstream of the L3 is
+flat. `memacc_pki` varies **0.51%**, `l1dref_pki` 1.8%, `l2ref_pki` 3.4% at rho -0.273, and
+`a76_inst_retired` 1.4%. So the same instruction stream issues the same memory accesses and takes
+the same L1 and L2 misses. What differs between a fast process and a slow one is the fraction of
+those L2 misses the L3 satisfies.
+
+| t/s | arm | wall s | `l3ref_pki` | L3 refills | GB read | `l2ref_pki` | `memacc_pki` | `a55_inst_share` |
+|---:|---|---:|---:|---:|---:|---:|---:|---:|
+| 131.23 | stock | 66 | 8.02 | 2.95 G | 188.6 | 5.70 | 349.4 | 0.2037 |
+| 130.27 | res | 66 | 8.01 | 2.94 G | 188.0 | 5.62 | 348.6 | 0.2052 |
+| 128.42 | stock | 67 | 8.35 | 3.07 G | 196.2 | 5.70 | 349.0 | 0.2047 |
+| 126.57 | stock | 69 | 8.40 | 3.07 G | 196.7 | 5.73 | 349.0 | 0.2060 |
+| 122.03 | stock | 71 | 9.34 | 3.40 G | 217.9 | 5.74 | 348.2 | 0.2095 |
+| 118.30 | res | 72 | 9.95 | 3.62 G | 231.7 | 5.59 | 348.0 | 0.2095 |
+| 117.82 | res | 74 | 10.11 | 3.69 G | 236.4 | 5.65 | 347.6 | 0.2080 |
+| 117.54 | res | 74 | 10.11 | 3.67 G | 234.7 | 5.68 | 347.9 | 0.2106 |
+| 117.40 | res | 73 | 10.18 | 3.69 G | 235.8 | 5.69 | 348.4 | 0.2114 |
+| 117.23 | res | 74 | 10.17 | 3.69 G | 235.8 | 5.67 | 348.2 | 0.2115 |
+| 116.81 | stock | 73 | 10.35 | 3.75 G | 239.8 | 5.79 | 348.8 | 0.2115 |
+| 115.56 | stock | 74 | 10.31 | 3.74 G | 239.5 | 5.79 | 348.1 | 0.2111 |
+
+**The extra traffic is the right size for the extra wall.** At 64 B per refill the fastest process
+reads 188.6 GB in 66 s and the slowest 239.5 GB in 74 s. The extra 50.9 GB against the extra 8 s is
+a marginal **6.4 GB/s**, while the average over each run is only 2.9-3.2 GB/s, so this is not a
+bandwidth ceiling being reached. It reads as extra latency-bound refill stall. That is an
+arithmetic consistency check rather than an attribution: `rockchip_ddr` differencing, which is
+calibrated to 0.4% as a between-arm difference, is the instrument that would put a measured DRAM
+figure against it, and it has not been run on these arms.
+
+**The placement columns had real range here and did not correlate, which is a stronger null than a
+flat one.** `contig_frac` ranges 29.8% at rho -0.119, `mean_run` 123% at -0.154, `l3color_cv` 125%
+at -0.091 and `l2color_cv` 128% at -0.070. Page placement varied between these processes, by a lot,
+and the wall did not follow it. The guarded reading of a *flat* placement column, that the reset
+leaves nothing varying, does not apply: something was varying, and it was not what decided the
+level.
+
+**Scope of that null.** `l3color_cv` is a coefficient of variation over color bins of the process's
+own sampled pages, at `present_frac` ~0.64, and the L3 is shared with everything else on the SoC.
+So it refutes a coloring effect that this statistic can see, over this process's own pages. It
+does not refute L3 set pressure arriving from outside the process.
+
+**A second covariate separates the two levels perfectly, and it is too small to be the carrier by
+itself.** `a55_inst_share` reads 0.2037-0.2060 on the four fastest processes and 0.2080-0.2115 on
+the other eight, with no overlap and a pooled rho of -0.930. Total instructions are constant to
+0.4%, so what moves is placement rather than work: the slow processes retire 3.4% more instructions
+on the A55s and 1.4% fewer on the A76s, about 5 G instructions, near 1.1% of the total, landing on
+the little cluster instead of the big one. At a 3.7% range that column cannot be an additive term
+carrying a 12% wall, and the detection floor says so.
+
+Those two columns co-vary across all twelve processes, and an observational design cannot order
+them. That is what the next section intervenes on.
+
+### Pinning to the A76s is worth 1.05-1.13x on prefill, and the gain tracks the little cluster's instruction share
+
+The knob is `taskset`, not `ROCKET_CPU_AFFINITY`. `librocketnpu` already pins its own pack and
+readback workers to the max-frequency cluster, all four A76s on this part, so the instructions the
+readout sees on the little cluster belong to llama.cpp's own ggml threads. Three arms, six rotated
+passes, everything else held [HW sweep 2026-09-01, RK1, 600 MHz, governor `performance`,
+`qwen35-08b-f16`, memory reset before every arm, 0 failed arms, `pfn_zero_frac`=0.0000 and
+`pmu_enabled`=100 on all eighteen processes; raw rows in
+`ro-session/trackd-pin-08b-f16-6pass.md`]. `pin76` is `taskset 0xf0` at llama-bench's default
+`-t 8`, so eight threads share four cores. `pin76t4` adds `-t 4`, which holds threads-per-core at
+the one the unpinned arm has.
+
+| arm | mean t/s | range | spread | paired ratio | A55 inst | A76 inst | L3 refills | wall |
+|---|---:|---|---:|---:|---:|---:|---|---:|
+| unpinned | 119.93 | 116.16-124.91 | 7.3% | -- | 9.66e10 | 3.654e11 | 3.19-3.76e9 | 71.3 s |
+| `pin76` | 132.25 | 127.60-142.24 | 11.0% | **1.103x** | 0.22e10 | 3.666e11 | 3.48-4.20e9 | 65.5 s |
+| `pin76t4` | 134.93 | 133.36-139.32 | 4.5% | **1.126x** | 0.20e10 | 3.827e11 | 3.57-3.90e9 | 64.2 s |
+
+The paired ratios carry a per-pass standard deviation of 0.035 and 0.044 over six passes, so both
+resolve above 1.00 by about seven standard errors. This is the largest single-flag effect measured
+on this unit, and no line of the stack changed to get it.
+
+**The NPU half is identical in every arm, so the whole effect is host-side.** All eighteen
+processes report the same engagement line: 126 weights resident on the NPU at 780 MB, 0 streamed.
+This unit admits the resident route on stock because its K is inside the default gate, so the
+device sees the same program and the same buffers in all three arms.
+
+**And this is not the governor effect.** Every arm ran with all three `cpufreq` policies pinned
+to `performance`, so the A76 cluster never parked, and the penalty described in
+[../cpu-governor-and-offload.md](../cpu-governor-and-offload.md) is not available to explain any
+of it. The 10-13% sits on top of a pinned governor.
+
+**The L3 column inverts across the intervention while surviving inside it.** Within each arm the
+absolute `a76_l3d_cache_refill` still tracks the wall at rho **-0.943**, over a real range of 8.5%
+to 17.3%, and it does so in the two arms where the little cluster is idle. Pooled over all
+eighteen processes its rank correlation is **+0.172**: the faster arm is the one taking more
+refills, 4.00e9 against 3.50e9, at a higher rate per second as well as in total. So the column is a
+within-arm lottery covariate and not a cross-arm predictor of the level, and the twelve-row
+observational design could not have shown that. **The hypothesis that A55 migration drives the
+within-arm L3 variation is refuted**: `a55_inst_share` falls 40x under the intervention and the
+within-arm correlation is unchanged.
+
+**The mode is not what pinning removes.** `pin76` holds an 11.0% spread, wider than the unpinned
+arm's own 7.3% in this campaign, with per-pass ratios from 1.040 to 1.139. `pin76t4` read 4.5%
+here and **11.9%** in the second campaign below, on the same arm at the same shape, so the narrow
+draw was luck and pinning does not reliably tighten the arm. What the residual lottery is remains
+open. The two `-t 8` arms did share a pass-level component the `-t 4` arm did not, their walls
+ranking together at rho **+0.829** across the six passes against +0.029 [one campaign, one unit].
+
+**The little cluster's instructions do not migrate, they vanish.** Pinning removes 9.66e10 A55
+instructions and 88 A55 core-seconds, and the A76 instruction count does not move to absorb them:
+3.666e11 against 3.654e11, +0.3%. Total instructions fall **20%**, from 4.620e11 to 3.688e11, for
+the same tokens. The A76 side becomes denser in memory as well, `mem_access` rising 12% and
+`l1d_cache_refill` 16% over an unchanged instruction count, which is the arithmetic behind the
+higher refill totals. Whether the vanished instructions were a synchronization tax or redundant
+work is **not settled here**: the PMU half is system-wide and attributes nothing to a thread, so
+this instrument cannot decompose an instruction count by which thread retired it.
+
+**The standing negative does not survive its own cell.** It recorded whole-process
+`taskset 0xf0` as no win on Gemma-4-12B F16, with prefill flat and decode 34% down. Decode is
+untouched by every arm in every campaign here, all of which are `-n 0`, and giving up four cores
+for a bandwidth-bound decode remains a real cost. Prefill is the half that disagreed, and the
+third campaign below re-measures that exact model under the rotated-pass protocol: prefill is
+**not** flat there. The recorded cell had no raw evidence file and no recorded protocol anywhere
+in this workspace, and this board does not settle a sign at one process per arm.
+
+**A second model, at the other end of the matrix and under the recipe the guide recommends.**
+`qwen35-9b` Q4_K_M with `ROCKET_QUANT_RESIDENT=auto` at the default `-ub`, three rotated passes,
+every arm 200 weights resident at 13184 MB and 0 streamed [HW sweep 2026-09-01, RK1, 600 MHz,
+governor `performance`, 0 failed arms, both guards clean on all nine; raw in
+`ro-session/trackd-pin-9b-qres-3pass.md`]. `pin76` reads **1.059x** (per-pass 1.098 / 1.010 /
+1.068) and `pin76t4` **1.062x** (1.089 / 1.052 / 1.045), with all six ratios above 1.00. So the
+lever reads across, and it is **smaller at the large end**. At three passes only `pin76t4`
+resolves comfortably, at 4.4 standard errors against `pin76`'s 2.3.
+
+**The two models' instruction accounting differs, and a fixed poll budget explains both.** On the
+9B the A76 count DOES rise when pinned, 12.159e11 to 12.807e11, absorbing about a third of the
+2.00e11 A55 instructions removed. On the 0.8B none of it was absorbed. The unpinned
+`a55_inst_share` is also lower on the bigger model, 0.146 against 0.209. ggml's worker spins
+about 6.5e6 `yield` rounds before sleeping on a mutex, roughly 7-9 ms
+[source-confirmed, `ggml/src/ggml-cpu/ggml-cpu.c`], so a short NPU op is spun through end to end
+while a long one exhausts the budget and the thread sleeps. That predicts a smaller lever on the
+larger model, which is what both numbers show [hypothesis, and `--poll` is the arm that tests it].
+
+**A symbol profile of the little cluster refutes the spin half of that story.** `perf record -a -e
+armv8_cortex_a55/inst_retired/` over one unpinned `qwen35-9b` quant-resident arm, 97524 samples and
+none lost, attributes **97.20%** of the A55 instructions to `llama-bench` itself [HW readout
+2026-09-02, RK1, `-p 2048 -n 0 -r 3`, arm at 200 resident and 0 streamed; raw in
+`ro-session/trackd18-a55-symbols.md`]. The top of the histogram is graph work, not waiting:
+
+| share | symbol |
+|---:|---|
+| 20.79% | `ggml_compute_forward_gated_delta_net` |
+| 20.57% | `ggml_vec_dot_f32` |
+| 17.31% | `ggml_compute_forward_ssm_conv` |
+| 7.10% | `ggml_compute_forward_rms_norm_mul_fused` |
+| 5.48% | `ggml_vec_swiglu_f32` |
+| 3.70% | `ggml_vec_silu_f32` |
+| 3.43% | `tinyBLAS_Q0_ARM<block_q8_0>::gemm<3,3>` |
+
+`librocketnpu`'s own host symbols come to **0.43%** together (`rocket_pack_activations` 0.27%,
+`rocket_unpack_output` 0.16%), which confirms from the other side that the driver's workers are
+not what runs there.
+
+**`ggml_barrier` appears nowhere in the histogram, and that is guaranteed by construction rather
+than measured.** `libggml-cpu.so` imports `GOMP_barrier`, `GOMP_parallel` and `GOMP_single_start`
+[verified on the board, `nm -D`], so this is an OpenMP build, and under `GGML_USE_OPENMP`
+`ggml_barrier` is `#pragma omp barrier` [source-confirmed, `ggml/src/ggml-cpu/ggml-cpu.c`]. It
+lowers into libgomp and can never be a leaf symbol. **An absent barrier symbol is not evidence
+about spinning in this build.**
+
+**The 6.4% perf left unresolved is the OpenMP runtime.** Six addresses clustered at `0x2244x` and
+`0x2277x` were read here as `ggml_gated_linear_attn` and `ggml_rwkv_wkv7` in
+`libggml-base.so.0.20.2`, by offset and by model context. The same six carry **16.02%** on
+`gemma4-12b` F16, a plain transformer with neither op, where a `--sort dso` view names
+`libgomp.so.1.0.0` for exactly that total [HW readout 2026-09-02, RK1; raw in
+`ro-session/trackd22-a55-symbols-12b.md`]. The `libggml-base` symbols at those offsets are graph
+CONSTRUCTORS called once per node per build, not kernels -- the kernel is the histogram's own
+20.79% entry. **Offsets agreeing across two shared objects are not attribution**, and the context
+that picked between them was true and still selected the wrong object.
+
+**So the term `taskset 0xf0` moves is mostly real graph work with a runtime component, and
+`--poll` was never able to reach either.** On this model the two largest entries are the hybrid
+attention layers, which have no NPU handler at all and run on the CPU by construction. `--poll 0`
+measured 1.013x because the whole polling machinery -- `threadpool->poll`,
+`ggml_graph_compute_poll_for_work`, the hybrid poll-then-sleep loop -- sits inside
+`#ifndef GGML_USE_OPENMP` and is not compiled into this build [source-confirmed]. The wait policy
+that does govern this barrier is libgomp's, through `OMP_WAIT_POLICY` and `GOMP_SPINCOUNT`, and it
+has both a spin budget and a sleep fallback.
+
+### The same histogram on a plain transformer, and the runtime term it exposes
+
+`gemma4-12b` F16 unpinned at pp2048, the published 1.046x `pin76` arm, 153932 samples and none
+lost, 95.44% in `llama-bench`, the arm reading 19.85 t/s against a published 19.94 mean [HW
+readout 2026-09-02, RK1; raw in `ro-session/trackd22-a55-symbols-12b.md`].
+
+| share | symbol |
+|---:|---|
+| 34.44% | `ggml_compute_forward_glu` |
+| 14.38% | `ggml_compute_forward_rms_norm_mul_fused` |
+| 12.32% | `ggml_compute_forward_flash_attn_ext_tiled` |
+| 6.43% | `ggml_cpu_fp32_to_fp16` |
+| 5.10% | `ggml_compute_forward_mul` |
+| 1.46% | `ggml_compute_forward_rope_flt<float>` |
+| **16.02%** | **`libgomp.so.1.0.0`, six unresolved addresses in two tight runs** |
+
+This is the out-of-sample model the 9B histogram could not stand in for: every large op here has an
+NPU handler, so what is left on the CPU is glue, and the glue is 74% of the little cluster. The
+driver's own host symbols total **0.91%** on a model that streams every weight and pays the
+per-call pack on every call, because the workers are pinned to the big cores [source-confirmed,
+`rocket_affinity.c`].
+
+**A cap of 0.7% was derived here and it does not hold.** The derivation was `16.02% of the little
+cluster's 4.6% of wall`, taking pinning's 1.046x as the whole A55 contribution. Both halves leak.
+The 16.02% is a share of A55 `inst_retired` read as a share of A55 TIME, and a spin loop is
+exactly where those diverge. And the 4.6% caps only the cluster pinning REMOVES, while
+`OMP_WAIT_POLICY` changes barrier behavior on all eight cores -- so under the recommended pinned
+configuration the capped half is zero and the whole term sits outside the cap. **A cap read on one
+cluster does not cap a term that lives on all of them.**
+
+#### The A76 histogram, which is what that cap needed
+
+`gemma4-12b` F16 PINNED (`taskset 0xf0`, `-t 4`), otherwise the same arm,
+`perf record -a -e armv8_cortex_a76/inst_retired/ -F 499`: **368879 samples, 0 lost**, the arm at
+21.19 t/s against the published pinned 21.11, 97.21% inside `llama-bench`
+[HW readout 2026-09-02, RK1; raw in `ro-session/trackd24-a76-symbols-12b.md`].
+
+| share of A76 `inst_retired` | object |
+|---:|---|
+| 32.08% | `libggml-cpu.so` |
+| **27.92%** | **`libggml-rocket.so`** |
+| 17.13% | `[kernel.kallsyms]` |
+| 14.83% | `libm.so.6` |
+| 3.05% | `libc.so.6` |
+| 2.53% | `libggml-base.so` |
+| **2.19%** | **`libgomp.so.1.0.0`** |
+
+**libgomp is 2.19% here, and it is the same four addresses.** `0x22440`, `0x2244c`, `0x2276c` and
+`0x22778` carry all of it -- the region the A55 capture resolved to libgomp by its `--sort dso`
+view after an earlier session mis-attributed it to `libggml-base` graph constructors. A second
+cluster resolving the same region to the same object confirms that correction independently.
+
+**And the term does not shrink under pinning.** Against the whole instruction stream it is flat:
+16.02% of A55 instructions at an unpinned `a55_inst_share` of 0.141 is **2.26%**, and 2.19% of A76
+instructions at a pinned share of 0.007 is **2.17%**. So the cluster-asymmetry story -- symmetric
+pinned A76s should spin less than a mixed cluster pair -- is not what this measures. **What should
+be quoted is the instruction share, not a wall cap**: converting it needs a cycles-based capture,
+and not all of libgomp is spin, since `GOMP_parallel` and `GOMP_single_start` are real work
+distribution that `OMP_WAIT_POLICY` does not remove. The term is small on both clusters, and
+`OMP_WAIT_POLICY=passive` is still not worth a wall campaign -- for a reason the earlier cap did
+not establish.
+
+**The driver's own host symbols are 27.92% here against 0.91% on the A55s**, which measures
+directly the inference the A55 capture could only make: the pack runs on the big cores because the
+workers are pinned there. And the attention path dominates the big cores -- `expf` 14.07%,
+`ggml_compute_forward_flash_attn_ext_tiled` 12.00%, `fa_mask_scores` 6.38%, `host_softmax_rows`
+4.02%, `ggml_backend_rocket_flash_attn` 2.96% and `expf@plt` 0.44%, **39.9% between them**, with a
+scalar libm `expf` the single largest symbol in the profile. That is an INSTRUCTION share and so a
+lever candidate rather than a cap; pricing it needs the host term's share of wall, which this arm
+did not measure. For scale, the weight pack and output unpack that residency and the micro-batch
+knobs remove total 9.6% in the same profile.
+
+### The pinning interaction is not a residency effect, and within one model it scales with the knob
+
+The two measured interaction cells were both residency knobs, and the mechanism offered for them --
+residency has already removed the A76 host pack work that pinning was accelerating -- predicts a
+null on a knob that places nothing. **It does not happen.** `-b 2048 -ub 2048` alone on
+`qwen35-9b` Q4_K_M, which places nothing at all, reads an interaction of **0.9775** (per-pass
+0.9910 / 0.9903 / 0.9813 / 0.9719 / 0.9538 / 0.9767, sd 0.0138, se 0.0056, **4.0 standard errors
+below 1.00** and below it in **6 of 6** passes) [HW sweep 2026-09-02, RK1, 600 MHz, six rotated
+passes, 24 of 24 `<!--DATA-->` rows, 0 failed arms, `pfn_zero_frac`=0.0000 and `pmu_enabled`=100 on
+all 24, and no arm reports a resident weight; raw in `ro-session/trackd20-pin-ub-2x2-6pass.md`].
+
+| arm | mean t/s | range | paired ratio | per-pass ratios |
+|---|---:|---|---:|---|
+| `stock_unpin` | 19.09 | 18.94-19.30 | -- | -- |
+| `stock_pin` | 20.64 | 20.38-20.94 | 1.082x | 1.075 1.075 1.076 1.085 1.106 1.074 |
+| `ub_unpin` | 26.99 | 26.78-27.27 | **1.414x** | 1.405 1.388 1.415 1.417 1.423 1.437 |
+| `ub_pin` | 28.53 | 28.42-28.62 | 1.495x | 1.497 1.477 1.494 1.494 1.501 1.507 |
+
+**So every knob measured so far interacts negatively, residency or not.** With three cells a
+structure appears that two could not show:
+
+| cell | knob | interaction | pin-gain loss | loss / knob |
+|---|---:|---:|---:|---:|
+| `gemma4-12b` F16 residency | 6.1 pp | 0.9854 | 1.55 pp | **0.239** |
+| `qwen35-9b` `-b 2048 -ub 2048` | 41.4 pp | 0.9775 | 2.41 pp | **0.0583** |
+| `qwen35-9b` quant residency | 66.8 pp | 0.9646 | 3.89 pp | **0.0583** |
+
+**On one model the pin-gain loss is 5.83% of the knob's size for both knobs, agreeing to four
+decimals**, across a micro-batch knob and a residency knob 1.6x apart in size. `gemma4-12b` F16 is
+4.1x that. So the loss looks proportional to the knob **within** a model, with a per-model
+constant, rather than constant in either absolute or relative terms. **Two points do not establish
+a proportionality**, and the three cells share something the form does not name: every one of these
+knobs removes host work. The subsection below tests a knob that does not, and the form does not
+survive it.
+
+A third knob on `qwen35-9b` cannot be the test, and the arithmetic says so without a pass. Every
+knob left on that model acts on the matmul datapath while its prefill is dequant-bound: `MM_ASYM`
+measures **1.3%** there [perf/asymmetric-tile.md], and less at the stock micro-batch, so the form
+predicts a 0.08 pp deficit against a 1.4% per-pass spread. **The two knobs that ARE large on that
+model are large for one reason, both removing the per-micro-batch dequant**, so a large knob of a
+different kind does not exist there.
+
+**What this does to the published column.** Every ratio in this file is an unpinned ratio and is
+correct as labelled. A reader who also takes `taskset 0xf0` should expect **1.38x, not 1.41x** from
+`-b 2048 -ub 2048` on this model, and 1.61x rather than 1.67x from the residency recipe.
+
+#### A device-tiling knob does not interact, which separates the knob's SIZE from the host work it removes
+
+The form above is that the pin-gain loss is a fixed fraction of the knob's size within a model.
+Every cell it was fitted on carries a knob that removes HOST work: two residency knobs and a
+micro-batch knob. `ROCKET_MM_ASYM` does not -- it halves Nt so the CBUF fill does more MAC per
+pass, at unchanged K-accumulation and output volume -- and on `gemma4-12b` F16 the interaction is
+**1.0047** (se 0.0108, per-pass 0.9642 / 0.9888 / 1.0136 / 1.0191 / 1.0409 / 1.0018, below 1.00 in
+2 of 6) [HW sweep 2026-09-02, RK1, 600 MHz, two three-pass campaigns pooled, 24 of 24
+`<!--DATA-->` rows, 0 failed arms, `pfn_zero_frac`=0.0000 and `pmu_enabled`=100 on all 24, no arm
+placing a resident weight; raw in `ro-session/trackd23-asym-pin-12b-3pass.md` and
+`ro-session/trackd23b-asym-pin-12b-repeat.md`].
+
+| arm | mean t/s | range | paired ratio | sd | per-pass ratios |
+|---|---:|---|---:|---:|---|
+| `asym0_unpin` | 18.39 | 18.02-18.90 | -- | -- | -- |
+| `asym0_pin` | 19.36 | 19.12-19.55 | 1.0533x | 0.0255 | 1.0795 1.0782 1.0418 1.0481 1.0116 1.0604 |
+| `stock_unpin` | 19.96 | 19.81-20.06 | **1.0858x** | 0.0179 | 1.1066 1.0993 1.0870 1.0713 1.0587 1.0920 |
+| `stock_pin` | 21.11 | 20.86-21.31 | 1.1485x | 0.0192 | 1.1518 1.1720 1.1478 1.1442 1.1148 1.1600 |
+
+The knob is **8.58 pp** here, larger than the 5.7% recorded from three reps in 2026-07, and it is
+the shipping default, so `asym0_*` is the arm that opts out. At that size the form predicts
+**0.9805**. The measurement sits **2.24 standard errors above it** and 0.44 below 1.00, which
+**disfavours the form and is consistent with the registered rival** -- the recorded mechanism,
+that pinning accelerates host work and every knob measured so far removes some of it, predicts a
+null for a knob that removes little.
+
+**So the knob's SIZE and the host work it removes were confounded in every earlier cell**, and
+this is the first one where they part. On this evidence the loss tracks the host work rather than
+the size, and the 0.239 and 0.0583 constants are properties of what those knobs removed rather
+than of the models. **The separation is 2.2 se and does not close the question**: at this
+contrast's 2.64% per-pass spread, three standard errors on the form-versus-null gap needs **16.6
+passes**, and six were bought. What is settled is narrower and still useful -- **the interaction
+is not resolved as negative here**, where all three earlier cells were, so a reader who pins
+should not discount a device-tiling knob the way they discount a host-work one.
+
+**Budget an interaction's passes from an interaction.** This cell was budgeted at three passes
+from the unit's 0.6-0.9% paired-ratio sd, which understated the requirement threefold. An
+interaction is a ratio of two ratios and carries all four arms' variance; its own per-pass sd is
+**2.64%**, close to what four independent arms of these spreads would give, so the within-pass
+pairing that tightens a single ratio buys the interaction almost nothing. The one prior
+interaction sd, 1.38% on `qwen35-9b`, is itself 1.9x smaller than this one.
+
+**The knob-off arms are the noisy ones**, 4.8% and 2.2% against 1.3% and 2.1% for the shipping
+default, in both pinned and unpinned pairs. No mechanism is offered [hypothesis], and it is why
+`pin_base` is the widest ingredient at 2.55%.
+
+**A bigger knob on this model was proposed as the cheap test, and the proposal named the wrong
+GGUF.** The 1.257x figure for `-b 2048 -ub 2048` is the `gemma4-12b` **Q4_K_M** row of the flag
+table above -- 12.87 t/s stock against this F16 unit's 19.96 -- and the whole `-ub` table is the
+quant class. The mechanism recorded for that knob is amortising the per-micro-batch dequant, which
+an F16 GGUF does not do. **A published ratio is keyed by the GGUF, not by the model name**, and
+`gemma4-12b` names two units here. The `-ub` knob's size on the F16 unit is unmeasured.
+
+The proportionality question is in any case superseded by the subsection below, which derives the
+interaction instead of fitting it.
+
+#### The interaction is forced by an additive-time model, and the per-model constants were a curve fit
+
+The form above -- a pin-gain loss proportional to the knob's size, with one constant per model --
+was fitted to cells that a two-term cost model predicts outright. Write a prefill's time as a HOST
+term the CPU owns plus a REST that CPU affinity cannot touch. Let pinning cut the host term by
+some factor, and let the knob remove a fraction of it. Then with
+
+- `a` = 1 - 1/K, K the knob's unpinned paired ratio,
+- `b` = 1 - 1/P, P the base pin gain,
+- `phi` the fraction of HOST core-seconds the knob removes,
+
+the interaction is
+
+```
+    I = (1 - a)(1 - b) / (1 - a - b + b*phi)
+```
+
+with no free parameter. The derivation allows the knob to cut the rest as well as the host term --
+only `phi`, the HOST fraction, survives into the result -- so **the knob's size and the kind of
+work it removes are separated in the algebra**, which is what three campaigns were being bought to
+do. `a` and `b` come from the `t/s` rows; `phi` comes from `busy_tot` in the two PINNED arms of
+the same 2x2, where all host work is on the A76s. Scored per pass, paired within a pass:
+
+| cell | K | phi | I predicted | I measured | residual | non-timed wall, base vs knob |
+|---|---:|---:|---:|---:|---:|---|
+| `qwen35-9b` x `-b 2048 -ub 2048` | 1.414 | 0.496 | 0.9772 | 0.9775 | **+0.1 se** | 2.5 s vs 3.6 s |
+| `gemma4-12b` F16 x `MM_ASYM`, 6 passes | 1.086 | 0.025 | 1.0022 | 1.0206 | **+1.5 se** | 5.4 s vs 5.5 s |
+| `gemma4-12b` F16 x `MM_ASYM`, first 3 | 1.098 | 0.029 | 1.0046 | 0.9889 | **-1.0 se** | 5.3 s vs 5.5 s |
+| `qwen35-9b` x quant residency | 1.667 | 0.6645 | 0.9577 | 0.9646 | **+2.0 se** | 2.4 s vs 37.3 s |
+| `gemma4-12b` F16 x f16 residency | 1.061 | 0.227 | 0.9885 | 0.9854 | **-0.9 se** | 5.4 s vs 158.8 s |
+| `gemma4-12b` Q4_K_M x `-b 2048 -ub 2048` | 1.262 | 0.465 | 0.9849 | 0.9946 | **+2.1 se** | 4.9 s vs 5.6 s |
+| `qwen35-9b` x unstacked quant residency, `-r 2` | 1.756 | 0.6727 | 0.9617 | 0.9901 | **+3.0 se** | 2.6 s vs 39 s |
+| `gemma4-12b` F16 x `ROCKET_FLASH_ATTN=0` (the knob ADDS host work) | 0.957 | -0.513 | 1.0306 | 0.9690 | **-6.8 se** | 5.3 s vs 5.4 s |
+
+Both residency rows carry the uncontaminated `phi` from the rep-count regressions below (0.6645
+and 0.227); scored with the raw ratio the 9B row read -1.1 se and the 12B row -3.5 se. **The seven residuals sum to a chi-square of 22 on seven degrees of freedom** (p about 0.002), with
+the four largest host knobs all positive (+2.0, +2.1, +3.0 and +0.1): the model predicts a larger
+pin-gain loss than is measured where the knob removes the most host work, by 1-3 pp. **One mechanism
+for that is already refuted**: if the removed work's own pinning speedup were what mattered, `phi`
+should be weighted by `(1-1/g_r)/(1-1/g)` with `g_r` = the removed core-seconds unpinned over pinned;
+on the one clean cell where that differs from `g` (the 9B micro-batch cell, `g_r` 1.123 against `g`
+1.198) the variant moves the residual from +0.1 to **-3.3 se**, and on the 12B Q4_K_M cell `g_r` = `g`
+and nothing moves [`interaction-refit.py`]. What is left is a term the model does not carry, and
+seven cells over three units cannot say which.
+
+**THE EIGHTH CELL IS THE FIRST WHOSE KNOB ADDS HOST WORK, AND THE MODEL GETS ITS SIGN WRONG.**
+`ROCKET_FLASH_ATTN=0` on `gemma4-12b` F16 moves the above-gate attention onto the CPU backend
+(`flash_attn_ext_tiled` at `-t` threads): `a` = -0.045, `phi` = **-0.513 +- 0.002** -- CPU attention
+adds 51% of host core-seconds -- and the model, with both signs flipped, predicts I = 1.031: the
+CPU-attention arm should gain MORE from pinning, since it has more host work for pinning to speed
+up. It gains less: **I = 0.9690 +- 0.0090, 6.8 se below the model and 3.4 se below the null**,
+below 1 in 3 of 3 passes [HW sweep 2026-09-03, RK1, 600 MHz, `performance`, three rotated passes,
+12 of 12 `<!--DATA-->` rows, 0 failed arms, `pfn_zero_frac` 0.0000 and `pmu_enabled` 100 on all,
+no arm placing a resident weight; raw in `ro-session/trackd32-fa-pin-2x2-12b.md`, driver
+`perf/data/trackd32-fa-pin-2x2-12b.sh`; registered 2026-09-03, sign REFUTED]. **The model
+carries pinning as a speedup `g` of host work and has no core-count term.** Every earlier cell's host
+work is the backend's five-worker pool plus the dispatch thread, which fits in four A76s, so
+`taskset 0xf0 -t 4` only ever moved it onto faster cores. CPU attention is an eight-thread
+throughput term, and for it the same pinning is four cores instead of eight: a slowdown the
+model cannot express with a `g` above 1. **So the model is a model of knobs that remove work from
+the worker pool**, seven cells wide, and a knob that adds parallel CPU-backend work is outside it.
+
+**The same cell prices the FA offload at pp2048 today: 1.045 +- 0.004 unpinned and 1.079 +- 0.009
+pinned** (FA-on over FA-off, paired within a pass), against the 1.02 the gate's own comment records
+from 2026-06-28. The `MIN_KV` = 1024 gate stands. And the swap's own exchange figure, `a/phi` =
+0.088, says what a swap's ratio means: removing half the host CPU by computing attention on the part
+buys 4.5% of wall, because the work it removes was eight-way parallel and mostly off the critical
+path -- which is the number the previous plan proposed to multiply the attention path's share
+by, and why it cannot be.
+
+**The `phi` the model wants IS the core-seconds fraction, and the "host wall" reading of the
+derivation is what the data refute.** The derivation above writes the host term as a wall `H` that
+pinning divides by `g` and the knob removes a fraction of; read literally, that fraction is of host
+WALL, and the number fed in is a fraction of host CORE-SECONDS, which coincide only where the removed
+work converts to wall at the host average. Closing the wall form needs `H`, and `b = (H/t)(1 - 1/g)`
+gives it from the pin gain and `g` = `busy_tot` unpinned over pinned of the base arms, so
+`phi_wall = a(1 - 1/g)/b`. Re-fitted that way over the same six cells, with no board time
+[`perf/data/interaction-refit.py` over the stored `<!--RO-->` and `<!--DATA-->` rows of trackd16, 20,
+23, 23b, 28 and trackd-res12b]:
+
+| cell | `g` | `phi` (core-s) | `phi_wall` | I, core-s `phi` | I, `phi_wall` | measured |
+|---|---:|---:|---:|---:|---:|---:|
+| `qwen35-9b` x `-b 2048 -ub 2048` | 1.198 | 0.496 | 0.641 | 0.9771 (+0.1 se) | 0.9613 (**+2.9 se**) | 0.9775 |
+| `qwen35-9b` x quant residency | 1.217 | 0.6645 | 0.784 | 0.9577 (+2.0 se) | 0.9396 (**+7.2 se**) | 0.9646 |
+| `gemma4-12b` F16 x `MM_ASYM`, 3 | 1.285 | 0.029 | 0.317 | 1.0044 (-1.1 se) | 0.9837 (+0.4 se) | 0.9889 |
+| `gemma4-12b` F16 x `MM_ASYM`, 3b | 1.288 | 0.025 | 0.400 | 1.0019 (+1.7 se) | 0.9860 (**+3.1 se**) | 1.0206 |
+| `gemma4-12b` F16 x f16 residency | 1.300 | 0.227 | 0.220 | 0.9885 (-0.9 se) | 0.9890 (-1.1 se) | 0.9854 |
+| `gemma4-12b` Q4_K_M x `-b 2048 -ub 2048` | 1.145 | 0.465 | 0.583 | 0.9849 (+2.1 se) | 0.9782 (**+3.6 se**) | 0.9946 |
+
+The wall form is worse on five of six cells and by 3-7 se on four, all in one direction: every
+`phi_wall` above its core-seconds `phi` over-predicts the pin-gain loss. The null `I` = 1, which is
+what the substitution `phi_wall` = `a` collapses to, is rejected at -4.0, -10.2 and -4.3 se on the
+three cells with the largest knobs. So the quantity the interaction tracks is the host
+CORE-SECONDS a knob removes, which is what a throughput reading of the host term predicts --
+pinning buys a fixed fraction of every host core-second's wall cost, and removing a fraction of
+those core-seconds removes that fraction of the pin gain -- and not the additive host-wall picture
+the derivation was told in. The number fed in was right and the story around it was wrong; the
+correction the previous plan proposed ("a `phi` in the right unit") is refuted, and its
+prediction that the re-fit would leave four of five original cells within 0.5 se and pull the
++2.2 se cell to 0.8-1.8 se missed on both counts [registered 2026-09-03].
+
+**The fit is not one that could not fail.** On the two `qwen35-9b` cells the `b*phi` term carries
+the whole effect: drop it and the same algebra predicts **1.072** and **1.048** where the
+measurements are 0.965 and 0.978. It swings 10.7 pp on one cell and lands at 0.1 se.
+
+**What it settles.** The deficit is carried by `b*phi` -- the base pin gain times the host work the
+knob removes -- and the knob's size enters only through the `(1-a)` terms. `MM_ASYM`'s measured
+`phi` of 0.025-0.029 forces `I` = 1.002-1.005 against 1.0047 measured, so **the loss tracks the
+host work and not the size**, and the 0.0583 and 0.239 constants are what `b*phi/(K-1)` happens to
+equal on those knobs rather than properties of the models. The device-knob cell resolves the kind
+question at +0.2 se, not at the 16.6 passes a form-versus-null contrast was priced at.
+
+**The one miss was the instrument, and measuring it closes the model.** `bench-llm.sh` takes
+`wall_s` and both `busy_tot` snapshots around the whole `llama-bench` invocation, and a residency
+arm pays its one-time ingest inside that bracket: the shell warm-up that runs before the readout
+opens is a SEPARATE PROCESS, so the timed process places its weights again. The driver comment
+claiming that warm-up "pays this arm's one-time residency ingest OUTSIDE the measured run" is true
+of the `t/s` reps and false of every `<!--RO-->` column. The residual tracks the last column
+monotonically: the two arms adding no non-timed wall sit at +0.1 and +1.5 se, the one adding 35 s
+at -1.1, the one adding 153 s at -3.5. Inverting the model on the two contaminated cells gives an
+implied setup cost of **0.49 and 0.74 cores** over their non-timed windows, both physically
+sensible; on the two clean cells the same inversion divides noise by a four-second window and
+returns nonsense, which is the control.
+
+##### Separating the ingest from the per-rep host work, by regressing on the rep count
+
+`busy_tot = intercept + (r+1)*slope`, because `llama-bench` runs one internal warm-up plus `r`
+reps. The **slope** is the per-rep host work and gives an uncontaminated `phi`; the **intercept**
+is the model load plus the ingest. `gemma4-12b` F16, PINNED throughout (`PIN_MASK=0xf0 -t 4`,
+since `phi` is defined at fixed pinning), streamed against `ROCKET_F16_RESIDENT=auto`, at `-r 1`,
+`-r 2` and `-r 4`, three rotated passes [HW sweep 2026-09-02, RK1, 600 MHz, governor
+`performance`; 18 of 18 `<!--DATA-->` rows, 0 failed arms, `pfn_zero_frac`=0.0000 and
+`pmu_enabled`=100 on all eighteen; raw in `ro-session/trackd25-busy-intercept-12b.md`]:
+
+| configuration | `busy_tot` fit (jiffies) | `wall_s` fit | one rep at the mean `t/s` |
+|---|---|---|---|
+| streamed | 15967 + **15540**`*r` | 101.2 + 97.1`*r` | 96.8 s |
+| `ROCKET_F16_RESIDENT=auto` | 19638 + **12010**`*r` | 199.3 + 100.4`*r` | 92.8 s |
+
+Both `busy_tot` lines are linear to under **0.4%** residual, and the streamed arms reproduce
+across passes to 0.03-0.4% at every rep count. The streamed `wall_s` slope of 97.1 s reproduces
+2048/21.1 = 96.8 s exactly and its intercept implies one warm-up plus a 5 s model load, which is
+the 5.4 s of non-timed wall the earlier campaigns show for a streamed arm. **The resident arm's
+wall is NOT linear the same way** -- its non-timed portion moves 65-143 s across the three rep
+counts -- while its `busy_tot` is. CPU work scales with reps; wall absorbs a variable wait. That
+is the reason to regress the counter and not the clock.
+
+- **`phi` = 1 - 12010/15540 = 0.227 +- 0.018** (per-pass 0.196 / 0.258 / 0.227), against the
+  **0.087** the raw `busy_tot` ratio gives and the **0.280 +- 0.060** the interaction requires --
+  **0.85 se** from the required value and 7.8 se from the contaminated one.
+- **The ingest is 72 core-seconds**, from the intercept difference at one warm-up. Over the 98 s
+  of extra fixed wall the resident arms carry that is **0.73 cores**, against the **0.74 cores**
+  the model's inversion implied from a different campaign at a different rep count. Two
+  independent routes to the same rate.
+- **The cell's residual moves from -3.5 se to -0.9 se**, so the forced model fits all five 2x2
+  cells within 1.5 se.
+- **The control passes**: 9 of 9 resident arms place the identical 286 weights / 18078 MB and 0 of
+  9 streamed arms report any, so the regression fits one configuration rather than three.
+- **Residency removes 22.7% of the per-prefill host CPU** on this unit and is worth 1.061x of
+  `t/s`. Those are the two halves of what the knob buys, measured separately for the first time.
+
+##### The model returns the HOST TERM'S SHARE OF PREFILL WALL, which nothing here had measured
+
+`a = (H/t)*phi` by construction, so **`H/t = a/phi`** -- a knob's paired ratio divided by the
+fraction of host CPU it removes is the host term's share of the wall. That is the denominator every
+host-side cap in this workspace has been missing, and it costs two quantities both already
+collected.
+
+| unit | knob | `a` | `phi` | **`a/phi`** | `q` = `C/(t*a/phi)` |
+|---|---|---:|---:|---:|---:|
+| `qwen35-9b` Q4_K_M | quant residency, `phi` off the rep-count regression | 0.4003 | 0.6645 | **0.602** | 4.46 |
+| `qwen35-9b` Q4_K_M | `-b 2048 -ub 2048` | 0.2928 | 0.4958 | **0.591** | 4.55 |
+| `qwen35-9b` Q4_K_M | unstacked quant residency (`ROCKET_QUANT_RESIDENT=auto` at the default `-ub`), `phi` off the rep-count regression, `a` from the same campaign | 0.4306 | 0.6727 | **0.640** | 4.17 |
+| `gemma4-12b` Q4_K_M | `-b 2048 -ub 2048` | 0.2075 | 0.4650 | **0.446** | 5.83 |
+| `gemma4-12b` F16 | f16 residency, `phi` off the rep-count regression | 0.0578 | 0.227 | **0.255** | 7.73 |
+
+**`a/phi` IS NOT A SHARE OF THE WALL, AND THE PINNED ARM PROVES IT.** `phi` is a fraction of host
+CORE-SECONDS and `a` is a fraction of WALL, so `a/phi` = `C/(q*t)` where `C` is the host CPU per
+prefill and `q` is core-seconds removed per second of wall gained. Reading it as "the host term's
+share of prefill wall" assumes `q` is the host work's parallelism. It is not, and one cell settles
+it: on `gemma4-12b` F16 **pinned to four cores**, residency removes **35.3 core-seconds** of host
+CPU per prefill and **4.22 +- 0.26 s** of wall, so **`q` = 8.35 +- 0.52 -- 8.4 se above the four
+cores the arm is allowed**. No four-core arm retires more than four core-seconds of critical-path
+work per second, so **at least 52% of the removed host CPU was overlapped with the device**, which
+is what the worker pool is designed to do ("3 cores + 2 to fill pack/read idle bubbles"
+[source-confirmed, `ggml-rocket.cpp`]). The unpinned pair does not fire the test (`q` = 7.73
+against eight cores), which is why three sessions read the quantity as a share.
+
+**What survives, and it is the useful half.** `q` is a MARGINAL EXCHANGE RATE: how many core-seconds
+of host work must be deleted to buy one second of wall, and it is legitimately knob-dependent
+because different work overlaps the device by different amounts. **The cap arithmetic is unchanged**
+-- a term's cap is (its share of host core-seconds) x `a/phi` -- but it now carries a stated
+condition: **the `q` used must be the term's own.** Where the knob IS the term's knob it is, and
+the pack cap lands at 5.12% against a measured 5.79%. Where it is imported, say so.
+
+**And the `MM_ASYM` classifier survives with a better reason.** Its `a/phi` of 3.09 was called
+"impossible for a share"; under the exchange-rate reading nothing is impossible about it, and what
+it says is that the knob bought wall while removing almost no host CPU -- which is precisely a
+device-side knob. Same verdict, sound derivation.
+
+**`a/phi` IS A PROPERTY OF NEITHER THE MODEL NOR THE QUANT CLASS.** Three units give 0.255, 0.446
+and 0.591-0.602, and the two `gemma4-12b` rows are the same model with two GGUFs. Under the
+exchange-rate reading that is expected rather than surprising: `q` runs 4.46 to 7.73 across the
+four cells, so the same host core-second buys 1.7x more wall on the 9B than on the 12B F16 unit.
+**The prediction that the device term `R` transfers between two GGUFs of one model is a registered
+miss** [registered 2026-09-03] and `R` = `t*(1 - a/phi)` is now known not to be a device term
+at all, so its 76.4-versus-88.5 s gap is a restatement of the `q` gap rather than a second finding.
+
+**The two 9B rows agree to 1.9%**, down from the 13% the contaminated `phi` gave. They are
+**nested** -- the residency arm is the micro-batch arm with residency on top -- so this is a
+two-point collinearity test through the origin rather than two independent knobs, and under the
+exchange-rate reading what it says is that both knobs remove work with the same `q`.
+
+**The 9B's residency `phi` is measured uncontaminated at 0.6645 +- 0.0015** by the same rep-count
+regression the 12B needed, against the **0.598** the raw ratio gave, and that moves its host share
+from 0.669 to **0.602** -- **1.9% from the micro-batch row**, where the contaminated pair sat 13%
+apart [three passes, 18 of 18 rows, placement 9 of 9 at 200 weights / 13184 MB;
+`ro-session/trackd29-busy-intercept-9b.md`]. `g`, pinning's speedup of host work, agreed to 1% on
+the contaminated pair and is unchanged by this.
+
+**THE TWO 9B KNOBS ARE NESTED, SO THE CHECK IS WEAKER THAN TWO INDEPENDENT ONES.** The residency
+arm IS `ROCKET_QUANT_RESIDENT=auto` **on top of** `-b 2048 -ub 2048` [`ro-session/trackd16-pin9b-2x2-6pass.md`,
+header: "the published 1.661x arm"], so both rows carry the micro-batch component and a device-side
+term in it would inflate them together where their agreement could not see it. What the pair
+constitutes is a **two-point collinearity test through the origin in (`phi`, `a`)**, with no
+residual degree of freedom -- and the "incremental knob" reading, residency given `-ub`, is
+algebraically the same equation rather than a third point:
+`a_inc/phi_inc = (a_q - a_u)/(phi_q - phi_u)` equals `a_u/phi_u` exactly when `a_q/phi_q` does. A
+third, non-nested knob on this unit is what would give the first genuine residual, and it now exists.
+
+**THE NON-NESTED THIRD POINT SITS ABOVE THE NESTED LINE AT 4 se, AND ITS `phi` WAS DERIVABLE FROM THE
+OTHER TWO CELLS TO 0.3%.** Unstacked quant residency -- `ROCKET_QUANT_RESIDENT=auto` at the DEFAULT
+`-ub`, the recipe this file recommends -- measured with its own unpinned `a` rather than an imported
+one [HW sweep 2026-09-03, RK1, 600 MHz, `performance`; six pinned arms at `-r 1/2/4` for the
+rep-count regression plus two unpinned arms at `-r 2`, three rotated passes, 24 of 24 `<!--DATA-->`
+rows, 0 failed arms, `pfn_zero_frac` 0.0000 and `pmu_enabled` 100 on all, 12 of 12 resident arms
+at 200 weights / 13184 MB and 0 of 12 stock arms placing anything; raw in
+`ro-session/trackd31-qres512-9b.md`, driver `perf/data/trackd31-qres512-9b.sh`]:
+
+- **`phi_u` = 0.6727 +- 0.0015** (per pass 0.6749 / 0.6697 / 0.6734; A76-only 0.6782). Stock at
+  `-ub 512` runs four micro-batches per 2048-token prefill and re-dequantizes and re-packs every
+  weight in each, so write `D` for those four passes and `R` for whatever else `-ub 2048` changes in
+  host work: the `-ub` cell removes 0.75 D + R = 0.4958 C_s and the stacked cell D + R = 0.6645 C_s,
+  so **D = 0.675 C_s and R = -0.010 C_s**, and unstacked residency removes D alone. The prediction
+  was 0.675 [registered 2026-09-03]; the rival "the same dequant and pack as the stacked knob"
+  (0.6645) is 5.5 se away. **Four dequant+pack passes are two thirds of this unit's stock host CPU,
+  and `-ub 2048` adds about 1% of host work on top of what it removes.**
+- **Ingest 57.3 +- 1.5 core-seconds** = **4.35 ms per resident MB**, against 4.53 on the stacked
+  route (4% apart) and 3.98 on the f16 route. Per-MB transfers a second time.
+- **`K_u` = 1.7563 +- 0.0201** unpinned (the published unstacked row read 1.752), so `a` = 0.4306,
+  **`a/phi` = 0.640** and **`q` = 4.17** against the nested pair's 4.46-4.55. On the line
+  a = 0.602 phi the third point would sit at a = 0.405; it sits at 0.4306, **+0.026 in `a`, 4 se**
+  -- so the two published 9B rows' agreement was real and their shared `-ub` component carries a wall
+  COST of about 2.6% of the stock wall on the resident route, which is the 1.756/1.661 margin by
+  which unstacked beats stacked here, now with a mechanism: it is not that stacking removes less host
+  work (it removes slightly more), it is that the larger micro-batch costs wall elsewhere.
+- **The pinned/unpinned `-r 2` pairs are a seventh interaction cell**: P = 1.0937, I = **0.9901 +-
+  0.0093**, against the model's 0.9617 at this `phi` -- **+3.0 se**, the largest residual of the seven
+  and positive like the other large host knobs (the table above).
+
+##### `phi` is a core-seconds fraction over heterogeneous cores, so read it on the A76s
+
+The derivation pairs an UNPINNED `a` with a PINNED `phi`, which is licensed only if `phi` is the
+same in both pinning states. Over all eight cores it is not [6 rotated passes each,
+`ro-session/trackd20-pin-ub-2x2-6pass.md` and `trackd16-pin9b-2x2-6pass.md`]:
+
+| cell | `phi`, all 8 cores | `phi`, A76s only |
+|---|---|---|
+| `qwen35-9b` x `-b 2048 -ub 2048` (places nothing, so uncontaminated) | 0.4647 unpinned, 0.4958 pinned, **+6.7%** | 0.5063 unpinned, 0.4930 pinned, **-2.6%** |
+| `qwen35-9b` x quant residency (carries the ingest) | 0.5558 unpinned, 0.5983 pinned, **+7.6%** | 0.6188 unpinned, 0.5994 pinned, **-3.1%** |
+
+The mechanism is in a column the readout already prints, and a third cell says it is the column to
+read rather than a fixed cluster rule:
+
+| cell | `busy_little_share`, base -> knob | all-cores bias, pinned against unpinned |
+|---|---|---:|
+| `gemma4-12b` Q4_K_M x `-b 2048 -ub 2048` | 0.140 -> 0.152, **1.2 pp** | **+0.0%** |
+| `qwen35-9b` x `-b 2048 -ub 2048` | 0.202 -> 0.266, **6.4 pp** | **+6.7%** |
+| `qwen35-9b` x quant residency | 0.201 -> 0.316, **11.5 pp** | **+7.6%** |
+
+**The bias tracks how far the knob shifts work between clusters, and where it does not shift, the
+all-cores reading is faithful** -- on the 12B Q4_K_M cell it is the A76-only reading that sits 1.7%
+away instead. So the rule is to read `busy_little_share` in both arms, not to apply a cluster
+rule blind. **The pinned arms are ~99% A76 either way** (pinned all-core and pinned A76-only `phi`
+agree to 0.6%, 0.2% and 0.1% on the three cells), **so the published estimator is already using the
+invariant quantity and every number in the table above stands.** What this names is the trap:
+**computing `phi` from an UNPINNED arm's `busy_tot` can break the derivation by 7%**, in the
+direction that inflates the host share, and the readout says in advance whether it will. Taking
+the worst cell as the floor, **`H/t` is good to about 3%, not to three digits** -- which is what
+makes the 13% gap between the 9B's two knobs a real target and its residual 1.9% a closure.
+
+**AND THE HOST SHARE IS A SHARE OF WHICHEVER WALL `a` WAS MEASURED ON.** Evaluated all-unpinned,
+all-pinned, and as the mixed estimator above, the same two cells read **0.720 / 0.632 / 0.669**
+and **0.630 / 0.558 / 0.591**. The campaign numbers in this file are unpinned, so the unpinned
+share is the one that prices a lever on them and the pinned one prices a lever on a pinned run.
+**The ratio between the two knobs is invariant to the choice** (1.132 / 1.133 / 1.143).
+
+**It only holds for a knob that removes HOST work alone.** `MM_ASYM` gives `a/phi` = **3.09**,
+which is impossible for a share, and that is the tell rather than a defect: `a = a_H + a_R` and a
+device-tiling knob has `a_R` > 0. **A ratio above 1 here says the knob touched the device**, which
+makes this a cheap classifier as well as a measurement.
+
+**What it prices, now that the other half is measured.** A host-side lever on this unit is capped
+at 0.255 times its share of host TIME, and host time is A76 CYCLES rather than retired
+instructions. Recording both events in one capture gives the conversion
+[`ro-session/trackd27-a76-ipc-12b.md`], and it inverts the ranking the instruction histogram gave:
+
+| term | share of non-idle A76 cycles | share of instructions | IPC | cap on prefill wall |
+|---|---:|---:|---:|---:|
+| host weight pack, `mm_pack_weights` + `_seg` | **23.05%** | 4.59% | **0.26** | **5.88%** |
+| attention path, 6 symbols | **22.93%** | 40.68% | 2.35 | **5.85%** |
+| `libc` string and memory routines | 9.70% | 2.93% | 0.40 | 2.47% |
+| `expf` alone | 7.72% | 14.13% | 2.42 | 1.97% |
+| output unpack, 2 symbols | 0.97% | 1.76% | 2.41 | 0.25% |
+| `libgomp`, four addresses | 0.93% | 2.26% | **3.20** | **0.24%** |
+
+**The cap is validated by a lever already in this file.** Residency removes 87% of that weight
+pack and is worth **1.0614x**, which is 5.79% of the streamed wall; the cycles cap over the same
+two symbols is **5.12%**, so the enumerated pair accounts for 88% of a measured gain and the
+remainder is kernel-side per-call BO work. The instruction cap over the same pair is **1.02%**,
+**5.7x below a gain that is on record**, which is arithmetically impossible for a cap. **Find a
+lever that already removes part of a term and check the cap exceeds its measured gain, before
+quoting any share of a profile as a cap.**
+
+**The attention row's cap is now measured directly and the imported rate under-stated it 3.9x.**
+Every FA knob is a swap -- attention is computed on the CPU instead -- so no knob can produce the
+term's own exchange rate. What can be read is the handler's critical-path interval: it runs on the
+single backend dispatch thread while the scheduler waits, and `ROCKET_FA_TIMING=1` brackets it
+(gather of the strided Q/K/V/mask views into dense fp16, the worker fan-out `compute`, the F32
+scatter). On the same pinned streamed arm, one process, `-p 2048 -n 0 -r 2`, over 432 offloaded ops
+at `n_kv` 1024-2048 [HW readout 2026-09-03, RK1; `ro-session/trackd30-fa-timing-12b.md`;
+driver `perf/data/trackd30-fa-timing-12b.sh`; `llama-bench -v` on both arms, because the probe's
+summary is a `GGML_LOG_INFO` line that the bench otherwise swallows]:
+
+| segment | per 2048-token prefill | share of the 97.8 s pinned prefill wall | threading |
+|---|---:|---:|---|
+| gather | 3.46 s | **3.5%** | single dispatch thread |
+| compute (batched QK on the NPU, host mask + softmax on the workers, batched AV) | 16.99 s | **17.4%** | five workers, device interleaved |
+| scatter | 1.98 s | **2.0%** | single dispatch thread |
+| handler total | 22.43 s | **22.9%** | |
+
+The probe arm read 20.93 t/s against the plain arm's 21.24, one process each, inside the
+per-process lottery. **The single-threaded gather and scatter are 5.6% of the pinned wall, and their
+exchange rate is 1 by construction**: a core-second on the dispatch thread while everything waits
+is a second of wall, so threading them over `k` cores is capped at 5.6% x (1 - 1/k), with nothing
+imported.
+
+**THAT LEVER IS BUILT AND SPENT, AND IT PAID 89% OF ITS CAP.** `ROCKET_FA_THREADS=k` splits all
+five walks over the host pool, and at `k`=4 on this unit `G_k` falls 5.80 -> 3.17 -> 1.87 s per
+prefill at 1 / 2 / 4 workers, a wall ratio of **1.0231** and **1.0389** [HW sweep 2026-09-07,
+three arms x three passes, rotated and paired within a pass, 9 of 9 rows;
+`ro-session/trackd33-fathreads-12b.md`]. Two instruments agree on the size: the interval says
+4.07% of a 96.4 s prefill and llama-bench's own throughput says 3.75%, closing to 0.32 percentage
+points, which is what an exchange rate of 1 predicts. **Fitting `G_k` = `A`/`k` + `B` to the first
+two points gives `A` = 5.25 s parallel and `B` = 0.55 s fixed, and predicts the third to 0.7%** --
+so the ceiling is `B` = 0.57% of wall, four workers already take 89% of what any number would, and
+**there is no further lever in these walks**. The compute segment does not move across the arms
+(16.76 s, spread 2.1%), and `G_1` re-measured on the newer `.so` is 5.80 s rather than the 5.44
+above, so quote the ratio rather than the absolute. That is 1.8x what the handler symbol's own 1.92% of cycles (3.0 core-s) would give, so
+2.4 s of the 5.4 sit outside the symbol -- in the kernel's two unnamed entries (6.77% + 5.91%) or
+in `libc`'s 9.70% at IPC 0.40, which is where a strided copy lands, and leaf attribution cannot say
+which. **The compute interval bounds the host softmax's wall at 17.4%** and cannot split it from the
+device's QK/AV time; `expf` at 7.72% of cycles is 12 core-s per prefill inside it, so the vectorised-exp
+question stays open with a cap somewhere between the borrowed 1.97% and the compute interval, and
+the next instrument is a caller split rather than another share. The interval is of the PINNED wall
+and one shape; the below-gate CPU attention (`flash_attn_ext_tiled`, 6.72% of cycles at `-t 4`) is
+outside the bracket.
+
+**The leftover 13% checks from the other end.** Residency reaches 87% of the pack, so the streamed
+remainder is capped at **0.76%** of wall, against the **0.9%** the same remainder reads when it is
+derived from measured walls (42 weights, 2712 of 20790 MB). Two routes to a term a profile bucket
+had priced at over a quarter of the wall.
+
+##### The dequant is half as parallel as the rest of the host half
+
+Two `busy_tot` columns and one measured host share give the core count each part of the host half
+actually uses, on one model across two GGUFs at `-p 2048` unpinned [`ro-session/trackd-res12b-2x2-3pass.md`
+and `trackd28-pinub12bq4/`, stock arms]:
+
+| unit | host CPU per 2048-token prefill | prefill wall |
+|---|---:|---:|
+| `gemma4-12b` F16 | 201.9 core-s | 102.49 s |
+| `gemma4-12b` Q4_K_M | 415.5 core-s | 158.76 s |
+
+The difference between the units is **213.5 core-seconds over 56.3 s of extra wall**, so a
+core-second of the quant route's added host work buys wall at **3.79 core-seconds per second** --
+against **7.73** for the whole of the F16 unit's host CPU measured the same way. **A quant
+prefill's added work converts to wall more than twice as efficiently as the work it is added to**,
+either because it is less overlapped with the device or because it is less parallel, which this
+pair cannot separate. It is consistent with the quant unit's `a76_ipc` reading 2.12 against the
+F16 unit's 1.27: what it adds is arithmetic.
+[HW readout 2026-09-03, RK1; the F16 side is three passes, the Q4_K_M side one.]
+
+**AND TWO UNITS IN THE FLAG TABLE ALREADY PUT `a` BELOW ZERO.** `smolvlm2` reads 0.941x on
+`-b 2048 -ub 2048` and `qwen3-30b-a3b` reads 0.908x, so `a` < 0 and `a/phi` cannot be a share
+there at all. That is the same classifier firing from the other end of the range, and it bounds
+the derivation's generality without a run.
+
+**What this does NOT settle.** `q` on any model outside these two, one shape. The `phi` gap between
+0.09 and 0.465 still has no uncontaminated cell in it, and every other `<!--RO-->` column of a
+residency arm -- `a55_inst_share`, `a76_ipc`, every `_pki` density -- is computed over the same
+bracket and mixes the ingest with steady state in the same way.
+
+### `ROCKET_N_THREADS` is a gain on the MoE route and a loss on the dense f16 one, and the gain is a step at six
+
+#### Six workers buy nothing on the dense f16 route at `-p 2048`, and the limit is why
+
+The `-p 512` ladder reads six as the peak on this route: 293 weights against five's 286, with the
+route declining on the NPU IOVA window and a real `ROCKET_CREATE_BO` ENOSPC beside it
+[ro-session/trackd19-f16-window-ladder.md]. **That does not transfer to the shape every campaign
+number in this file is taken at.** At `-p 2048` the KV cache lowers MemAvailable and the RESERVE
+FLOOR binds instead, and a worker count buys file descriptors, which relieve the window and do
+nothing to a memory floor [HW readout 2026-09-03, RK1, 600 MHz, `gemma4-12b` F16,
+`ROCKET_F16_RESIDENT=auto`, `-p 2048 -n 0 -r 1`, all four arms rc=0; raw in
+`ro-session/trackd26-f16-window-p2048.md`]:
+
+| arm | placed | MB | MemAvailable at the decline | limit named |
+|---|---:|---:|---:|---|
+| `t5_a` | 286 | 18078 | 9401 MB | reserve floor (9535 MB) |
+| `t5_b` | 286 | 18078 | 9395 MB | reserve floor |
+| `t6_a` | **284** | 17853 | 9527 MB | reserve floor |
+| `t6_b` | **284** | 17853 | 9532 MB | reserve floor |
+
+Both configurations reproduce to the byte. **Six is 2 weights WORSE here**, not better: more
+workers cost a little more memory, so the floor catches marginally sooner. So the recommendation
+of six on the dense f16 route rests on the `-p 512` ladder alone. Its wall was never measured on
+this route and cannot be -- the inferred cap is 0.15% of prefill, below this instrument's
+resolution -- so the cap is the result and a campaign is not the follow-up.
+
+**And read the reason string as a race, not a diagnosis, whenever the byte count matches on both
+sides.** The `trackd25` regression's PINNED `-t 4` residency arms, same model and same `-p 2048`,
+named the **IOVA window** at the identical 18078 MB where these default-thread arms name the
+floor. The two limits have converged at that point; which one is announced moves with
+MemAvailable. That is why the readout runs `t5` twice.
+
+
+The knob's only measured price was **0.9873x** of prefill wall on `gemma4-12b` F16 at pp2048, with
+`a55_inst_share` rising 0.1410 to 0.1498. On `gpt-oss-20b` MXFP4 the same step measures
+**1.0274x**, per-pass 1.0289 / 1.0287 / 1.0247, se 0.0014, **20.1 standard errors above 1.00** and
+above it in 3 of 3 passes [HW sweep 2026-09-02, RK1, 600 MHz, `-b 2048 -ub 2048`, three rotated
+passes, 6 of 6 `<!--DATA-->` rows, 0 failed arms, `pfn_zero_frac`=0.0000 and `pmu_enabled`=100 on
+all six; raw in `ro-session/trackd17c-moe-nthreads-cost.md`].
+
+| arm | mean t/s | range | placement | `a55_inst_share` |
+|---|---:|---|---|---:|
+| nt5 | 28.80 | 28.75-28.89 | 63 stacks, 1710 experts, 13793 MB, 0 streamed | 0.1194-0.1206 |
+| nt8 | 29.59 | 29.46-29.72 | 63 stacks, 1713 experts, 13978 MB, 0 streamed | 0.1116-0.1161 |
+
+**The pre-flight admits the identical 63 stacks in all six rows**, so the contrast is the worker
+count and nothing else. And **the mechanism inverts with the sign**: the little cluster's share
+FALLS here, with no overlap between the arms' three-pass ranges, where on the dense route it rose.
+More fds fan the expert GEMMs wider, which moves host work onto the big cores rather than
+oversubscribing them.
+
+**So a number measured on one route is not a prior for another**, and this is the row that shows
+even the sign failing to carry. **One process would have reported the opposite**: a single `-r 1`
+pair read 24.54 against 28.36 t/s, a 0.87x, which three rotated passes turned into 1.027x.
+
+**The shape between five and eight is a step at the first worker above the default**, not a ramp
+and not a step at the count that balances the cores. Four arms, ratios paired within a pass
+against nt5, three rotated passes [HW sweep 2026-09-02, RK1, 600 MHz, `-b 2048 -ub 2048`, 12 of 12
+`<!--DATA-->` rows, 0 failed arms, `pfn_zero_frac`=0.0000 and `pmu_enabled`=100 on all twelve, and
+the pre-flight admits an identical 63 stacks / 24529 MB RAM / 15946 MB IOVA and announces `Bound
+by RAM` in every one; raw in `ro-session/trackd21-moe-nthreads-shape.md`].
+
+| arm | mean t/s | paired ratio | se | per-pass ratios | `a55_inst_share` | `a76_ipc` | migrations |
+|---|---:|---:|---:|---|---|---:|---:|
+| nt5 | 28.94 | -- | -- | -- | 0.1200-0.1218 | 2.395 | 4.64e4 |
+| nt6 | 29.58 | **1.0222x** | 0.0036 | 1.0203 1.0173 1.0291 | 0.1140-0.1163 | 2.363 | 5.48e4 |
+| nt7 | 29.41 | **1.0163x** | 0.0020 | 1.0127 1.0163 1.0198 | 0.1143-0.1162 | 2.328 | 6.26e4 |
+| nt8 | 29.47 | **1.0182x** | 0.0034 | 1.0158 1.0249 1.0139 | 0.1142-0.1159 | 2.316 | 7.24e4 |
+
+All three are resolved above 1.00, at 6.2, 8.2 and 5.4 standard errors, and **none is separated
+from another**. Paired within a pass, nt6 over nt8 is 1.0040 at 0.6 se, nt7 over nt8 is 0.9981 at
+0.5 se, and nt6 over nt7 is 1.0059 at 2.4 se, which is weak across three comparisons. **The whole
+of the available gain is bought by the first worker added**, and the three counts above the
+default are one level.
+
+**The readout column carries the same shape.** `a55_inst_share` falls from 0.1200-0.1218 to
+0.1140-0.1163 at six and does not move again: nt5's three-pass range overlaps none of the other
+three, and those three overlap each other completely. The cost of oversubscription does keep
+growing, monotonically in the worker count -- `cpu_migrations` 4.64e4 to 7.24e4, `a76_ipc` 2.395
+to 2.316. A saturating benefit against a monotone cost is what a flat curve looks like, and it is
+a mechanism the wall alone could not have named [hypothesis].
+
+**The five-to-eight endpoint did not reproduce.** The same cell read 1.0274x (se 0.0014) the day
+before and 1.0182x (se 0.0034) here, 2.5 standard errors of the combined error apart, on a ratio
+that stood 20 se above 1.00 inside its own campaign. What differs is that two arms now sit between
+the paired ones, so a pair's members are separated by up to three arms and half an hour instead of
+being adjacent [hypothesis]. The sign is unaffected and the size is not: **quote this step as
+1.6-2.2%, not as 2.7%.**
+
+**What this settles about the default.** Six is the only value with a measured gain on one route
+and no measured loss on the other. It buys the MoE route's whole two percent, and on the dense f16
+route it is the placement peak, 293 weights against five's 286, whose wall difference is 0.15% of
+prefill and below this instrument's resolution. Eight buys nothing further on the MoE route and
+costs 0.9873x on the dense one. **Seven is worse than six on the MoE route and worse than five on
+the f16 one**, and it is a setting a reader following "raise it" passes through. This is one model
+per route on one board, and the mechanism is a worker count against a big-core count, so none of
+it ports to a part with a different one.
+
+**A third model, and it is the one the standing negative was recorded on.** `gemma4-12b` F16,
+the 22.18 GiB GGUF, three rotated passes [HW sweep 2026-09-01, RK1, 600 MHz, governor
+`performance`, memory reset before every arm, 0 failed arms, 9 of 9 `<!--DATA-->` rows,
+`pfn_zero_frac`=0.0000 and `pmu_enabled`=100 on all nine; raw in
+`ro-session/trackd-pin12b-f16-3pass.md`].
+
+| arm | mean t/s | range | spread | paired ratio | ratio sd | A55 inst | A76 inst | L3 refills |
+|---|---:|---|---:|---:|---:|---:|---:|---:|
+| unpinned | 19.94 | 19.85-20.04 | 1.0% | -- | -- | 2.621e11 | 1.596e12 | 1.910e10 |
+| `pin76` | 20.85 | 20.78-20.93 | 0.7% | **1.046x** | 0.9% | 0.109e11 | 1.679e12 | 2.033e10 |
+| `pin76t4` | 21.17 | 21.12-21.26 | 0.7% | **1.062x** | 0.6% | 0.106e11 | 1.710e12 | 1.996e10 |
+
+`pin76` is the faithful reproduction of the recorded arm, plain `taskset 0xf0` at llama-bench's
+default `-t 8`. It reads 1.046x, nine standard errors above 1.00, with all three per-pass ratios
+above it, and `pin76t4` reads 1.062x at seventeen.
+
+**And the mechanism offered for the disagreement is refuted rather than confirmed.** The reason to
+expect a null here was that this model streams its weights and is bandwidth-bound, so four cores
+would issue fewer outstanding misses than eight. The streaming half is real and now measured
+rather than inferred: the stock arm residents **zero** weights, read from a warm-up-sized process
+with `ROCKET_LOG_STDERR=1` and stderr kept, because an absent `[f16-resident]` line is not a zero
+on its own. The conclusion drawn from it is wrong. Streamed against resident is not what separates
+a cell that gains from one that does not, because **no measured cell fails to gain**.
+
+**What does order the three is a column the readout already emits.**
+
+| model | config | resident | unpinned `a55_inst_share` | `pin76` | `pin76t4` |
+|---|---|---|---:|---:|---:|
+| `qwen35-08b-f16` | f16 stock | 126 weights, 780 MB | 0.209 | **1.103x** | **1.126x** |
+| `qwen35-9b` | quant-resident | 200 weights, 13184 MB | 0.146 | **1.059x** | **1.062x** |
+| `gemma4-12b` F16 | streamed | 0 weights | 0.141 | **1.046x** | **1.062x** |
+
+The unpinned `a55_inst_share` rank-orders the `pin76` gain exactly across all three and the
+`pin76t4` gain without inversion, and the wall returned is between a third and a half of the share
+(0.49, 0.40, 0.33). So the lever is predictable per model from one warm-up-sized process instead of
+from a campaign: read the share first, and expect roughly 33-49% of it back. **Three points, and
+the share co-varies with model size**, so this orders the models without separating those two; it
+is a usable predictor, not a mechanism. Under either pinned arm the share collapses to 0.0053-0.0064
+on all three, a near-constant residual on a system-wide instrument that attributes nothing to a
+thread.
+
+**The L3 inversion replicates on the third model.** Absolute `a76_l3d_cache_refill` is higher in
+the faster pinned arm on every model measured: 3.50e9 to 4.00e9 on the 0.8B, 8.45e9 to 9.73e9 on
+the 9B, and 1.910e10 to 2.033e10 here. The pooled-positive direction is not one campaign's
+accident, and the retired reading of the twelve observational rows stays retired.
+
+**The pass-count bound is a property of the unit, not of the class, and it runs the counterintuitive
+way.** This unit's per-pass paired-ratio sd is **0.6-0.9%** against the 0.8B class's ~6.5%, and its
+arm spreads are 0.7-1.0% against 7.3-11.0%. A 12B F16 pass costs about five times the wall of a
+0.8B one and the per-process lottery does not grow with it, so **the slow model resolves a small
+knob better than the fast one does**: three passes here resolve a 4.6% lever at nine standard
+errors, where six passes on the 0.8B resolve a 10.3% one at seven. Budget passes from the unit's
+own ratio sd, not from a class bound imported from a different unit -- including from the same
+model's quant unit, whose 6.3% is eight times this one's.
+
+**This board CAN hold a 12B F16 mostly resident, which was believed impossible.** With
+`ROCKET_F16_RESIDENT=auto` the same GGUF residents **286 of 328 weights at 18078 MB, 87% resident**,
+42 streamed via the per-call pack [HW readout 2026-09-01, RK1, `f16-resident-readout.sh`]. Admission
+stops at 18078 MB against a 21127 MB budget and the teardown names the reason: **the NPU IOVA window
+filled**, not RAM and not the reserve floor. So "Gemma-4-12B F16 cannot be held resident on this
+board" is retired. It also means the arm that separates streamed from resident without changing the
+model is available on this one: the same three arms with `ROCKET_F16_RESIDENT=auto` added is a 2x2
+in pinning and residency on a single GGUF.
+
+**One consequence for the published numbers.** The CPU-versus-NPU multiples in
+[../benchmarks.md](../benchmarks.md) take both arms unpinned, and pinning moves the two arms
+opposite ways: it adds 10-13% to an offloading prefill and takes bandwidth away from a CPU-only
+decode. So those multiples are conservative for the NPU rather than flattering. That is an
+inference from these arms and not a measured re-run [expected].
+
+**And a spread claim that did not replicate, recorded because it was nearly written up as a
+lead.** `pin76t4`'s own arm spread read 4.5% in the first campaign against the unpinned arm's
+7.3%, which looked like a protocol lever for the 0.8B class's pass-count bound. The second
+campaign read **11.9%** on the same arm at the same shape, driven by one 1.292 pass. **Pinning
+does not reliably tighten the arm.** Two draws of six is what it took to see that, which is the
+same pass-count bound talking.
+
+**Pinning BOTH arms halves the paired ratio's spread, and the reason is not that the arms get
+quieter.** The 6.5% per-pass paired-ratio sd on the 0.8B class is what bounds every knob in this
+matrix, so the same two-arm unit was run twice, six passes each: once with both arms unpinned and
+once with `PIN_MASK=0xf0 -t 4` applied to both, which makes pinning a constant within a campaign
+rather than a difference between arms. The unit is `qwen35-08b-f16` stock against
+`ROCKET_F16_RESIDENT=auto`, the one that straddles [HW sweep 2026-09-01, RK1, 600 MHz, governor
+`performance`, memory reset before every arm, 0 failed arms, 12 of 12 `<!--DATA-->` rows per
+campaign, both guards clean on all twenty-four, and every arm at its expected split -- 126 resident
+stock and 150 under the knob, 0 streamed, twelve of each; raw in
+`ro-session/trackd-pinsd-unpinned-6pass.md` and `trackd-pinsd-pinned-6pass.md`].
+
+| campaign | ratio mean | ratio sd | ratio se | stock cv | `f16res` cv | within-pass r |
+|---|---:|---:|---:|---:|---:|---:|
+| both arms unpinned | 1.064 | **7.2%** | 2.9% | 4.0% | 4.3% | **-0.634** |
+| both arms pinned | 0.999 | **3.3%** | 1.3% | 4.8% | 4.5% | **+0.748** |
+
+**The arms are equally noisy in both campaigns.** Each arm's own coefficient of variation sits at
+4.0-4.8% either way, so the pinned campaign did not produce steadier processes. What changed is the
+sign of the correlation between the two arms inside a pass. Against the 5.9% that two independent
+arms of those coefficients would give, the unpinned pairing delivers **7.2%** -- pairing within a
+pass makes that campaign WORSE than not pairing at all -- while the pinned pairing delivers 3.3%
+against an independent 6.6%, removing 3.4 points.
+
+**The unpinned structure is bimodal within a pass, and it is the recorded two-level mode.** The
+twelve unpinned processes fall into a slow group at 116.3-117.8 t/s and a fast one at 123.2-131.8
+with a clear gap, and **every one of the six passes holds exactly one arm from each** (under an
+independent assignment of six slow processes to twelve slots that happens about 7% of the time).
+Those two levels reproduce the modes recorded from the observational rows, 128.74 and 118.13, to
+about 1%. The pinned campaign shows 2 of 6 and no gap. **Position within a pass does not explain
+it**: first-over-second reads +3.6% unpinned and -1.3% pinned, 1.0 and 1.1 standard errors, neither
+resolved, so the arm-order rotation is working and is not the cause.
+
+**The consequence for anything measured this way.** When exactly one arm per pass draws the fast
+mode, the paired ratio reports which arm won the draw rather than what the knob did, and no number
+of passes fixes a pairing that is anti-correlated -- it converges on the average of the draw. That
+is why this unit stayed unresolved across thirteen unpinned passes at about 1.04x, and why under
+pinning it resolves in six as a **null**: 0.999, two standard errors 0.972-1.025. **Pinning both
+arms is a protocol lever worth roughly four times the passes** for a given resolution on this unit.
+
+**Which published rows this puts at risk, audited over this file's own raw rows: one, and it is
+already reported unresolved.** The within-pass correlation was recomputed for every unit here that
+carries per-pass `<!--DATA-->` rows. **Most of that audit is uninformative and says so**: every unit
+except one ran at three passes, and a correlation over three points is as degenerate as the rank
+correlation `ro-join.py` already refuses to quote under `--rho-n`. What the audit can read without a
+correlation is the ratio sd.
+
+| unit class | ratio sd | knob |
+|---|---:|---|
+| `qwen35-08b-f16`, the affected unit | **7.7%** over seven passes and **7.2%** over this session's six | 1.02-1.06x |
+| every other unit in this file | **0.1-2.1%** | 1.04-1.66x |
+
+**A ratio sd of 0.1-2.1% cannot host a mode that moves one arm by 9%**, so the bimodal draw that
+damaged the 0.8B F16 unit is not present in the units carrying the published knobs, whatever their
+correlation sign. On the affected unit the anti-correlation **replicates across two independent
+campaigns**, -0.57 over the older seven passes and -0.634 over this session's six. So the defect is
+confined to the one unit whose knob is smaller than its own spread, which this file already reports
+as unresolved rather than as a number.
+
+**And it changes the question, which is the cost of taking it.** A knob measured with both arms
+pinned is the knob's value UNDER pinning, and this matrix is published unpinned. On this unit the
+two readings differ -- about 1.04x unpinned against a resolved 1.00x pinned -- but the unpinned
+estimate straddles, so whether that is a true interaction between the two host-side levers or the
+unpinned figure being noise around 1.00 is **not separated here**. What is settled is narrower and
+still useful: the pinned protocol answers this unit's question in six passes and the unpinned one
+does not answer it in thirteen. One unit, one knob, six passes per campaign, and neither
+correlation resolves on its own at that n.
+
+**No flag captures the lever, and the arm that looked like it would is closed.** ggml's worker
+polls `1024*128*poll` rounds of `yield` before sleeping, and llama.cpp's `--poll` sets that
+budget, so `--poll 0` looked like the same win with no cores given up. It is not
+[HW sweep 2026-09-01, RK1, `qwen35-08b-f16`, six rotated passes over four arms, 0 failed arms,
+both guards clean on all twenty-four; raw in `ro-session/trackd-poll-08b-f16-6pass.md`]:
+
+| arm | mean t/s | paired ratio | se | A55 instructions | context switches |
+|---|---:|---:|---:|---:|---:|
+| unpinned | 118.98 | -- | -- | 9.699e10 | 928 385 |
+| `--poll 0` | 120.27 | **1.013x** | 0.028 | 9.665e10 | 928 820 |
+| `taskset 0xf0 -t 4` | 138.47 | **1.165x** | 0.026 | 0.254e10 | 839 179 |
+| both | 136.36 | **1.146x** | 0.008 | 0.247e10 | 838 796 |
+
+`--poll 0` moves the wall 0.44 standard errors, the A55 instruction count 0.35%, and the context
+switches 0.05%. Nothing traded spinning for sleeping. **The flag is not inert** -- `llama-bench`
+sets `tpp.poll`, builds the pool with `ggml_threadpool_new_fn` and attaches it
+[source-confirmed, `tools/llama-bench/llama-bench.cpp`]. **It reaches no code at all in this
+build.** `libggml-cpu.so` imports `GOMP_barrier`, `GOMP_parallel` and `GOMP_single_start`
+[verified on the board, `nm -D`], and `threadpool->poll` with its whole poll-then-sleep loop sits
+inside `#ifndef GGML_USE_OPENMP` [source-confirmed, `ggml/src/ggml-cpu/ggml-cpu.c`]. The barrier
+is `#pragma omp barrier` in the same build, so the spin lives in libgomp and its wait policy is
+`OMP_WAIT_POLICY` and `GOMP_SPINCOUNT`, which do have a spin budget and a sleep fallback. **A
+runtime knob does reach it**, and its cap is 0.7% of prefill wall [expected], derived from the
+pinning arm and the 16.02% libgomp share of the little cluster above. That is under the spread of
+every unit that could host the arm, so it is a knob to know about and not one to campaign on.
+
+**The residency configuration varies with the model held fixed, and the two host-side levers
+overlap.** The three cells above differ in residency and in model size at once, so neither
+separates them. A 2x2 in pinning and residency on ONE GGUF does. `gemma4-12b` F16, `-p 2048 -n 0
+-r 3`, three passes [HW sweep 2026-09-01, RK1, 600 MHz, governor `performance`, memory reset
+before every arm, arm order rotated per pass, ratios paired within a pass, 12 of 12
+`<!--DATA-->` rows, `pfn_zero_frac`=0.0000 and `pmu_enabled`=100 on all twelve, and every
+resident arm at an identical 286 of 328 weights (18078 MB, 87%); raw in
+`ro-session/trackd-res12b-2x2-3pass.md`].
+
+| arm | mean t/s | range | spread |
+|---|---:|---|---:|
+| `stream_unpin` | 19.98 | 19.92-20.07 | 0.8% |
+| `stream_pin` | 21.27 | 21.14-21.52 | 1.8% |
+| `res_unpin` | 21.21 | 21.14-21.25 | 0.5% |
+| `res_pin` | 22.25 | 22.00-22.58 | 2.6% |
+
+| lever | paired ratio | se |
+|---|---:|---:|
+| pinning alone, streamed pair | **1.0645** | 0.0040 |
+| pinning alone, resident pair | 1.0490 | 0.0071 |
+| residency alone, unpinned pair | **1.0614** | 0.0018 |
+| residency alone, pinned pair | 1.0459 | 0.0031 |
+| both together | **1.1134** | 0.0061 |
+
+**The two levers are sub-additive, and the interaction is resolved.** Independent levers would
+multiply to 1.1299. The measured pair reads 1.1134, a shortfall of 1.65 pp. The interaction
+factor is 0.9854 with a per-pass se of 0.34 pp, 4.3 standard errors below 1.00, and it holds the
+same sign in all three passes. So roughly 1.5 pp of each lever is the same win. Both remove A76
+pack and readback work, so the second one applied finds less of it left [expected].
+
+**This answers the caveat every ratio in this file carries.** The matrix takes both arms
+unpinned, which is sound only if pinning does not interact with the knob under test. On this unit
+it does interact. The interaction is 1.5 pp against a knob of 6.1 pp, large enough to resolve and
+small enough to leave a published ratio of that size standing. That is one knob on one model, and
+nothing here bounds a larger or a smaller one.
+
+**The `a55_inst_share` predictor does not survive the out-of-sample test, and the arm was
+underpowered to test it.** The three-model table orders the `pin76` gain by the unpinned share.
+This arm varies the configuration with the model held fixed, and the sign goes the wrong way.
+`res_unpin` carries the HIGHER share, 0.14193 against 0.14090, so the predictor calls for the
+larger resident gain. The resident gain is 1.55 pp SMALLER. **Read the size of the contrast
+before reading the refutation.** The predictor was fitted over shares spanning 0.141 to 0.209,
+and this arm moves the share by 0.001. That is about 1.5% of the fitted range. So the column has
+no resolving power at this scale, which is not the same as failing across the range it was fitted
+on. A test with real power varies the share by a large fraction of 0.068, and on this evidence
+that means varying the model.
+
+**The 87% residency ceiling is TWO limits at once, and neither fix alone moves it by a single
+weight.** `ROCKET_F16_RESIDENT=auto` on this model places 286 of 328 weights (18078 MB). Three
+limits can turn a weight away and `build_resident` checks them in order -- byte budget, RAM floor,
+then the pack itself (IOVA). `[f16-resident] admission first declined` names whichever fired
+first, and **which one that is depends on the PREFILL LENGTH as well as the worker count**. At
+`-p 2048` it is the RAM floor in 16 of 16 arms, at both 5 and 8 workers. At `-p 512` and 5 workers
+it is the IOVA window in 5 of 5. At `-p 512` and 8 workers it is the RAM floor again. No cell
+disagrees with itself [HW readouts 2026-09-01/02, RK1; raw in
+`ro-session/trackd13-iova-admission-readout.md`, `ro-session/trackd19-f16-window-ladder.md`,
+`ro-session/trackd15-res100-value.md`, `ro-session/trackd-res12b-2x2-3pass.md`]. The mechanism is
+that a longer prefill's KV cache lowers `MemAvailable` and the RAM floor is checked BEFORE the
+pack is attempted, so the floor fires first at `-p 2048` while at `-p 512` admission reaches the
+pack and the window fills. So read the string at the shape the campaign will run.
+
+| arm | resident budget | placed | first-decline reason |
+|---|---:|---:|---|
+| `auto_default` | 21095 MB | 286 | IOVA window filled |
+| `ROCKET_N_THREADS=8` | 21099 MB | 286 | reserve floor, 9469 MB against 9535 MB |
+| reserve 7168 MB | 23466 MB | 286 | IOVA window filled |
+| reserve 6144 MB | 24494 MB | 286 | IOVA window filled |
+
+**But "the fd fix moves nothing" was tested at one worker count, and the curve is not monotonic.**
+Laddering `ROCKET_N_THREADS` at the same shape and a near-identical budget (21028-21226 MB) gives
+[HW readouts 2026-09-02, RK1, `-p 512 -n 0 -r 1`; raw in
+`ro-session/trackd19-f16-window-ladder.md` and `ro-session/trackd19b-f16-window-repeat.md`]:
+
+| workers | placed | resident | share | first-decline reason | readings |
+|---:|---:|---:|---:|---|---|
+| 5 | 286 | 18078 MB | 87% | **IOVA window filled** | 5, all identical |
+| 6 | **293** | **18506 MB** | **89%** | reserve floor | 3, byte-identical |
+| 7 | 274 | 17302 MB | 84% | reserve floor | 2, byte-identical |
+| 8 | 287 | 18191 MB | 88% | reserve floor | 1 here, 286 in trackd13 |
+
+**Placement is deterministic per worker count, to the byte, across independent processes.** So the
+non-monotonicity is real and not the per-process lottery. Six is the best of the four and seven is
+**worse than the default**, which is the setting a reader following "raise it" would pass through.
+
+**What moves is the NON-WEIGHT half of the budget.** The floor fires at a fixed `MemAvailable`, and
+the total consumed before it fires is near-constant at 21.3-21.5 GB in every arm. The bytes per
+placed weight are also constant at 63.15-63.38 MB, so weight padding is not it. The remainder is:
+2898-2947 MB at six workers, **4008 MB at seven**, 3160 MB at eight. Seven spends about 1.1 GB more
+on everything that is not a weight, and the floor takes it out of the weights.
+
+**The likely mechanism is the per-shape scratch, not the weights** [hypothesis]. Each resident
+weight is split across every fd by columns, with the slice rounded up to a multiple of 16
+[source-confirmed, `rocket_fanout_nstep`, `rkw_weights_pack`], and a per-shape scratch is allocated
+per worker beside it. Seven has the worst rounding of the four on every shape this model carries:
+`3840` allocates 1.0208 of itself at seven workers against 1.0000 at five, six and eight. That
+predicts seven as the outlier, which it is, and does not predict six above eight, which it is.
+
+**Both fixes together reach 100%.** `ROCKET_N_THREADS=8` with
+`ROCKET_QUANT_RESIDENT_RESERVE_MB=6144` places **328 of 328 weights, 20790 MB, 0 streamed**,
+reproduced twice with no decline line at all [HW readout 2026-09-01, RK1; raw in
+`ro-session/trackd13b-iova-joint-readout.md`]. The two limits mask each other. The RAM floor is
+checked BEFORE the pack is attempted, so raising fds alone lets the floor fire at the same point,
+and lowering the floor alone runs into the fd count. Only lifting both admits the last 42 weights.
+
+**The memory cost is real and this is not a recommended default.** The joint arm ran with
+MemFree at **261 MB** and MemAvailable at **6542 MB** against its own 6144 MB floor, on a board
+with **no swap**, where dmesg already carries three OOM kills from earlier work. It completed
+twice at `-p 512 -n 0 -r 1`. A longer prefill carries a larger KV cache into that headroom, and
+nothing here bounds that. Treat full residency on this model as a measured capability, not as a
+setting to adopt.
+
+### What the last 13% is worth, and why the profiler could not say
+
+**The cap on full residency is 1.009x, and it comes from two measured walls rather than from a
+profile bucket** [HW readout 2026-09-01, RK1, 600 MHz, `gemma4-12b` F16 at `-p 2048`, 87%
+resident; raw in `ro-session/trackd14-packcap-readout.md`]. Residency over 87% of this model's
+weight bytes is a measured 1.0614x, worth 5.94 s of a 102.50 s streamed prefill. The 42 weights
+left over are 2712 of 20790 MB. At a per-byte-constant pack cost that is 0.89 s of the 96.56 s
+resident prefill, so `res100/res87` is capped at **1.0093x**, under 1% of prefill wall.
+
+**`ROCKET_MM_PROFILE` gives a number 33x larger, and it is the wrong number.** Its `packB` bucket
+reads 88259 ms over the run's three prefills, 29.4 s each against a 102.7 s prefill wall, which
+would price the streamed remainder's per-call weight pack at over a quarter of the wall. The
+buckets are `clock_gettime` intervals taken on worker threads, and `rocket_pin_worker_based` pins
+worker *i* to big core *i* mod the big-core count [source-confirmed, `rocket_affinity.c`]. The
+RK3588 has four A76s, so at the default `ROCKET_N_THREADS=5` two workers already share a core
+while llama.cpp's own eight compute threads run on the same eight. **The buckets sum to 854 s
+against 308 s of prefill wall, 2.77x**, and the offloaded matmuls are only part of that prefill.
+So a bucket is an upper bound on its term's thread-time, not a share of the wall. The single-fd
+microbenchmark splits in [../not-mac-bound.md](../not-mac-bound.md) are unaffected: one thread,
+nothing beside it, bucket equals wall.
+
+**"0 streamed" does not mean the per-call weight pack is gone.** The 100%-resident arm reports
+328 of 328 and 0 streamed, and its `packB` is still **12011 ms**. The `[f16-resident]` ledger's
+denominator is the weights OFFERED to the residency route; a matmul that was never a candidate
+(below the min-M gate, or with no stable weight name) still takes the streaming path and still
+pays a per-call scatter. Read the ledger as a statement about the route, not about the profile.
+
+**The memory headroom at `-p 2048` is measured, and the arm is safe.** The 100%-resident
+configuration reproduced its placement a third time at this shape -- 328 of 328, 20790 MB, 0
+streamed -- with **MemAvailable bottoming at 5521 MB** and MemFree at 260 MB, and no OOM kill
+[HW readout 2026-09-01, RK1; raw in `ro-session/trackd14b-res100-probe.md`]. The `-p 512`
+readouts left 6542 MB, so the four-times-larger KV cache costs about 1.0 GB of that headroom.
+MemFree is not the column to watch: it reads 260 MB in the 87% arm too, because the page cache
+absorbs the GGUF.
+
+**The two profiled arms are not a ratio.** They differ in `ROCKET_N_THREADS` as well as in
+placement (5 against 8), which moves the job-batch count 21120 to 33792 and the `wait` bucket
+655 s to 1116 s. That is why the timed campaign carries a thread-count control at matched
+placement rather than two arms.
+
+### Full residency does not pay on this model, and the recipe is two opposite effects that cancel
+
+[HW sweep 2026-09-01, RK1, 600 MHz, governor `performance`, `gemma4-12b` F16 at `-p 2048 -n 0
+-r 3`, three rotated passes, memory reset before every arm, ratios paired within a pass, 9 of 9
+`<!--DATA-->` rows, 0 failed arms, `pfn_zero_frac`=0.0000 and `pmu_enabled`=100.0 on all nine, and
+each arm's placement identical in all three passes; raw in `ro-session/trackd15-res100-value.md`.]
+
+| arm | env added to `ROCKET_F16_RESIDENT=auto` | placed | mean t/s | range |
+|---|---|---:|---:|---|
+| `res87` | -- | 286 of 328 (18078 MB) | 21.18 | 20.87-21.48 |
+| `res87_t8` | `ROCKET_N_THREADS=8` | 281 of 328 (17730 MB) | 20.91 | 20.71-21.02 |
+| `res100` | + `ROCKET_QUANT_RESIDENT_RESERVE_MB=6144` | 328 of 328 (20790 MB) | 21.38 | 21.20-21.62 |
+
+| contrast | what it isolates | paired ratio | se | per-pass |
+|---|---|---:|---:|---|
+| `res87_t8/res87` | the worker count, placement near-matched | **0.9873** | 0.0046 | 0.9781 0.9923 0.9915 |
+| `res100/res87_t8` | the last 47 weights, worker count held | **1.0223** | 0.0110 | 1.0143 1.0439 1.0086 |
+| `res100/res87` | the whole 100%-residency recipe | 1.0093 | 0.0135 | 0.9921 1.0359 1.0000 |
+
+**The whole recipe straddles 1.00 and is not resolved.** It sits 0.7 se from no change, and the
+per-pass ratios include one below 1.00 and one exactly at it. Resolving a 0.9% effect against this
+contrast's 2.34% per-pass sd needs about **25 passes**, roughly eighteen hours. **The memory cost
+settles it without them**: 2712 MB more held resident on a board with no swap, for an effect three
+passes cannot separate from zero. Full residency on this model is a measured capability and not a
+setting to adopt.
+
+**The two components are each larger than their sum, and only the control shows it.** Residency
+proper is worth **1.0223x** with the worker count held fixed, 2.0 se above 1.00. The worker count
+the recipe requires costs **0.9873x**, 2.8 se below 1.00 and the same sign in all three passes.
+They nearly cancel. A two-arm campaign reads the 1.0093 alone and charges the worker-count loss to
+residency, which is the reading the item was queued with.
+
+**The residency half is consistent with its cap.** The cap for 47 weights is 1.0105x, and the
+measured 1.0223x carries a 2se band of 1.0003-1.0442 that contains it. So the byte-scaling
+derivation is not contradicted, and it is also not confirmed at this pass count.
+
+### `ROCKET_N_THREADS` is not a free supply of fds
+
+It is prescribed as the exit from an exhausted NPU IOVA window, for the MoE route as well as this
+one. On this unit going 5 to 8 costs in **two** independent ways, and both are measured above.
+
+- **Throughput**: 0.9873x, resolved, same sign in three passes. The mechanism is visible in the
+  readout. `rocket_pin_worker_based` pins worker *i* to big core *i* mod the big-core count
+  [source-confirmed, `rocket_affinity.c`], so on this four-A76 part eight workers put two on every
+  big core and displace llama.cpp's own threads onto the little cluster. `a55_inst_share` rises
+  from **0.1410** to **0.1498**, with no overlap between the two arms' three-pass ranges.
+- **Placement**: at the default reserve it places **fewer** weights, 281 against 286, reproduced
+  in all three passes of each arm. More worker fds reach the `MemAvailable` floor sooner, and that
+  floor is checked before the pack is attempted. So where the binding limit is RAM rather than
+  IOVA, the knob moves placement the wrong way.
+
+Raise it to open an IOVA window, and read the placement and the wall afterwards rather than
+assuming the knob is free.
+
+### Pinning interacts with the matrix's largest knob too, and there it costs 5.9 pp
+
+Every ratio in this file takes both arms unpinned, which is sound only if pinning does not
+interact with the knob under test. The `gemma4-12b` F16 2x2 above resolved a 0.9854 interaction
+against a 6.1 pp knob and left the published ratio standing. **A knob eleven times larger
+interacts more, and the sign is now resolved on both units.** `qwen35-9b` Q4_K_M, the matrix's
+largest resolved cell, stock against `ROCKET_QUANT_RESIDENT=auto -b 2048 -ub 2048`, with each arm
+run pinned and unpinned [HW sweep 2026-09-01/02, RK1, 600 MHz, governor `performance`, `-p 2048
+-n 0 -r 3`, **six** rotated passes, memory reset before every arm, ratios paired within a pass,
+24 of 24 `<!--DATA-->` rows, 0 failed arms, `pfn_zero_frac`=0.0000 and `pmu_enabled`=100.0 on all
+24, and all twelve resident-arm lines at 200 of 200 (13184 MB), 0 streamed; raw in
+`ro-session/trackd16-pin9b-2x2-6pass.md`].
+
+| quantity | mean | se | per-pass |
+|---|---:|---:|---|
+| the knob, both arms UNPINNED | **1.6675x** | 0.0044 | 1.6597 1.6845 1.6616 1.6548 1.6713 1.6732 |
+| the knob, both arms PINNED | **1.6085x** | 0.0040 | 1.5917 1.6114 1.6095 1.6201 1.6145 1.6037 |
+| **interaction** | **0.9646** | 0.0035 | 0.9590 0.9566 0.9687 0.9790 0.9660 0.9585 |
+| pinning on the stock arm | 1.1003x | 0.0031 | -- |
+| pinning on the resident arm | 1.0614x | 0.0026 | -- |
+
+**The unpinned arm replicates the published cell to 0.39%** (1.6675 against 1.6611), and the
+stock arm replicates the matrix epoch to 0.05%, so this is the same cell and not a re-cut.
+
+**The interaction is 10.2 se below 1.00 and below it in all six passes.** It costs **5.9 pp of a
+66.8 pp knob**. So the published 1.661x is correct as the unpinned number it is labelled, and a
+reader who follows the guide's *other* recommendation -- `taskset 0xf0` for a prefill-heavy run --
+should expect this knob to add **1.61x, not 1.67x**, on top of the pinning it already has. Taking
+both levers from stock reads **1.7699x** (se 0.0047) against **1.8348x** if they were independent.
+
+**The mechanism is the same one the 12B showed, and its size is not.** Pinning buys 1.1003x on the
+stock arm and 1.0614x on the resident one: residency has already removed the A76 pack work that
+pinning was accelerating, so the second lever applied finds less of it left. The residual 6.1% is
+host work residency does not touch.
+
+| unit | knob | interaction | pinning on stock | pinning on resident | pin gain lost |
+|---|---:|---:|---:|---:|---:|
+| `gemma4-12b` F16 | 1.061x | 0.9854 (4.3 se) | 1.0645 | 1.0490 | 1.55 pp |
+| `qwen35-9b` Q4_K_M | 1.668x | 0.9646 (10.2 se) | 1.1003 | 1.0614 | 3.89 pp |
+
+**Two units do not give a law, and this pair actively refuses one**: neither the interaction
+factor nor the absolute pin-gain loss is constant between them, so neither can be applied to a
+third knob by arithmetic. What is settled is the **sign**, on both units, at 4.3 and 10.2 se and
+in 3 of 3 and 6 of 6 passes. **What this does not settle**: the knob here spans residency *and*
+`-b 2048 -ub 2048` together, because that is what the published cell is, so the interaction is
+with the pair rather than with residency alone. And both units place their weights fully or
+mostly; a knob that is not a residency knob at all is untested.
+
+**What this does not settle.** The lever is one model at one shape. Neither half of the readout
+reads IOVA, so a placement effect on the NPU side of the IOMMU is outside what any of these
+columns could have found. And every campaign number in this file was taken unpinned, so the
+absolute levels here are unpinned levels. The paired ratios are not disturbed by that as long as
+pinning does not interact with the knob under test. On the one unit where that is measured it DOES interact, by 1.5 pp
+against a 6.1 pp knob -- resolved, and too small to overturn a published ratio of that size.
+
+**The pass-count bound for this unit class, stated once**: the empirical per-pass paired-ratio
+sd on the re-run is ~6.5%, so at three passes the ratio's se is ~3.8% and a knob under ~8%
+cannot resolve; a 2% knob needs ~40 passes at 2 sigma. That is why the 0.8B units land
+unresolved and why their rows are reported as straddles rather than means. The knob's own
+per-pass sign agreement (campaign 2: six ratios within 1.1% of 1.00) shows the *pairing*
+works when the modes co-occur; the budget rule is per unit class, not per knob.
+
 ## Raw output
+
+The dqc campaign's raw unit files (clean and tenant-loaded, plus the driver log with its
+per-stage idle audits) are the standalone files in [dqc-session/](dqc-session/), pulled from the
+board with md5 verified at both ends; they are not duplicated inline here.
 
 <!-- qwen35-08b  class=quant  fp16-resident-fits=1  MODE=headline  TESTS='-p 2048 -n 0 -r 3'
      gguf=/path/to/models/qwen35/Qwen3.5-0.8B-Q4_K_M.gguf (532517120 bytes)

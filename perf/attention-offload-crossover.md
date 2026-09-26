@@ -174,8 +174,16 @@ dedicated probe (`ROCKET_FA_TIMING`) splits the FA op into gather / on-NPU compu
 16K (n_kv 1024..16384) the aggregate is **gather 15% / compute 82% / scatter 3%**, and the gather
 *share shrinks* with depth (25% at 2K -> 15% at 16K) because the on-NPU per-head GEMMs grow faster
 than the O(n_kv) gather. So where the offload wins, attention is **compute-bound, not
-gather-bound**: threading the outer gather would touch ~6% of prefill wall and falling, not worth
-the complexity. The win narrowing 1.50x -> 1.25x from 8K -> 16K is the on-NPU compute and the host
+gather-bound**: threading the outer gather touches ~6% of prefill wall and falling.
+
+**The complexity turned out to be small, and the lever was taken.** `ROCKET_FA_THREADS=k` splits
+all five host walks over the process-wide pool, each on its own outer index. It is worth
+**1.0389x** of the pinned prefill wall at `k`=4 on `gemma4-12b` F16 at pp2048 [HW sweep
+2026-09-07]. The earlier reading had the trend right and the cost wrong.
+
+The 6% above is also the right size. The walks are 6.01% of that wall, and four workers recover
+3.75% of it. A fit of `G_k` = `A`/`k` + `B` puts the fixed residue at 0.57%, so more workers buy
+almost nothing. The win narrowing 1.50x -> 1.25x from 8K -> 16K is the on-NPU compute and the host
 softmax growing with n_kv, not the gather; the online/tiled-attention follow-on (never materialize
 the full `[Tp, n_kv]` score matrix) **does not pay**; see below.
 

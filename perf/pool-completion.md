@@ -74,11 +74,11 @@ arms differ by more than the flag. The observation that does not depend on the k
 **no pool or reduce submit raises an `NPU job timed out` line any more.** The completion
 arrives; the deadline is never reached.
 
-The whole RK3588 suite is 96 of 96 in 380.46 s against 415.15 s on interface 1.1.0. The 64
-timeout lines a suite run still produces are all `uapi_bo_lifetime_rocket`, which opens an fd,
-submits a matmul and closes without waiting, 200 times over. Abandoning jobs is its design, it
-never calls the pool or reduce entries, and the flag has no bearing on it. Attribute a timeout
-line before reading it as a pool.
+The whole RK3588 suite is 96 of 96 in 380.46 s against 415.15 s on interface 1.1.0. Those
+runs also logged 64 timeout lines, and none of them was a pool. `uapi_bo_lifetime_rocket` built
+the RK3576's program on every part, and the RK3588 hung on each of its 64 submits until the
+watchdog retired it. With each part's own program the whole suite logs no timeout [HW sweep,
+Turing RK1, 2026-09-24]. Attribute a timeout line before reading it as a pool.
 
 ## The flag
 

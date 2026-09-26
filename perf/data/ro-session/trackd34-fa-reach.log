@@ -1,0 +1,18 @@
+[2026-09-07T16:08:09+00:00] FA reach discriminator
+  model=<data>/ministral3-3b/Ministral-3-3B-Instruct-2512-F16.gguf  so=5eaf4076a9f50dcb7e953156823d1d4e
+--- ROCKET_FLASH_ATTN=1, llama-perplexity ---
+  rc=0
+Final estimate: PPL = 13.8994 +/- 0.82808
+--- ROCKET_FLASH_ATTN=0, llama-perplexity ---
+  rc=0
+Final estimate: PPL = 13.9024 +/- 0.82829
+--- ROCKET_FLASH_ATTN=1, llama-bench CONTROL ---
+  rc=0
+ROCKET FA checksum: 7bbb7e8af60dd555 over 156 ops, 1308622848 bytes
+ROCKET FA total(ms): gather=3931 (10%) compute=33854 (83%) scatter=2798 (7%) over 156 ops, n_kv [1024..2048]
+--- ROCKET_FLASH_ATTN=0, llama-bench CONTROL ---
+  rc=0
+--- driver version through DRM_IOCTL_VERSION, not dmesg ---
+--- what dmesg still has, for comparison ---
+[75140.164060] [drm] Initialized rocket 1.3.0 for rknn on minor 0
+[2026-09-07T16:14:51+00:00] FA-REACH-DONE

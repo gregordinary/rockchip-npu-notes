@@ -1,0 +1,13 @@
+[2026-09-07T19:13:46+00:00] FA_THREADS checksum gate
+  model=<data>/gemma4/gemma-4-12b-it-F16.gguf
+  so=c66ef3e8b67437779daf0e73595e5ba9
+  bar: one checksum and one non-zero op count across k=1,4
+--- ROCKET_FA_THREADS=1 ---
+  rc=0
+ROCKET FA checksum: 345a87c827fa972b over 288 ops, 2818572288 bytes
+ROCKET FA total(ms): gather=7739 (17%) compute=33156 (74%) scatter=3998 (9%) over 288 ops, n_kv [1024..2048]
+--- ROCKET_FA_THREADS=4 ---
+  rc=0
+ROCKET FA checksum: 8852206bf3ccda62 over 288 ops, 2818572288 bytes
+ROCKET FA total(ms): gather=2690 (7%) compute=33324 (90%) scatter=1112 (3%) over 288 ops, n_kv [1024..2048]
+[2026-09-07T19:21:26+00:00] FA-CHECKSUM-DONE

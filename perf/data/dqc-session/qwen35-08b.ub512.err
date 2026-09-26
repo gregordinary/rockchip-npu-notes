@@ -1,0 +1,5 @@
+load_backend: loaded CPU backend from ~/npu/llama.cpp/build/bin/libggml-cpu.so
+load_backend: loaded ROCKET backend from ~/npu/ggml-rocket/build-dl/libggml-rocket.so
+[rocket] quantized prefill is dequant-bound at this micro-batch; run with -b 2048 -ub 2048 for ~2x (the default -ub 512 ~halves it)
+ROCKET profile total(ms): pack=11011 (packA=822 packB=4298) gen=162 sync=737 submit=296 wait=23481 read=2353  over 6360 job-batches
+ROCKET convert total(ms): pack_act=749 (1200 calls, 981M elems) weight_dequant=4933 (1200 calls, 3976M elems) unpack_out=601 (1200 calls, 1636M elems)

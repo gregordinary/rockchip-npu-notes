@@ -24,6 +24,12 @@ A probe (`iova_ceiling_rocket.c`) opening 2 fds saw both independently climb
   smaller/quantized model.
 - BO allocation is **lazy**: reserving 8 GB of IOVA left RAM flat (~595 MB); only the
   data you actually pack commits physical RAM.
+- **Whether that window is the BINDING limit is a separate question, and usually it is not.**
+  The f16 residency route fills it at 5 workers on a 12B F16 at `-p 512`, placing 286 of 328
+  weights. At `-p 2048` the same route hits the RAM reserve floor first, at the same placement.
+  The MoE route never reaches it at all, because its admission charges the GGUF source against
+  RAM and only the int8 codes against IOVA. See `benchmarks.md` for the arithmetic and
+  `data/tuning-matrix.md` for the per-shape readings.
 
 **Per-fd is a property of `rocket`, not of the silicon, and the multi-fd strategy above does
 not transfer to the vendor `rknpu` BSP driver.** That driver maps every buffer through **one

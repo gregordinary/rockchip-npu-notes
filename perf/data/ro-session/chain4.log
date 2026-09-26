@@ -1,0 +1,13 @@
+[2026-09-03T16:45:20+00:00] chain4 start
+  cpu0 gov=performance
+  cpu4 gov=performance
+  cpu6 gov=performance
+  npu clk=600000000
+[2026-09-03T16:45:20+00:00] trackd30-fa-timing-12b begin
+[2026-09-03T16:57:59+00:00] trackd30-fa-timing-12b rc=0 end
+[2026-09-03T16:57:59+00:00] trackd31-qres512-9b begin
+[2026-09-03T19:25:15+00:00] trackd31-qres512-9b rc=0 end
+[2026-09-03T19:25:15+00:00] trackd32-fa-pin-2x2-12b begin
+[2026-09-03T20:45:46+00:00] trackd32-fa-pin-2x2-12b rc=0 end
+[2026-09-03T20:45:46+00:00] board restored: ondemand, power/control=auto
+[2026-09-03T20:45:46+00:00] CHAIN4-DONE

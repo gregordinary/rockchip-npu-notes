@@ -292,8 +292,8 @@ Both measured flat on `matmul_tiled_rocket 512 3840 4096` (one big job) and larg
 [iova-and-multicore.md](iova-and-multicore.md) §IRQ affinity / §per-job IOMMU cost.
 
 **Detection single-stream is the same shape [HW sweep 2026-06-29].** Coalescing a native-int8/uint8
-conv's per-tile submits into one job (`ROCKET_CONV_BATCH`, the gapped lever-1, int8-safe because the
-CACC clears per kick, unlike fp16 chaining) is **flat on warm MobileDet** (~250 ms, 227 -> 215 submits)
+conv's per-tile submits into one job (`ROCKET_CONV_BATCH`, the gapped lever-1) is **flat on warm
+MobileDet** (~250 ms, 227 -> 215 submits)
 and flat across 4 parallel MobileDet processes too. A tiled conv's wall is the host cube
 scatter/descatter, not the submit floor, and most native-u8 convs are single-tile anyway; the 227
 submits are the **matmul multicore worker fan-out**, not conv tiling. Submit-coalescing pays only on a

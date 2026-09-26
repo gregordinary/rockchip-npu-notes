@@ -1,21 +1,21 @@
 # Quantized-GGUF prefill is micro-batch-dequant-bound
 
 A quantized GGUF (`Q4_K` / `IQ4_XS` / `Q8_0` / …) prefills on the NPU through the
-dequant->fp16 streaming path: each weight is dequantized to fp16 and packed into the native
-tiles **per micro-batch**, every forward pass (the resident fp16 weight cache is F16-only;
-quant weights re-pack each call). That per-ubatch dequant, not the matmul, sets quantized
+dequant->fp16 streaming path. Each weight is dequantized to fp16 and packed into the native
+tiles **per micro-batch**, every forward pass. The resident fp16 weight cache is F16-only, so
+quant weights re-pack each call. That per-ubatch dequant, not the matmul, sets quantized
 prefill throughput. Two consequences follow: a runtime lever (`-ub`) and a routing floor
 (`ROCKET_MIN_M_QUANT`). Measured on Qwen3.5-9B / Qwen3.6-27B, 600 MHz.
 
-This refines [not-mac-bound.md](not-mac-bound.md): that note shows the *native* int8/int4
-paths lose to fp16 on the int32-readback wall; this is the *GGUF-quant dequant* path, whose
+This refines [not-mac-bound.md](not-mac-bound.md), which shows the *native* int8/int4 paths
+losing to fp16 on the int32-readback wall. This is the *GGUF-quant dequant* path instead. Its
 loss is a host dequant cost that **amortizes with micro-batch size**, so it is far more
 recoverable than the native-int readback wall.
 
 ## The micro-batch lever: `-ub 2048` ~doubles quantized prefill
 
 The dequant is paid once per micro-batch, so it amortizes over the ubatch's rows. The
-llama.cpp default `-ub 512` re-dequantizes the whole model every 512-row chunk; a larger
+llama.cpp default `-ub 512` re-dequantizes the whole model every 512-row chunk, and a larger
 ubatch spreads that fixed cost. **9B Q4_K, pp2048, by `-ub`** [HW sweep, 2026-06-28, 600 MHz]:
 
 | `-ub` | Q4_K_M | IQ4_XS | Q8_0 |
@@ -24,27 +24,83 @@ ubatch spreads that fixed cost. **9B Q4_K, pp2048, by `-ub`** [HW sweep, 2026-06
 | 1024 | 12.7 | 12.5 | 13.1 |
 | 2048 | **17.2** | **17.2** | **17.4** |
 
-- **`-ub 2048` is ~2.1x over the default**, a free runtime knob with no code change. The 27B
-  repeats it (Q4_K pp2048 2.4 -> 5.4 t/s).
+- **`-ub 2048` read ~2.1x over the default in this 2026-06-28 sweep; under the current build it
+  is 0.91-1.53x, model-dependent, and negative on two models of eleven** — the per-model rows
+  and the mechanism of the fall are in `perf/data/tuning-matrix.md`. The dated table above is
+  kept as the measurement it was; do not quote its ratio as current.
 - **Quant type is irrelevant to NPU prefill throughput.** Q4_K / IQ4_XS / Q8_0 converge
-  within noise at a given `-ub`: they run the identical fp16 matmul, only the dequant
-  differs, and at `-ub 2048` it is amortized away. Choose the quant on RAM / quality, not NPU
-  speed. (i-quants carry no NPU penalty; their thinner *relative* win is only that the smaller
-  file gives the CPU baseline a head start.)
+  within noise at a given `-ub`, because they run the identical fp16 matmul. Only the dequant
+  differs, and at `-ub 2048` it is amortized away. Choose the quant on RAM and quality, not NPU
+  speed. i-quants carry no NPU penalty, and their thinner *relative* win is only that the
+  smaller file gives the CPU baseline a head start.
 - **Even amortized, quant ~0.64x F16, unless the dequant is made resident.** F16 stays resident
-  (zero dequant) at 26.8 t/s @ub2048 on the 9B; the quants plateau ~17.3. The residual per-2048
-  dequant is still ~35%, and **`-ub` cannot close it**: only a resident dequant cache (dequant->pack
-  once) can. That cache now exists: **`ROCKET_QUANT_RESIDENT=1`** dequantizes each quantized weight
-  to fp16 **once** and reuses the F16 prepacked path, so prefill pays neither the per-µbatch dequant
-  nor the per-call `packB` (it collapses 12440->889 ms [HW MM_PROFILE]). Measured **F16 parity** [HW,
-  0.8B `Q4_K` pp2048, same session: resident 89.2 t/s == F16 88.9, vs streaming 80.7 @ub2048 / 50.7
-  @ub512 -> 1.50x at the default `-ub`; **9B same session: resident 24.6 vs streaming 15.8 = 1.56x,
-  ~0.92x the 26.8 F16**, since the 9B's ~18 GB fp16 footprint fit the 31 GB RAM + IOVA window], **bit-identical
-  PPL** to streaming. It trades the quant RAM
-  saving back for the full fp16 resident footprint (opt-in), and confirms the 0.64x plateau was a
-  **software** cost, not silicon. The 0.64x echoed the native resident-int8 0.60x of
-  [not-mac-bound.md] by a different mechanism (host dequant here, int32 readback there), but unlike
-  the int8 readback wall, this one was recoverable, and now is.
+  at zero dequant, 26.8 t/s @ub2048 on the 9B, where the quants plateau near 17.3. The residual
+  per-2048 dequant is still ~35%, and **`-ub` cannot close it**. Only a resident dequant cache,
+  dequant and pack once, can. **`ROCKET_QUANT_RESIDENT=1`** is that cache: it dequantizes each
+  quantized weight to fp16 **once** and reuses the F16 prepacked path, so prefill pays neither the
+  per-µbatch dequant nor the per-call `packB`, which collapses 12440 to 889 ms [HW MM_PROFILE].
+
+  It measures **F16 parity**, at **bit-identical PPL** to streaming [HW, same session]. On the 0.8B
+  `Q4_K` at pp2048 resident reads 89.2 t/s against F16's 88.9, where streaming reads 80.7 @ub2048
+  and 50.7 @ub512, so 1.50x at the default `-ub`. On the 9B resident reads 24.6 against streaming's
+  15.8, a 1.56x that is ~0.92x the 26.8 F16, because the 9B's ~18 GB fp16 footprint fit the 31 GB
+  RAM and the IOVA window.
+
+  It trades the quant RAM saving back for the full fp16 resident footprint, which is why it is
+  opt-in, and it confirms the 0.64x plateau was a **software** cost rather than silicon. The 0.64x
+  echoed the native resident-int8 0.60x of [not-mac-bound.md] by a different mechanism, host
+  dequant here against int32 readback there. Unlike the int8 readback wall, this one was
+  recoverable, and now is.
+
+## What the `-ub` lever is made of: the dequant component isolated
+
+The flag's documented mechanism — dequant amortization — is now separable from everything else
+the micro-batch size moves, because the dense mechanism control exists:
+**`ROCKET_DEQUANT_CACHE_MB`** (ggml-rocket) holds each streaming weight's dequantized fp16 form
+host-side, dequant once per process, with the per-call pack, submit and placement exactly the
+shipped path (greedy output byte-identical; the `[dq-cache]` teardown line reports engagement).
+An A/B of `-ub 512` against `-ub 2048` under the cache is the lever with the dequant term
+removed. Three units, three rotated passes each, idle board audited
+[HW sweep 2026-08-31, RK1, 600 MHz]:
+
+| model | full `-ub` lever | dequant component | non-dequant residue |
+|---|---:|---:|---:|
+| Qwen3.5-9B `Q4_K` | 1.430x | **1.378x** | 1.038x |
+| SmolVLM2-2.2B `Q4_K` | 0.946x | **1.199x** | **0.789x** |
+| Qwen3.5-0.8B `Q4_K` | 1.066x | ~1.10x | unresolved (straddles 1.00) |
+| Llama-3.2-3B `Q4_K` | 1.085x | 1.258x | **0.863x** |
+| Ministral-3-3B `Q4_K` | 1.035x | 1.239x | **0.835x** |
+| Phi-4-mini `Q4_K` | 1.107x | 1.282x | **0.864x** |
+
+- **On the 9B the mechanism story is right**: ~90% of the lever (in log terms) is dequant
+  amortization.
+- **On every measured sub-4B model it is upside down.** The flag nets a small win or a loss,
+  because a **14-21% non-dequant cost** of the larger micro-batch sits under a 1.20-1.28x dequant
+  win. On SmolVLM2 a profiled A/B of the cache pair places about half that cost in the driver's
+  output readback and de-tile. `read` grows 64% at identical output bytes, 1.76 to 10.9 ms per
+  job-batch, superlinear in M. The rest is in `wait` [hypothesis, not isolated]. The instrument
+  contains no FLASH_ATTN ops, because llama-bench runs `-fa 0`, so attention-chunk shape is not
+  part of the measured residue.
+- **The right lever is therefore dequant-removal at the DEFAULT `-ub`, and not only below 4 B.**
+  Unstacked `ROCKET_QUANT_RESIDENT=auto` beats residency stacked on `-ub 2048` on **six of six**
+  models measured both ways. Three rotated passes each, 100% resident on every pass, unstacked
+  against stacked: 1.346x/1.002x (SmolVLM2), 1.472x/1.212x (Llama-3.2-3B), 1.445x/1.132x
+  (Ministral-3-3B), 1.508x/1.211x (Phi-4-mini), 1.651x/1.325x (Ministral-3-8B), 1.752x/1.661x
+  (Qwen3.5-9B).
+- **The 9B is why this is not just the sub-4B residue.** Its own non-dequant residue is a WIN
+  at 1.038x. That is the case where the residue argument predicts stacking holds, and it still
+  gains 5.5% unstacked. The second mechanism is the per-call pack and upload. Residency removes
+  that too, and the default `-ub` presents it four times as often. Untested unstacked:
+  `gemma4-12b`, which places only 73-74% of its weights.
+- **The dequant share is load-sensitive.** The same campaign run behind a single busy core
+  (a leaked spinner, discovered later) read the lever at 1.484x / 1.526x / **1.120x** — the
+  tenant steals the A76-pinned dequant pool's capacity, which the `-ub 512` arm uses four
+  times as often, so host load inflates the flag on every model and flips SmolVLM2's sign.
+  A `-ub` recommendation measured on a loaded host overstates the flag for an idle deployment.
+
+The control knob itself is a diagnostic: as a user lever it is dominated by
+`ROCKET_QUANT_RESIDENT`, which holds the same fp16 footprint and removes the per-call pack and
+upload as well.
 
 ## The threading lever: the streaming dequant was serial
 

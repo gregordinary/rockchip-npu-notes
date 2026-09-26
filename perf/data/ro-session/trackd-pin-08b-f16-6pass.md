@@ -1,0 +1,213 @@
+<!-- qwen35-08b-f16 pinning intervention  TESTS='-p 2048 -n 0 -r 3'  PASSES=6
+     gguf=<data>/qwen35/Qwen3.5-0.8B-F16.gguf (1516744736 bytes)
+     arms: unpinned  (base; llama-bench default -t 8 over all 8 CPUs)
+           pin76     PIN_MASK=0xf0 -- the four A76s, -t 8 (2:1 oversubscribed)
+           pin76t4   PIN_MASK=0xf0 -t 4 -- threads-per-core held at 1
+     librocketnpu pins its own workers to the A76s in every arm.
+-->
+== qwen35-08b-f16-pin  Mon Aug 31 23:56:34 UTC 2026 ==
+### qwen35-08b-f16-pin [unpinned] pass 1  env=''  args=''  23:56:48  clk=600 MHz  MemAvail=31391008 kB
+<!--PRED 1	unpinned	memavail_kb=31391008	anonhuge_kb=0	hugepagesz_kb=2048	buddy=4788,3967,3304,5475,3859,3822,2827,2779,2275,2068,4982-->
+| model                          |       size |     params | backend    | ngl |            test |                  t/s |
+| ------------------------------ | ---------: | ---------: | ---------- | --: | --------------: | -------------------: |
+| qwen35 0.8B F16                |   1.40 GiB |   752.39 M | ROCKET     |  -1 |          pp2048 |        118.36 ± 0.30 |
+
+build: 171974745 (10558)
+<!--RO 1	unpinned	wall_s=72	busy=2215,2211,2216,2185,2724,2620,2985,2920	busy_tot=20076	busy_little_share=0.4397	a55_cpu_cycles=158223383903	a55_inst_retired=96866894348	context_switches=928795	a76_cpu_cycles=247330598226	a76_l3d_cache_refill=3619556158	a76_l2d_cache_refill=2046676225	cpu_migrations=28965	page_faults=995544	a76_dtlb_walk=1057881809	a76_mem_access=127412738672	a76_inst_retired=366455834213	a76_l1d_cache_refill=3914643043	a55_inst_share=0.2091	a76_ipc=1.482	l2ref_pki=5.585	l3ref_pki=9.877	l1dref_pki=10.682	memacc_pki=347.69	dtlbw_pki=2.8868	pmu_enabled=100.0	pmu_cpu_s=574.6	who=at_s=6,rss_pg=426147,settled=2	pfn_zero_frac=0.0000	maps=3	sampled=73728	present_frac=0.6425	l2color_cv=0.0068	l3color_cv=0.0153	contig_frac=0.8671	mean_run=7.4	vapa16=0.0364	gib_regions=28	anon_pg=2048	anon_l2cv=0.0540	anon_contig=0.6067	anon_run=2.5	anon_gib=28	file_pg=24576	file_l2cv=0.0011	file_contig=0.9888	file_run=76.1	file_gib=27	other_pg=20744	other_l2cv=0.0162	other_contig=0.7487	other_run=4.0	other_gib=28	ro_cost_ms=52-->
+<!--DATA 1	unpinned	pp2048	118.36-->
+    [f16-resident] weights offered to the resident route: 126 resident on the NPU (780MB), 0 streamed via the per-call pack -- 100% resident
+
+### qwen35-08b-f16-pin [pin76] pass 1  env='PIN_MASK=0xf0'  args=''  23:58:13  clk=600 MHz  MemAvail=31251416 kB
+<!--PRED 1	pin76	memavail_kb=31251816	anonhuge_kb=0	hugepagesz_kb=2048	buddy=5357,3582,2963,2252,3903,3542,2971,2730,2264,2017,5009-->
+| model                          |       size |     params | backend    | ngl |            test |                  t/s |
+| ------------------------------ | ---------: | ---------: | ---------- | --: | --------------: | -------------------: |
+| qwen35 0.8B F16                |   1.40 GiB |   752.39 M | ROCKET     |  -1 |          pp2048 |        133.12 ± 0.31 |
+
+build: 171974745 (10558)
+<!--RO 1	pin76	wall_s=65	busy=76,65,66,82,3069,3298,2951,2343	busy_tot=11950	busy_little_share=0.0242	a55_cpu_cycles=9810122649	a55_inst_retired=2344026676	context_switches=1035331	a76_cpu_cycles=251861047218	a76_l3d_cache_refill=4012876586	a76_l2d_cache_refill=2136217512	cpu_migrations=36960	page_faults=991966	a76_dtlb_walk=1054011477	a76_mem_access=143057062032	a76_inst_retired=367005788724	a76_l1d_cache_refill=4527088972	a55_inst_share=0.0063	a76_ipc=1.457	l2ref_pki=5.821	l3ref_pki=10.934	l1dref_pki=12.335	memacc_pki=389.80	dtlbw_pki=2.8719	pmu_enabled=100.0	pmu_cpu_s=512.7	who=at_s=6,rss_pg=426533,settled=2	pfn_zero_frac=0.0000	maps=3	sampled=73728	present_frac=0.6425	l2color_cv=0.0060	l3color_cv=0.0135	contig_frac=0.6327	mean_run=2.7	vapa16=0.0268	gib_regions=28	anon_pg=2048	anon_l2cv=0.0229	anon_contig=0.7730	anon_run=4.4	anon_gib=19	file_pg=24576	file_l2cv=0.0008	file_contig=0.9822	file_run=50.8	file_gib=23	other_pg=20747	other_l2cv=0.0128	other_contig=0.2047	other_run=1.3	other_gib=28	ro_cost_ms=80-->
+<!--DATA 1	pin76	pp2048	133.12-->
+    [f16-resident] weights offered to the resident route: 126 resident on the NPU (780MB), 0 streamed via the per-call pack -- 100% resident
+
+### qwen35-08b-f16-pin [pin76t4] pass 1  env='PIN_MASK=0xf0'  args='-t 4'  23:59:30  clk=600 MHz  MemAvail=31272560 kB
+<!--PRED 1	pin76t4	memavail_kb=31272560	anonhuge_kb=0	hugepagesz_kb=2048	buddy=4213,5047,3237,2268,4091,3571,2957,2683,2246,1978,5038-->
+| model                          |       size |     params | backend    | ngl | threads |            test |                  t/s |
+| ------------------------------ | ---------: | ---------: | ---------- | --: | ------: | --------------: | -------------------: |
+| qwen35 0.8B F16                |   1.40 GiB |   752.39 M | ROCKET     |  -1 |       4 |          pp2048 |        133.58 ± 0.20 |
+
+build: 171974745 (10558)
+<!--RO 1	pin76t4	wall_s=65	busy=60,77,72,67,2917,2843,3361,2850	busy_tot=12247	busy_little_share=0.0225	a55_cpu_cycles=9502536905	a55_inst_retired=2205762411	context_switches=838703	a76_cpu_cycles=258186554979	a76_l3d_cache_refill=3872385704	a76_l2d_cache_refill=2271370479	cpu_migrations=13032	page_faults=992702	a76_dtlb_walk=1111661358	a76_mem_access=145341651678	a76_inst_retired=382662508506	a76_l1d_cache_refill=4961645037	a55_inst_share=0.0057	a76_ipc=1.482	l2ref_pki=5.936	l3ref_pki=10.120	l1dref_pki=12.966	memacc_pki=379.82	dtlbw_pki=2.9051	pmu_enabled=100.0	pmu_cpu_s=511.0	who=at_s=6,rss_pg=426212,settled=2	pfn_zero_frac=0.0000	maps=3	sampled=73728	present_frac=0.6494	l2color_cv=0.0046	l3color_cv=0.0143	contig_frac=0.8946	mean_run=9.3	vapa16=0.0116	gib_regions=28	anon_pg=2048	anon_l2cv=0.0247	anon_contig=0.5656	anon_run=2.3	anon_gib=23	file_pg=24576	file_l2cv=0.0006	file_contig=0.9913	file_run=93.8	file_gib=25	other_pg=21254	other_l2cv=0.0111	other_contig=0.8145	other_run=5.3	other_gib=28	ro_cost_ms=51-->
+<!--DATA 1	pin76t4	pp2048	133.58-->
+    [f16-resident] weights offered to the resident route: 126 resident on the NPU (780MB), 0 streamed via the per-call pack -- 100% resident
+
+### qwen35-08b-f16-pin [pin76] pass 2  env='PIN_MASK=0xf0'  args=''  00:00:47  clk=600 MHz  MemAvail=31348652 kB
+<!--PRED 2	pin76	memavail_kb=31348652	anonhuge_kb=0	hugepagesz_kb=2048	buddy=5229,6311,6172,2637,3939,3645,2979,2667,2248,1966,5045-->
+| model                          |       size |     params | backend    | ngl |            test |                  t/s |
+| ------------------------------ | ---------: | ---------: | ---------- | --: | --------------: | -------------------: |
+| qwen35 0.8B F16                |   1.40 GiB |   752.39 M | ROCKET     |  -1 |          pp2048 |        133.89 ± 0.18 |
+
+build: 171974745 (10558)
+<!--RO 2	pin76	wall_s=65	busy=84,76,58,68,2826,3453,2947,2330	busy_tot=11842	busy_little_share=0.0242	a55_cpu_cycles=9646734194	a55_inst_retired=2277675216	context_switches=1034888	a76_cpu_cycles=250333271778	a76_l3d_cache_refill=3935476494	a76_l2d_cache_refill=2158461131	cpu_migrations=36927	page_faults=990537	a76_dtlb_walk=570684489	a76_mem_access=142978140036	a76_inst_retired=366615866277	a76_l1d_cache_refill=4542363151	a55_inst_share=0.0062	a76_ipc=1.465	l2ref_pki=5.888	l3ref_pki=10.735	l1dref_pki=12.390	memacc_pki=389.99	dtlbw_pki=1.5566	pmu_enabled=100.0	pmu_cpu_s=510.1	who=at_s=6,rss_pg=426534,settled=2	pfn_zero_frac=0.0000	maps=3	sampled=73728	present_frac=0.6445	l2color_cv=0.0061	l3color_cv=0.0088	contig_frac=0.8806	mean_run=8.2	vapa16=0.0073	gib_regions=28	anon_pg=2048	anon_l2cv=0.0249	anon_contig=0.5504	anon_run=2.2	anon_gib=28	file_pg=24576	file_l2cv=0.0009	file_contig=0.9902	file_run=85.0	file_gib=25	other_pg=20897	other_l2cv=0.0147	other_contig=0.7840	other_run=4.6	other_gib=28	ro_cost_ms=68-->
+<!--DATA 2	pin76	pp2048	133.89-->
+    [f16-resident] weights offered to the resident route: 126 resident on the NPU (780MB), 0 streamed via the per-call pack -- 100% resident
+
+### qwen35-08b-f16-pin [pin76t4] pass 2  env='PIN_MASK=0xf0'  args='-t 4'  00:02:04  clk=600 MHz  MemAvail=31336144 kB
+<!--PRED 2	pin76t4	memavail_kb=31336144	anonhuge_kb=0	hugepagesz_kb=2048	buddy=5738,6198,5934,2693,3768,3730,2993,2632,2263,1954,5048-->
+| model                          |       size |     params | backend    | ngl | threads |            test |                  t/s |
+| ------------------------------ | ---------: | ---------: | ---------- | --: | ------: | --------------: | -------------------: |
+| qwen35 0.8B F16                |   1.40 GiB |   752.39 M | ROCKET     |  -1 |       4 |          pp2048 |        133.49 ± 0.32 |
+
+build: 171974745 (10558)
+<!--RO 2	pin76t4	wall_s=65	busy=58,71,60,72,3100,2971,3251,2737	busy_tot=12320	busy_little_share=0.0212	a55_cpu_cycles=9166943681	a55_inst_retired=2120775765	context_switches=837144	a76_cpu_cycles=258600090692	a76_l3d_cache_refill=3893998197	a76_l2d_cache_refill=2281091156	cpu_migrations=13141	page_faults=988617	a76_dtlb_walk=1123154486	a76_mem_access=145379858578	a76_inst_retired=382892937198	a76_l1d_cache_refill=4964205677	a55_inst_share=0.0055	a76_ipc=1.481	l2ref_pki=5.958	l3ref_pki=10.170	l1dref_pki=12.965	memacc_pki=379.69	dtlbw_pki=2.9333	pmu_enabled=100.0	pmu_cpu_s=510.9	who=at_s=6,rss_pg=426211,settled=2	pfn_zero_frac=0.0000	maps=3	sampled=73728	present_frac=0.6491	l2color_cv=0.0067	l3color_cv=0.0164	contig_frac=0.6867	mean_run=3.2	vapa16=0.0160	gib_regions=28	anon_pg=2048	anon_l2cv=0.0299	anon_contig=0.7162	anon_run=3.5	anon_gib=17	file_pg=24576	file_l2cv=0.0014	file_contig=0.9902	file_run=85.3	file_gib=27	other_pg=21234	other_l2cv=0.0157	other_contig=0.3326	other_run=1.5	other_gib=28	ro_cost_ms=89-->
+<!--DATA 2	pin76t4	pp2048	133.49-->
+    [f16-resident] weights offered to the resident route: 126 resident on the NPU (780MB), 0 streamed via the per-call pack -- 100% resident
+
+### qwen35-08b-f16-pin [unpinned] pass 2  env=''  args=''  00:03:22  clk=600 MHz  MemAvail=31343140 kB
+<!--PRED 2	unpinned	memavail_kb=31343140	anonhuge_kb=0	hugepagesz_kb=2048	buddy=6436,6200,3347,3522,4241,3804,2973,2631,2261,1944,5049-->
+| model                          |       size |     params | backend    | ngl |            test |                  t/s |
+| ------------------------------ | ---------: | ---------: | ---------- | --: | --------------: | -------------------: |
+| qwen35 0.8B F16                |   1.40 GiB |   752.39 M | ROCKET     |  -1 |          pp2048 |        119.74 ± 0.10 |
+
+build: 171974745 (10558)
+<!--RO 2	unpinned	wall_s=71	busy=2201,2204,2220,2194,2703,2633,2996,2802	busy_tot=19953	busy_little_share=0.4420	a55_cpu_cycles=158021040925	a55_inst_retired=96969664385	context_switches=928694	a76_cpu_cycles=245572232472	a76_l3d_cache_refill=3473124990	a76_l2d_cache_refill=2082633975	cpu_migrations=29137	page_faults=991888	a76_dtlb_walk=1040191092	a76_mem_access=127408667146	a76_inst_retired=366158321828	a76_l1d_cache_refill=3916227055	a55_inst_share=0.2094	a76_ipc=1.491	l2ref_pki=5.688	l3ref_pki=9.485	l1dref_pki=10.695	memacc_pki=347.96	dtlbw_pki=2.8408	pmu_enabled=100.0	pmu_cpu_s=567.5	who=at_s=6,rss_pg=426147,settled=2	pfn_zero_frac=0.0000	maps=3	sampled=73728	present_frac=0.6418	l2color_cv=0.0044	l3color_cv=0.0125	contig_frac=0.8578	mean_run=6.9	vapa16=0.0207	gib_regions=28	anon_pg=2048	anon_l2cv=0.0349	anon_contig=0.3474	anon_run=1.5	anon_gib=28	file_pg=24576	file_l2cv=0.0007	file_contig=0.9900	file_run=83.6	file_gib=25	other_pg=20692	other_l2cv=0.0106	other_contig=0.7512	other_run=4.0	other_gib=28	ro_cost_ms=58-->
+<!--DATA 2	unpinned	pp2048	119.74-->
+    [f16-resident] weights offered to the resident route: 126 resident on the NPU (780MB), 0 streamed via the per-call pack -- 100% resident
+
+### qwen35-08b-f16-pin [pin76t4] pass 3  env='PIN_MASK=0xf0'  args='-t 4'  00:04:46  clk=600 MHz  MemAvail=31326560 kB
+<!--PRED 3	pin76t4	memavail_kb=31326560	anonhuge_kb=0	hugepagesz_kb=2048	buddy=5497,6671,6012,3222,3698,3713,2873,2668,2250,1945,5052-->
+| model                          |       size |     params | backend    | ngl | threads |            test |                  t/s |
+| ------------------------------ | ---------: | ---------: | ---------- | --: | ------: | --------------: | -------------------: |
+| qwen35 0.8B F16                |   1.40 GiB |   752.39 M | ROCKET     |  -1 |       4 |          pp2048 |        133.36 ± 0.15 |
+
+build: 171974745 (10558)
+<!--RO 3	pin76t4	wall_s=65	busy=49,54,76,63,3089,2802,3247,2863	busy_tot=12243	busy_little_share=0.0198	a55_cpu_cycles=8853834063	a55_inst_retired=1941725635	context_switches=840526	a76_cpu_cycles=258753070804	a76_l3d_cache_refill=3899541393	a76_l2d_cache_refill=2279160909	cpu_migrations=13060	page_faults=985861	a76_dtlb_walk=1121049292	a76_mem_access=145378435726	a76_inst_retired=382968763013	a76_l1d_cache_refill=4957041910	a55_inst_share=0.0050	a76_ipc=1.480	l2ref_pki=5.951	l3ref_pki=10.182	l1dref_pki=12.944	memacc_pki=379.61	dtlbw_pki=2.9273	pmu_enabled=100.0	pmu_cpu_s=511.5	who=at_s=6,rss_pg=426219,settled=2	pfn_zero_frac=0.0000	maps=3	sampled=73728	present_frac=0.6418	l2color_cv=0.0065	l3color_cv=0.0110	contig_frac=0.8425	mean_run=6.3	vapa16=0.0216	gib_regions=28	anon_pg=2048	anon_l2cv=0.0375	anon_contig=0.3195	anon_run=1.5	anon_gib=28	file_pg=24576	file_l2cv=0.0012	file_contig=0.9906	file_run=88.1	file_gib=27	other_pg=20692	other_l2cv=0.0149	other_contig=0.7183	other_run=3.5	other_gib=28	ro_cost_ms=67-->
+<!--DATA 3	pin76t4	pp2048	133.36-->
+    [f16-resident] weights offered to the resident route: 126 resident on the NPU (780MB), 0 streamed via the per-call pack -- 100% resident
+
+### qwen35-08b-f16-pin [unpinned] pass 3  env=''  args=''  00:06:05  clk=600 MHz  MemAvail=31335812 kB
+<!--PRED 3	unpinned	memavail_kb=31335812	anonhuge_kb=0	hugepagesz_kb=2048	buddy=5183,5731,5637,2947,3884,3622,2971,2670,2246,1944,5055-->
+| model                          |       size |     params | backend    | ngl |            test |                  t/s |
+| ------------------------------ | ---------: | ---------: | ---------- | --: | --------------: | -------------------: |
+| qwen35 0.8B F16                |   1.40 GiB |   752.39 M | ROCKET     |  -1 |          pp2048 |        116.16 ± 0.78 |
+
+build: 171974745 (10558)
+<!--RO 3	unpinned	wall_s=73	busy=2203,2220,2240,2191,2823,2413,3133,2924	busy_tot=20147	busy_little_share=0.4395	a55_cpu_cycles=158928135594	a55_inst_retired=97142119522	context_switches=928330	a76_cpu_cycles=249412121144	a76_l3d_cache_refill=3745346579	a76_l2d_cache_refill=2100439598	cpu_migrations=28581	page_faults=995326	a76_dtlb_walk=644560225	a76_mem_access=127076373144	a76_inst_retired=365470297743	a76_l1d_cache_refill=3910345886	a55_inst_share=0.2100	a76_ipc=1.465	l2ref_pki=5.747	l3ref_pki=10.248	l1dref_pki=10.699	memacc_pki=347.71	dtlbw_pki=1.7636	pmu_enabled=100.0	pmu_cpu_s=585.0	who=at_s=6,rss_pg=426147,settled=2	pfn_zero_frac=0.0000	maps=3	sampled=73728	present_frac=0.6447	l2color_cv=0.0021	l3color_cv=0.0149	contig_frac=0.8490	mean_run=6.5	vapa16=0.0163	gib_regions=28	anon_pg=2055	anon_l2cv=0.0311	anon_contig=0.5815	anon_run=2.4	anon_gib=26	file_pg=24576	file_l2cv=0.0005	file_contig=0.9913	file_run=93.8	file_gib=25	other_pg=20899	other_l2cv=0.0041	other_contig=0.7079	other_run=3.4	other_gib=26	ro_cost_ms=58-->
+<!--DATA 3	unpinned	pp2048	116.16-->
+    [f16-resident] weights offered to the resident route: 126 resident on the NPU (780MB), 0 streamed via the per-call pack -- 100% resident
+
+### qwen35-08b-f16-pin [pin76] pass 3  env='PIN_MASK=0xf0'  args=''  00:07:31  clk=600 MHz  MemAvail=31294428 kB
+<!--PRED 3	pin76	memavail_kb=31294428	anonhuge_kb=0	hugepagesz_kb=2048	buddy=6030,6162,6127,2859,2972,3865,2872,2653,2243,1941,5060-->
+| model                          |       size |     params | backend    | ngl |            test |                  t/s |
+| ------------------------------ | ---------: | ---------: | ---------- | --: | --------------: | -------------------: |
+| qwen35 0.8B F16                |   1.40 GiB |   752.39 M | ROCKET     |  -1 |          pp2048 |        127.60 ± 0.36 |
+
+build: 171974745 (10558)
+<!--RO 3	pin76	wall_s=68	busy=60,76,67,71,2988,3500,3028,2303	busy_tot=12093	busy_little_share=0.0227	a55_cpu_cycles=9736439015	a55_inst_retired=2308170009	context_switches=1034673	a76_cpu_cycles=256307660824	a76_l3d_cache_refill=4203122607	a76_l2d_cache_refill=2194195664	cpu_migrations=37208	page_faults=991055	a76_dtlb_walk=658371911	a76_mem_access=143066905142	a76_inst_retired=367025431731	a76_l1d_cache_refill=4521977120	a55_inst_share=0.0062	a76_ipc=1.432	l2ref_pki=5.978	l3ref_pki=11.452	l1dref_pki=12.321	memacc_pki=389.80	dtlbw_pki=1.7938	pmu_enabled=100.0	pmu_cpu_s=533.3	who=at_s=6,rss_pg=426527,settled=2	pfn_zero_frac=0.0000	maps=3	sampled=73728	present_frac=0.6431	l2color_cv=0.0032	l3color_cv=0.0105	contig_frac=0.8780	mean_run=8.1	vapa16=0.0107	gib_regions=28	anon_pg=2048	anon_l2cv=0.0185	anon_contig=0.5401	anon_run=2.2	anon_gib=21	file_pg=24576	file_l2cv=0.0013	file_contig=0.9880	file_run=71.7	file_gib=26	other_pg=20789	other_l2cv=0.0062	other_contig=0.7814	other_run=4.5	other_gib=28	ro_cost_ms=70-->
+<!--DATA 3	pin76	pp2048	127.60-->
+    [f16-resident] weights offered to the resident route: 126 resident on the NPU (780MB), 0 streamed via the per-call pack -- 100% resident
+
+### qwen35-08b-f16-pin [unpinned] pass 4  env=''  args=''  00:08:53  clk=600 MHz  MemAvail=31322132 kB
+<!--PRED 4	unpinned	memavail_kb=31322640	anonhuge_kb=0	hugepagesz_kb=2048	buddy=6573,6389,3616,3111,4061,3720,2936,2635,2260,1930,5060-->
+| model                          |       size |     params | backend    | ngl |            test |                  t/s |
+| ------------------------------ | ---------: | ---------: | ---------- | --: | --------------: | -------------------: |
+| qwen35 0.8B F16                |   1.40 GiB |   752.39 M | ROCKET     |  -1 |          pp2048 |        124.91 ± 0.42 |
+
+build: 171974745 (10558)
+<!--RO 4	unpinned	wall_s=69	busy=2158,2160,2186,2153,2816,2422,3050,2570	busy_tot=19515	busy_little_share=0.4436	a55_cpu_cycles=155867610700	a55_inst_retired=95664642132	context_switches=929129	a76_cpu_cycles=239724951287	a76_l3d_cache_refill=3193979548	a76_l2d_cache_refill=2102712741	cpu_migrations=29006	page_faults=989351	a76_dtlb_walk=942498282	a76_mem_access=128003205924	a76_inst_retired=366847951220	a76_l1d_cache_refill=3904476479	a55_inst_share=0.2068	a76_ipc=1.530	l2ref_pki=5.732	l3ref_pki=8.707	l1dref_pki=10.643	memacc_pki=348.93	dtlbw_pki=2.5692	pmu_enabled=100.0	pmu_cpu_s=545.0	who=at_s=6,rss_pg=426527,settled=2	pfn_zero_frac=0.0000	maps=3	sampled=73728	present_frac=0.6446	l2color_cv=0.0052	l3color_cv=0.0233	contig_frac=0.8690	mean_run=7.5	vapa16=0.0191	gib_regions=28	anon_pg=2051	anon_l2cv=0.0648	anon_contig=0.6220	anon_run=2.6	anon_gib=28	file_pg=24576	file_l2cv=0.0015	file_contig=0.9905	file_run=87.1	file_gib=27	other_pg=20895	other_l2cv=0.0133	other_contig=0.7503	other_run=4.0	other_gib=28	ro_cost_ms=60-->
+<!--DATA 4	unpinned	pp2048	124.91-->
+    [f16-resident] weights offered to the resident route: 126 resident on the NPU (780MB), 0 streamed via the per-call pack -- 100% resident
+
+### qwen35-08b-f16-pin [pin76] pass 4  env='PIN_MASK=0xf0'  args=''  00:10:14  clk=600 MHz  MemAvail=31459468 kB
+<!--PRED 4	pin76	memavail_kb=31459468	anonhuge_kb=0	hugepagesz_kb=2048	buddy=6100,6651,5943,5863,4086,3809,2926,2654,2257,1927,5061-->
+| model                          |       size |     params | backend    | ngl |            test |                  t/s |
+| ------------------------------ | ---------: | ---------: | ---------- | --: | --------------: | -------------------: |
+| qwen35 0.8B F16                |   1.40 GiB |   752.39 M | ROCKET     |  -1 |          pp2048 |        142.24 ± 0.13 |
+
+build: 171974745 (10558)
+<!--RO 4	pin76	wall_s=61	busy=62,53,70,72,3016,2863,2883,2460	busy_tot=11479	busy_little_share=0.0224	a55_cpu_cycles=9403029782	a55_inst_retired=2124373578	context_switches=1036585	a76_cpu_cycles=243365324483	a76_l3d_cache_refill=3477485190	a76_l2d_cache_refill=2186892754	cpu_migrations=36258	page_faults=985337	a76_dtlb_walk=993503239	a76_mem_access=143098825618	a76_inst_retired=366579951711	a76_l1d_cache_refill=4511764013	a55_inst_share=0.0058	a76_ipc=1.506	l2ref_pki=5.966	l3ref_pki=9.486	l1dref_pki=12.308	memacc_pki=390.36	dtlbw_pki=2.7102	pmu_enabled=100.0	pmu_cpu_s=481.8	who=at_s=18,rss_pg=464440,settled=2	pfn_zero_frac=0.0000	maps=3	sampled=73728	present_frac=0.6499	l2color_cv=0.0146	l3color_cv=0.0322	contig_frac=0.8674	mean_run=7.4	vapa16=0.0486	gib_regions=29	anon_pg=2048	anon_l2cv=0.0768	anon_contig=0.5049	anon_run=2.0	anon_gib=28	file_pg=24576	file_l2cv=0.0014	file_contig=0.9859	file_run=62.4	file_gib=25	other_pg=21295	other_l2cv=0.0312	other_contig=0.7655	other_run=4.2	other_gib=29	ro_cost_ms=85-->
+<!--DATA 4	pin76	pp2048	142.24-->
+    [f16-resident] weights offered to the resident route: 126 resident on the NPU (780MB), 0 streamed via the per-call pack -- 100% resident
+
+### qwen35-08b-f16-pin [pin76t4] pass 4  env='PIN_MASK=0xf0'  args='-t 4'  00:11:27  clk=600 MHz  MemAvail=31355096 kB
+<!--PRED 4	pin76t4	memavail_kb=31355096	anonhuge_kb=0	hugepagesz_kb=2048	buddy=6435,6248,6045,3323,3844,3816,2900,2619,2255,1935,5061-->
+| model                          |       size |     params | backend    | ngl | threads |            test |                  t/s |
+| ------------------------------ | ---------: | ---------: | ---------- | --: | ------: | --------------: | -------------------: |
+| qwen35 0.8B F16                |   1.40 GiB |   752.39 M | ROCKET     |  -1 |       4 |          pp2048 |        133.37 ± 0.20 |
+
+build: 171974745 (10558)
+<!--RO 4	pin76t4	wall_s=65	busy=65,72,49,65,3289,2767,3157,2809	busy_tot=12273	busy_little_share=0.0205	a55_cpu_cycles=8804893780	a55_inst_retired=1962116620	context_switches=837692	a76_cpu_cycles=258510160879	a76_l3d_cache_refill=3882966419	a76_l2d_cache_refill=2274751329	cpu_migrations=13120	page_faults=981634	a76_dtlb_walk=1116901484	a76_mem_access=145287982762	a76_inst_retired=382747894252	a76_l1d_cache_refill=4956281784	a55_inst_share=0.0051	a76_ipc=1.481	l2ref_pki=5.943	l3ref_pki=10.145	l1dref_pki=12.949	memacc_pki=379.59	dtlbw_pki=2.9181	pmu_enabled=100.0	pmu_cpu_s=511.2	who=at_s=6,rss_pg=426218,settled=2	pfn_zero_frac=0.0000	maps=3	sampled=73728	present_frac=0.6379	l2color_cv=0.0045	l3color_cv=0.0164	contig_frac=0.6848	mean_run=3.2	vapa16=0.0210	gib_regions=28	anon_pg=2048	anon_l2cv=0.0231	anon_contig=0.7583	anon_run=4.1	anon_gib=15	file_pg=24576	file_l2cv=0.0007	file_contig=0.9880	file_run=71.9	file_gib=27	other_pg=20407	other_l2cv=0.0101	other_contig=0.3122	other_run=1.5	other_gib=28	ro_cost_ms=81-->
+<!--DATA 4	pin76t4	pp2048	133.37-->
+    [f16-resident] weights offered to the resident route: 126 resident on the NPU (780MB), 0 streamed via the per-call pack -- 100% resident
+
+### qwen35-08b-f16-pin [pin76] pass 5  env='PIN_MASK=0xf0'  args=''  00:12:45  clk=600 MHz  MemAvail=31358172 kB
+<!--PRED 5	pin76	memavail_kb=31358172	anonhuge_kb=0	hugepagesz_kb=2048	buddy=6182,6804,5915,3484,3748,3780,2974,2602,2237,1934,5065-->
+| model                          |       size |     params | backend    | ngl |            test |                  t/s |
+| ------------------------------ | ---------: | ---------: | ---------- | --: | --------------: | -------------------: |
+| qwen35 0.8B F16                |   1.40 GiB |   752.39 M | ROCKET     |  -1 |          pp2048 |        128.93 ± 0.08 |
+
+build: 171974745 (10558)
+<!--RO 5	pin76	wall_s=67	busy=64,51,67,61,2868,3318,3328,2317	busy_tot=12074	busy_little_share=0.0201	a55_cpu_cycles=8774266531	a55_inst_retired=1927962010	context_switches=1032155	a76_cpu_cycles=255708103294	a76_l3d_cache_refill=4202568520	a76_l2d_cache_refill=2200470932	cpu_migrations=36991	page_faults=981118	a76_dtlb_walk=655684159	a76_mem_access=142973269201	a76_inst_retired=366601109803	a76_l1d_cache_refill=4532181562	a55_inst_share=0.0052	a76_ipc=1.434	l2ref_pki=6.002	l3ref_pki=11.464	l1dref_pki=12.363	memacc_pki=390.00	dtlbw_pki=1.7885	pmu_enabled=100.0	pmu_cpu_s=529.0	who=at_s=6,rss_pg=426528,settled=2	pfn_zero_frac=0.0000	maps=3	sampled=73728	present_frac=0.6439	l2color_cv=0.0073	l3color_cv=0.0178	contig_frac=0.6780	mean_run=3.1	vapa16=0.0578	gib_regions=28	anon_pg=2048	anon_l2cv=0.0319	anon_contig=0.8014	anon_run=5.0	anon_gib=24	file_pg=24576	file_l2cv=0.0015	file_contig=0.9902	file_run=85.0	file_gib=26	other_pg=20851	other_l2cv=0.0156	other_contig=0.2977	other_run=1.4	other_gib=28	ro_cost_ms=68-->
+<!--DATA 5	pin76	pp2048	128.93-->
+    [f16-resident] weights offered to the resident route: 126 resident on the NPU (780MB), 0 streamed via the per-call pack -- 100% resident
+
+### qwen35-08b-f16-pin [pin76t4] pass 5  env='PIN_MASK=0xf0'  args='-t 4'  00:14:04  clk=600 MHz  MemAvail=31474384 kB
+<!--PRED 5	pin76t4	memavail_kb=31474384	anonhuge_kb=0	hugepagesz_kb=2048	buddy=6312,6821,6671,6095,3975,3745,2935,2640,2247,1925,5067-->
+| model                          |       size |     params | backend    | ngl | threads |            test |                  t/s |
+| ------------------------------ | ---------: | ---------: | ---------- | --: | ------: | --------------: | -------------------: |
+| qwen35 0.8B F16                |   1.40 GiB |   752.39 M | ROCKET     |  -1 |       4 |          pp2048 |        136.47 ± 0.05 |
+
+build: 171974745 (10558)
+<!--RO 5	pin76t4	wall_s=64	busy=52,58,90,76,2990,3152,3048,2696	busy_tot=12162	busy_little_share=0.0227	a55_cpu_cycles=9251502611	a55_inst_retired=2117583144	context_switches=838494	a76_cpu_cycles=256324601261	a76_l3d_cache_refill=3781752473	a76_l2d_cache_refill=2235152395	cpu_migrations=13143	page_faults=986791	a76_dtlb_walk=1098562620	a76_mem_access=145351832834	a76_inst_retired=382685667595	a76_l1d_cache_refill=4935847452	a55_inst_share=0.0055	a76_ipc=1.493	l2ref_pki=5.841	l3ref_pki=9.882	l1dref_pki=12.898	memacc_pki=379.82	dtlbw_pki=2.8707	pmu_enabled=100.0	pmu_cpu_s=500.4	who=at_s=6,rss_pg=426211,settled=2	pfn_zero_frac=0.0000	maps=3	sampled=73728	present_frac=0.6323	l2color_cv=0.0022	l3color_cv=0.0107	contig_frac=0.9114	mean_run=11.0	vapa16=0.0070	gib_regions=28	anon_pg=2048	anon_l2cv=0.0177	anon_contig=0.7373	anon_run=3.8	anon_gib=14	file_pg=24576	file_l2cv=0.0007	file_contig=0.9900	file_run=83.9	file_gib=27	other_pg=19996	other_l2cv=0.0053	other_contig=0.8327	other_run=5.9	other_gib=28	ro_cost_ms=53-->
+<!--DATA 5	pin76t4	pp2048	136.47-->
+    [f16-resident] weights offered to the resident route: 126 resident on the NPU (780MB), 0 streamed via the per-call pack -- 100% resident
+
+### qwen35-08b-f16-pin [unpinned] pass 5  env=''  args=''  00:15:22  clk=600 MHz  MemAvail=31421516 kB
+<!--PRED 5	unpinned	memavail_kb=31421516	anonhuge_kb=0	hugepagesz_kb=2048	buddy=5661,5789,5769,5061,3792,3931,2949,2614,2230,1931,5069-->
+| model                          |       size |     params | backend    | ngl |            test |                  t/s |
+| ------------------------------ | ---------: | ---------: | ---------- | --: | --------------: | -------------------: |
+| qwen35 0.8B F16                |   1.40 GiB |   752.39 M | ROCKET     |  -1 |          pp2048 |        123.92 ± 0.18 |
+
+build: 171974745 (10558)
+<!--RO 5	unpinned	wall_s=69	busy=2171,2180,2213,2179,2873,2682,2664,2691	busy_tot=19653	busy_little_share=0.4449	a55_cpu_cycles=156245306740	a55_inst_retired=95743203859	context_switches=926992	a76_cpu_cycles=240500575890	a76_l3d_cache_refill=3220369471	a76_l2d_cache_refill=2097779108	cpu_migrations=28279	page_faults=984475	a76_dtlb_walk=1018674691	a76_mem_access=127334497655	a76_inst_retired=364249858899	a76_l1d_cache_refill=3908729550	a55_inst_share=0.2081	a76_ipc=1.515	l2ref_pki=5.759	l3ref_pki=8.841	l1dref_pki=10.731	memacc_pki=349.58	dtlbw_pki=2.7966	pmu_enabled=100.0	pmu_cpu_s=548.1	who=at_s=6,rss_pg=426527,settled=2	pfn_zero_frac=0.0000	maps=3	sampled=73728	present_frac=0.6413	l2color_cv=0.0039	l3color_cv=0.0105	contig_frac=0.8659	mean_run=7.4	vapa16=0.0076	gib_regions=28	anon_pg=2046	anon_l2cv=0.0416	anon_contig=0.6407	anon_run=2.8	anon_gib=25	file_pg=24576	file_l2cv=0.0005	file_contig=0.9911	file_run=92.0	file_gib=26	other_pg=20657	other_l2cv=0.0071	other_contig=0.7392	other_run=3.8	other_gib=28	ro_cost_ms=72-->
+<!--DATA 5	unpinned	pp2048	123.92-->
+    [f16-resident] weights offered to the resident route: 126 resident on the NPU (780MB), 0 streamed via the per-call pack -- 100% resident
+
+### qwen35-08b-f16-pin [pin76t4] pass 6  env='PIN_MASK=0xf0'  args='-t 4'  00:16:43  clk=600 MHz  MemAvail=31473976 kB
+<!--PRED 6	pin76t4	memavail_kb=31473976	anonhuge_kb=0	hugepagesz_kb=2048	buddy=5648,6573,6240,4554,4457,3723,2958,2640,2237,1939,5069-->
+| model                          |       size |     params | backend    | ngl | threads |            test |                  t/s |
+| ------------------------------ | ---------: | ---------: | ---------- | --: | ------: | --------------: | -------------------: |
+| qwen35 0.8B F16                |   1.40 GiB |   752.39 M | ROCKET     |  -1 |       4 |          pp2048 |        139.32 ± 0.25 |
+
+build: 171974745 (10558)
+<!--RO 6	pin76t4	wall_s=61	busy=63,61,52,54,2957,2753,3047,2944	busy_tot=11931	busy_little_share=0.0193	a55_cpu_cycles=8582039341	a55_inst_retired=1838814564	context_switches=836218	a76_cpu_cycles=252231834477	a76_l3d_cache_refill=3571544157	a76_l2d_cache_refill=2242544580	cpu_migrations=12778	page_faults=981185	a76_dtlb_walk=1021179072	a76_mem_access=145187030512	a76_inst_retired=381963850547	a76_l1d_cache_refill=4940089206	a55_inst_share=0.0048	a76_ipc=1.514	l2ref_pki=5.871	l3ref_pki=9.350	l1dref_pki=12.933	memacc_pki=380.11	dtlbw_pki=2.6735	pmu_enabled=100.0	pmu_cpu_s=490.0	who=at_s=6,rss_pg=432571,settled=2	pfn_zero_frac=0.0000	maps=3	sampled=73728	present_frac=0.6192	l2color_cv=0.0040	l3color_cv=0.0178	contig_frac=0.8863	mean_run=8.6	vapa16=0.0375	gib_regions=28	anon_pg=2048	anon_l2cv=0.0699	anon_contig=0.5812	anon_run=2.4	anon_gib=26	file_pg=24576	file_l2cv=0.0009	file_contig=0.9824	file_run=51.2	file_gib=28	other_pg=19026	other_l2cv=0.0057	other_contig=0.7950	other_run=4.8	other_gib=28	ro_cost_ms=49-->
+<!--DATA 6	pin76t4	pp2048	139.32-->
+    [f16-resident] weights offered to the resident route: 126 resident on the NPU (780MB), 0 streamed via the per-call pack -- 100% resident
+
+### qwen35-08b-f16-pin [unpinned] pass 6  env=''  args=''  00:17:59  clk=600 MHz  MemAvail=31352056 kB
+<!--PRED 6	unpinned	memavail_kb=31352056	anonhuge_kb=0	hugepagesz_kb=2048	buddy=5352,5871,4783,2691,4465,3855,2904,2606,2231,1927,5072-->
+| model                          |       size |     params | backend    | ngl |            test |                  t/s |
+| ------------------------------ | ---------: | ---------: | ---------- | --: | --------------: | -------------------: |
+| qwen35 0.8B F16                |   1.40 GiB |   752.39 M | ROCKET     |  -1 |          pp2048 |        116.47 ± 0.46 |
+
+build: 171974745 (10558)
+<!--RO 6	unpinned	wall_s=74	busy=2193,2219,2259,2236,2791,2322,3178,3031	busy_tot=20229	busy_little_share=0.4403	a55_cpu_cycles=158854354621	a55_inst_retired=97193826111	context_switches=924806	a76_cpu_cycles=248643161640	a76_l3d_cache_refill=3757927985	a76_l2d_cache_refill=2092033342	cpu_migrations=28073	page_faults=985616	a76_dtlb_walk=1114634791	a76_mem_access=126376522585	a76_inst_retired=363111988693	a76_l1d_cache_refill=3913326005	a55_inst_share=0.2112	a76_ipc=1.460	l2ref_pki=5.761	l3ref_pki=10.349	l1dref_pki=10.777	memacc_pki=348.04	dtlbw_pki=3.0697	pmu_enabled=100.0	pmu_cpu_s=583.0	who=at_s=7,rss_pg=426143,settled=2	pfn_zero_frac=0.0000	maps=3	sampled=73728	present_frac=0.6420	l2color_cv=0.0073	l3color_cv=0.0121	contig_frac=0.8935	mean_run=9.2	vapa16=0.0074	gib_regions=28	anon_pg=2055	anon_l2cv=0.0495	anon_contig=0.6205	anon_run=2.6	anon_gib=27	file_pg=24576	file_l2cv=0.0014	file_contig=0.9918	file_run=98.3	file_gib=27	other_pg=20701	other_l2cv=0.0134	other_contig=0.8040	other_run=5.1	other_gib=28	ro_cost_ms=69-->
+<!--DATA 6	unpinned	pp2048	116.47-->
+    [f16-resident] weights offered to the resident route: 126 resident on the NPU (780MB), 0 streamed via the per-call pack -- 100% resident
+
+### qwen35-08b-f16-pin [pin76] pass 6  env='PIN_MASK=0xf0'  args=''  00:19:26  clk=600 MHz  MemAvail=31249444 kB
+<!--PRED 6	pin76	memavail_kb=31249444	anonhuge_kb=0	hugepagesz_kb=2048	buddy=5172,5693,5707,2766,2984,3545,2937,2640,2228,1922,5073-->
+| model                          |       size |     params | backend    | ngl |            test |                  t/s |
+| ------------------------------ | ---------: | ---------: | ---------- | --: | --------------: | -------------------: |
+| qwen35 0.8B F16                |   1.40 GiB |   752.39 M | ROCKET     |  -1 |          pp2048 |        127.69 ± 0.35 |
+
+build: 171974745 (10558)
+<!--RO 6	pin76	wall_s=67	busy=68,83,65,67,3117,3080,3230,2347	busy_tot=12057	busy_little_share=0.0235	a55_cpu_cycles=9241998654	a55_inst_retired=2085213958	context_switches=1034319	a76_cpu_cycles=255809755795	a76_l3d_cache_refill=4195168204	a76_l2d_cache_refill=2193614899	cpu_migrations=37178	page_faults=985592	a76_dtlb_walk=661521360	a76_mem_access=142808926384	a76_inst_retired=365996975187	a76_l1d_cache_refill=4522954396	a55_inst_share=0.0057	a76_ipc=1.431	l2ref_pki=5.994	l3ref_pki=11.462	l1dref_pki=12.358	memacc_pki=390.19	dtlbw_pki=1.8075	pmu_enabled=100.0	pmu_cpu_s=532.8	who=at_s=6,rss_pg=426527,settled=2	pfn_zero_frac=0.0000	maps=3	sampled=73728	present_frac=0.6425	l2color_cv=0.0019	l3color_cv=0.0059	contig_frac=0.8573	mean_run=6.9	vapa16=0.0292	gib_regions=28	anon_pg=2048	anon_l2cv=0.0382	anon_contig=0.5411	anon_run=2.2	anon_gib=26	file_pg=24576	file_l2cv=0.0006	file_contig=0.9918	file_run=98.7	file_gib=25	other_pg=20749	other_l2cv=0.0033	other_contig=0.7292	other_run=3.7	other_gib=28	ro_cost_ms=59-->
+<!--DATA 6	pin76	pp2048	127.69-->
+    [f16-resident] weights offered to the resident route: 126 resident on the NPU (780MB), 0 streamed via the per-call pack -- 100% resident
+
+#### summary: per-arm mean over 6 passes, ratios paired within a pass against [unpinned]
+| test | arm | mean t/s | n | min | max | paired ratio | per-pass ratios |
+|---|---|---:|---:|---:|---:|---:|---|
+| pp2048 | unpinned | 119.93 | 6 | 116.16 | 124.91 | -- | -- |
+| pp2048 | pin76 | 132.25 | 6 | 127.60 | 142.24 | 1.103x | 1.125 1.118 1.098 1.139 1.040 1.096 |
+| pp2048 | pin76t4 | 134.93 | 6 | 133.36 | 139.32 | 1.126x | 1.129 1.115 1.148 1.068 1.101 1.196 |
+

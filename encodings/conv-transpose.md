@@ -6,17 +6,20 @@ segmentation heads, decoder / super-resolution / GAN-generator blocks, and FPN
 learned-upsample (ONNX `ConvTranspose`, PyTorch `nn.ConvTranspose2d`, TFLite
 `TRANSPOSE_CONV`). Implemented: `rocket_conv_transpose2d_fp16` (`src/rocket_conv_transpose.c`,
 `include/rocket_conv.h`), HW gate `tests/conv_transpose_rocket.c` (CTest `conv_transpose_rocket`).
+It has two routes. On the RK3588 a direct transposed conv at power-of-two strides whose
+compact input fits one CBUF pass runs on the hardware deconvolution mode described below.
+Everything else is lowered onto the forward conv.
 
 **Established by:** HW run on the Turing RK1 (kernel 7.1.0-1, 600 MHz), bit-exact vs a
 direct scatter-add reference across stride 1/2/3, pad, output_padding, dilation>1,
 asymmetric kernels, multi-group IC/OC, and a tiled 64×64 output (2026-06-22).
 
-## The shipping path lowers onto the forward conv
+## The lowering onto the forward conv
 
-The CNA is a forward convolution engine and there is no on-chip layout/scatter engine to
-build the dilated input (consistent with
-[no on-chip layout conversion](../perf/ppu-pooling-not-detile.md)), so the transposed conv
-is realised by the **standard lowering identity**:
+The lowering covers what the hardware mode does not: odd strides, dilation, the depthwise
+form, and inputs past one CBUF pass. It needs no layout or scatter engine on the chip
+(consistent with [no on-chip layout conversion](../perf/ppu-pooling-not-detile.md)),
+because it uses the **standard lowering identity**:
 
 ```
 ConvTranspose(X; W, stride s, pad p, dil d, opad)
@@ -63,11 +66,12 @@ when `s>1` (must be `< stride`); it appears only in the trailing pad, never the 
   too (`−4` from `rocket_conv2d_plan`).
 - **OC/IC** follow the forward conv: any OC is zero-padded to the 16-channel oc-group, any IC
   to the 32-channel K-group (so an RGB-width `IC=3` transpose works).
-- **Cost scales with the *upsampled* size.** The materialised dilation means the inserted
-  zeros are still MAC'd by the CNA (a stride-`s` transpose does ~`s²` redundant zero-MACs).
-  Correctness-first. The perf follow-on is the **sub-pixel / stride² decomposition**: run `s²`
-  small *dense* forward convs (one per `(kh mod s, kw mod s)` phase) and interleave their
-  outputs, with no zero-MACs, which is how efficient deconv is normally done. Not yet built.
+- **Cost scales with the *upsampled* size.** The materialised dilation means the host packs
+  and the CNA fetches an input about `s²` larger, and the inserted zeros are MAC'd. The
+  hardware mode below is 0.35-0.54x this path's wall at decoder shapes. For the shapes it
+  does not take, the follow-on is the **sub-pixel / stride² decomposition**: run `s²` small
+  *dense* forward convs, one per `(kh mod s, kw mod s)` phase, and interleave their outputs,
+  with no zero-MACs. Not yet built.
 
 ## There is a hardware deconvolution mode, and it is live
 
@@ -133,6 +137,51 @@ channel transpose are not done by the mode; only the dilation is. Getting either
 computes a full, correctly-sized, entirely plausible surface, which is this datapath's
 signature failure.
 
+### The output extent is the programmed one
+
+**The mode computes the whole transposed convolution in one task when the output geometry is
+programmed as the transposed extent** [HW sweep, Turing RK1 at 600 MHz, rocket 1.3.0,
+`tests/deconv_extent_probe.c`, 2026-09-23]. The CNA walks whatever extent the geometry registers
+give it, so the program sets two extents that a forward conv derives from one:
+
+| Register | Value |
+|---|---|
+| `CNA_CONV_CON1[16]` `DECONV` | 1 |
+| `CNA_CONV_CON3` `DECONV_Y/X_STRIDE` | `s-1` per axis |
+| `CNA_CONV_CON3` conv stride | 1 |
+| `CNA_DATA_SIZE0` and the feature DMA geometry | the undilated input |
+| `CNA_PAD_CON0` | `k-1-p` per axis |
+| `CNA_DATA_SIZE2/3`, `CORE_DATAOUT_SIZE_0`, the DPU cube and WDMA sizes | the transposed extent |
+
+The kernel is flipped and channel-transposed as in the lowering above. Against
+`rocket_conv_transpose2d_ref_fp16` ten cells are bit-exact over the whole surface:
+
+| Input | Channels | Kernel, stride, pad | Output |
+|---|---|---|---|
+| 4×4 | 32 -> 32 | k3, s2, p0 | 9×9 |
+| 32×32 | 32 -> 32 | k3, s2, p0 | 65×65 |
+| 16×16 | 32 -> 32 | k3, s4, p0 | 63×63 |
+| 32×32 | 32 -> 32 | k4, s2, p1 | 64×64 |
+| 32×32 | 32 -> 32 | k2, s2, p0 | 64×64 |
+| 8×16 | 32 -> 32 | k3, s2, p1 | 15×31 |
+| 8×8 | 32 -> 32 | k3, sy2 sx1, p0 | 17×10 |
+| 16×16 | 64 -> 32 | k3, s2, p1 | 31×31 |
+| 16×16 | 32 -> 32 | k3, s2, p1, output_padding 1 | 32×32 |
+| 64×64 | 32 -> 32 | k4, s2, p1 | 128×128 |
+
+The default feature-grain count (`IH+1`) suffices. Every cell ran twice with identical output,
+and the device logged no job timeout. open-rknpu reports the same program byte-exact on the
+RV1106 NPU, whose CNA geometry words sit at the RK3588's offsets, across about 90 of its own
+models, with the stride fields live there without `CONV_CON1[16]` (see
+[../SOURCES.md](../SOURCES.md)).
+
+**An extent derived from the forward arithmetic truncates the result, silently.** Programmed
+the forward conv's way, from the undilated input, the part writes `ih + 2P - k + 1` rows and
+drops the rest: a full, correctly sized surface of the wrong size. A complete result that way
+needs `P >= toh - ih`, and the pad field caps that at `ih <= (15 + s - k) / (s - 1)`, which is
+14 at `s=2`. The bound belongs to the derived extent. With the extent programmed, the pad is
+`k-1-p` and the field never binds.
+
 ### The pad reaches the dilated surface, and the pad field is 4 bits
 
 `CNA_PAD_CON0`'s `PAD_TOP`/`PAD_LEFT` are 4-bit fields, so the usable pad is **0-15** and
@@ -140,37 +189,38 @@ signature failure.
 sweeping past the claimed ceiling [HW sweep, `tests/deconv_pad_probe.c`].
 
 Within that range the pad lands on the **dilated** surface: the result matches the oracle at
-offset `(k−1) − P`, identically at `s=2` and `s=4`. Had the pad been applied before dilation
+offset `(k-1) - P`, identically at `s=2` and `s=4`. Had the pad been applied before dilation
 the offset would have scaled with `s`; it does not.
-
-**The output extent is not enlarged by the mode.** The CORE/DPU geometry registers are still
-driven from the UNDILATED forward arithmetic, so the part writes `ih + 2P − k + 1` rows and
-truncates the rest of the transposed result. A complete result therefore needs
-**`P >= toh − ih`** (measured: `s=2` needs `P>=5`, `s=4` needs `P>=11`, both for a 4×4 input),
-and with `P <= 15` that bounds the single-pass input to
-
-    ih <= (15 + s − k) / (s − 1)      ->   ih <= 14 at s=2, ih <= 5 at s=4, ih <= 2 at s=8
-
-**which is the finding that bounds the payoff.** A 32×32 stride-2 decoder layer would need
-`P = 33` and the field cannot express it, so the mode is not reachable single-pass at the
-resolutions segmentation heads, depth decoders and FPN upsamples actually run at. An encoder
-would have to tile the output. That is a real constraint on the item, not a detail.
 
 **One narrow anomaly is open**: at `s=2`, pads **12-15** match the oracle at no offset at all,
 while every pad 0-11 matches and 16+ wraps cleanly. At `s=4` the same pads are fine. It sits
-immediately below the wrap and is undecoded; do not assume the `(k−1)−P` rule holds there.
+immediately below the wrap and is undecoded; do not assume the `(k-1)-P` rule holds there. A
+transposed conv's own pad, `k-1-p`, stays below it for every kernel up to 12.
 
-**What is still not measured: whether any of this is faster.** Nothing here times the mode
-against the shipping lowering. The host does not materialize the `s²`-larger dilated input,
-which is a real and certain saving; but whether the hardware skips the `s²` zero-MACs or
-merely expands internally is **not established**, and the `s²`-zero-MAC figure the section
-above quotes as the payoff remains unverified. Measure before building an encoder.
+### Speed against the lowering
 
-**How to drive it**: `ROCKET_CNA_DECONV=1` sets the bit, `ROCKET_CNA_DECONV_X` /
-`ROCKET_CNA_DECONV_Y` write the two 3-bit fields raw (the value is `s−1`). Still env-only and
-absent from `npu_cna_desc`: the semantics are now decoded, but the single-pass input bound
-above means a shipping entry would refuse most real decoder layers, so what it needs next is
-a timing measurement and a tiling decision rather than an API.
+**One hardware job is 0.35-0.54x the lowering's wall per call** [HW sweep, Turing RK1 at
+600 MHz, rocket 1.3.0, `performance` governor, `taskset 0xf0`, medians of 15 interleaved reps
+per pass, two passes within 1%, `deconv_extent_probe bench`, 2026-09-23]:
+
+| Shape | Lowering | Hardware job | Ratio |
+|---|---|---|---|
+| 64 -> 64 channels, 32×32 -> 64×64, k4 s2 p1 | 7.00 ms | 3.67 ms | 0.525x |
+| 32 -> 32, 64×64 -> 128×128, k4 s2 p1 | 11.35 ms | 5.62 ms | 0.495x |
+| 128 -> 64, 16×16 -> 32×32, k4 s2 p1 | 6.01 ms | 2.08 ms | 0.345x |
+| 64 -> 64, 32×32 -> 64×64, k2 s2 p0 | 5.45 ms | 2.92 ms | 0.535x |
+
+Both arms are per call with no resident context, and the hardware arm includes the host's
+kernel flip. Their outputs are identical and bit-exact against the oracle. The measurement
+cannot say whether the MAC array skips the inserted zeros, because the host packing and the
+device time move together here.
+
+**How to drive it**: `rocket_conv_transpose2d_fp16` takes the mode on its own route
+(`rocket_conv_transpose2d_route()` says which), with `npu_cna_desc.deconv` and the two stride
+fields set from `conv_params_t.deconv_sy/sx`. `ROCKET_CONV_TRANSPOSE_HW=0` forces the lowering.
+For probes, `ROCKET_CNA_DECONV=1` and `ROCKET_CNA_DECONV_X` / `_Y` write the three fields raw
+(the stride value is `s-1`), and `rocket_conv2d_fp16_job_extent()` (`src/rocket_conv_internal.h`)
+runs one fp16 conv job with the output extent given rather than derived.
 
 ## Validation
 

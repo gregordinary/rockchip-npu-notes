@@ -70,6 +70,55 @@ SmolVLM2's **vision half** (SigLIP-SO400M, 729 tokens) also offloads, through cl
 graph shattering into 272 CPU↔NPU splits (the generic drop-in, not the resident
 `rocket_siglip_encoder`). Needs `MTMD_BACKEND_DEVICE=ROCKET`.
 
+### What tuning buys per model (stock -> recommended, pp2048)
+
+The delta a user captures by following the guide, both arms on the NPU. Stock is llama-bench's
+own defaults with the backend loaded: `-ub 512`, and every `ROCKET_*` knob at its default,
+including MoE placement on AUTO. Recommended is the model's row in `MODEL-NOTES.md` and
+`TUNING.md`. Means over three rotated interleaved passes, memory reset before every arm,
+governor pinned [HW sweep 2026-08-28..31, RK1, 600 MHz]. **The recommended config is
+per-model, not a universal recipe**, and on two models it is the defaults themselves.
+
+And on **every quant model that fits resident it is residency *without* the `-ub` raise**. Six
+of six measured both ways prefer the unstacked form, from 2.2 to 9.0 B, by 5.5-34%. Below 4 B
+the model also carries a real non-dequant `-ub 2048` loss, residues 0.79-0.86 under the dqc
+mechanism control, that stacking pays before residency arrives.
+
+| Model | Recommended config | Stock t/s | Recommended t/s | Multiple |
+|---|---|---:|---:|---:|
+| Qwen3.5-0.8B Q4_K_M | `-ub 2048` + `QUANT_RESIDENT` | 99.1 | 116.9 | **1.18x** |
+| SmolVLM2-2.2B Q4_K_M | `QUANT_RESIDENT` at stock `-ub` | 51.5 | 69.3 | **1.35x** |
+| Llama-3.2-3B Q4_K_M | `QUANT_RESIDENT` at stock `-ub` | 39.2 | 57.7 | **1.47x** |
+| Llama-3.2-3B F16 | `F16_RESIDENT` | 56.0 | 60.5 | **1.08x** |
+| Ministral-3-3B Q4_K_M | `QUANT_RESIDENT` at stock `-ub` | 34.6 | 50.0 | **1.45x** |
+| Ministral-3-3B F16 | `F16_RESIDENT` | 48.3 | 52.0 | **1.08x** |
+| Phi-4-mini Q4_K_M | `QUANT_RESIDENT` at stock `-ub` | 35.9 | 54.2 | **1.51x** |
+| Phi-4-mini F16 | `F16_RESIDENT` | 50.2 | 54.4 | **1.08x** |
+| Ministral-3-8B Q4_K_M | `QUANT_RESIDENT` at stock `-ub` | 17.8 | 29.4 | **1.65x** |
+| Qwen3.5-9B Q4_K_M | `QUANT_RESIDENT` at stock `-ub` | 19.1 | 33.5 | **1.75x** |
+| Gemma-4-12B Q4_K_M | `QUANT_RESIDENT` at the default `-ub` (83-87% resident) | 12.8 | 17.5 | **1.37x** |
+| Phi-4-14B Q4_K_M | `-ub 2048` | 10.9 | 14.3 | **1.31x** |
+| gpt-oss-20b MXFP4 (MoE) | `-ub 2048` (experts default-on) | 22.8 | 28.6 | **1.25x** |
+| DeepSeek-V2-Lite Q4_K_M (MoE) | `-ub 2048` (experts default-on) | 21.3 | 28.2 | **1.32x** |
+| Qwen3.6-27B Q4_K_M | `-ub 2048` | 6.1 | 9.3 | **1.53x** |
+| Qwen3-30B-A3B Q4_K_M (MoE) | defaults — every tuned arm loses | 14.7 | 14.7 | **1.00x** |
+
+One row still shows the stacked form. `Qwen3.5-0.8B`'s class cannot resolve a ratio of this
+size at any affordable pass count, so its unstacked cell was not run. Every other resident row
+is the unstacked recipe, `Gemma-4-12B` included. That model places only part of its weights,
+which was the case expected to break the rule, and it does not. The unstacked form there also
+buys residency, 83-87% against the stacked recipe's 73-74%. `-b 2048 -ub 2048` spends that RAM
+on compute buffers before the reserve floor stops placement.
+
+The knobs, in full. Here `-ub 2048` means `-b 2048 -ub 2048`. The `QUANT_RESIDENT` column is
+`ROCKET_QUANT_RESIDENT=auto`, which dequantizes each weight once and holds it resident as fp16,
+and needs the fp16 image in RAM. The `F16_RESIDENT` column is `ROCKET_F16_RESIDENT=auto`.
+
+The Qwen3.5-0.8B **F16** unit is omitted, because its knob reaches only 24 weights at the
+K this model uses. That unit's spread across processes is ~8-11%, unique to the 0.8B class on this
+board. It exceeds the effect, so the ratio does not resolve at affordable pass count. Raw rows
+and per-pass ratios: [data/tuning-matrix.md](data/tuning-matrix.md).
+
 ### ASR (Whisper encoder, whisper.cpp via ggml-rocket)
 
 The NPU's job in ASR is the **encoder** (the decoder is autoregressive, M=1 GEMV, CPU on both).
@@ -675,6 +724,41 @@ expert tensors' own rate, and a Q4_K_M GGUF mixes types.
 So the same physical placement needs a different number typed in for a different quant of the same
 model -- about **2.07** for Q8_0 (8.5 bits/weight) and **1.54** for IQ4_XS (4.25)
 **[expected -- derived from bits/weight, not measured]**.
+
+**The factor also decides WHICH budget binds, and on this route it is never the IOVA window.** The
+pre-flight holds two budgets: RAM, and `ROCKET_N_THREADS x 3840 MB` of NPU IOVA. It charges each
+stack `codes + scales + source` against the first. It charges `codes` alone against the second. So
+the window binds first only where
+
+    RAM budget / IOVA budget  >  1 + 4/group + source_bits_per_weight/8
+
+which is the same factor. On `gpt-oss-20b` MXFP4 the right side is **1.538** and the left is
+**1.28** at the default five workers. RAM binds, and by a margin no worker count can close, because
+raising `ROCKET_N_THREADS` grows only the denominator.
+
+Three runs say so directly. At 5 workers and at 8 the window doubles from 19200 to 30720 MB. The
+admitted set is **byte-identical** across all three, at 62 stacks, 24140 MB RAM, 15693 MB IOVA. All
+three announce `Bound by RAM` [HW sweep 2026-09-02, RK1, `-b 2048 -ub 2048 -p 2048`, raw in
+[data/ro-session/trackd17-moe-preflight.md](data/ro-session/trackd17-moe-preflight.md)]. Every
+pre-flight decline recorded for this model says the same. That is 14 occurrences over five distinct
+budget and placement points, from an induced 11.7 GB budget to a pinned 25.7 GB one, none naming
+the window.
+
+**So the window is not reachable on this route at or above the default worker count.** The
+threshold is a property of the source rather than of the board. At five workers it would need
+`MemAvailable` above **35.7 GB**, each further worker adding about 5.9 GB to that. On a 32 GiB
+board the inequality needs a source under about **2.2 bits per weight**, which no quantization this
+route ingests approaches. MXFP4, the densest measured, is 4.25. The exit `Bound by RAM` names,
+`ROCKET_MOE_CACHE_MB`, is the only one this route's line ever asks for.
+
+**A model can print no pre-flight line at all, and that is not the pre-flight passing.** Auto
+placement checks the tile granule and the per-dispatch work floor **before** it calls the
+pre-flight [source-confirmed, `ggml-rocket.cpp`]. `Qwen3-30B-A3B` Q4_K_M at `-b 2048 -ub 2048`
+carries 128 experts with 8 used, so a 2048-token micro-batch gives `M_e` = 128 and the work floor
+declines it first. Two runs at that shape, at 5 workers and at 8, emit **no `[moe-int8]` line** at
+all [HW sweep 2026-09-02, RK1]. The same model reaches the pre-flight at `-ub 4096`, where `M_e`
+is 256. So read a missing line as a gate upstream of the budget, and raise `-ub` before concluding
+anything about RAM or the window.
 
 **So read the factor off the log when an exact number is wanted, and derive it when sizing a budget
 before a run.** The derivation is what makes it transferable across quants and boards; the log is

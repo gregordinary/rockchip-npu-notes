@@ -4,8 +4,8 @@ Two distinct things are called "chaining" in this stack; keep them apart:
 
 - **Same-op instance chaining** (one HW kick over many tasks): the tiles of one matmul,
   or the per-head QK/AV of one flash-attention, laid contiguously with a
-  `PC_BASE_ADDRESS` trailer so the PC runs them as one job. The mechanism and its
-  fp16-only restriction are in [regcmd-task-model.md](regcmd-task-model.md)
+  `PC_BASE_ADDRESS` trailer so the PC runs them as one job. The mechanism, and the dtypes
+  it is measured on, are in [regcmd-task-model.md](regcmd-task-model.md)
   §contiguous-chaining.
 - **Cross-op chaining** (this note): feeding the *output* of one graph op straight into
   the *input* of the next, a different op, with the host never de-tiling and re-tiling
@@ -39,9 +39,9 @@ IOVA, zero host touch of the intermediate), and compare to the host-round-trip r
 
 ## fp16-only, and for a second reason
 
-Like the one-kick chaining, this is fp16-only, but the cause here is the **output-cube vs
-input-cube dtype mismatch**, independent of the CACC-clears-per-kick reason. Only fp16's
-narrowed output is C2=8, matching the fp16 input C2=8:
+This is fp16-only because of the **output-cube vs input-cube dtype mismatch**. One-kick
+chaining of independent tasks computes int8 too, so the restriction is this aliasing and not
+the kick. Only fp16's narrowed output is C2=8, matching the fp16 input C2=8:
 
 | op | output cube | next-op input cube | alias? |
 |---|---|---|---|

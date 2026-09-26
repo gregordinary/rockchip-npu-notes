@@ -71,7 +71,7 @@ backend only).
   path is untouched and bit-identical. Decode is unaffected (the source GGUF stays mapped). RAM cost
   is ~2x the fp16 model (resident tiles plus the source), so it wants a model that fits ~2x in RAM.
 
-## Reading whether residency actually happened
+## Reading whether residency happened
 
 An A/B on t/s cannot tell a residency arm that was **declined** from one that was **placed and
 gained nothing**: both produce the same rows at the same speed, and the init line reports only the

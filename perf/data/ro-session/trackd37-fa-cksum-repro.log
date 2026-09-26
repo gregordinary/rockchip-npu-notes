@@ -1,0 +1,25 @@
+[2026-09-07T19:22:58+00:00] FA checksum reproduction
+  so=c66ef3e8b67437779daf0e73595e5ba9
+  librocketnpu.a=1fd95700abdad3143afdd04c6458b5f1
+  recorded on the previous build: k=1 and k=4 both 8852206bf3ccda62, 288 ops, 2818572288 bytes
+--- run 1: ROCKET_FA_THREADS=1 ---
+  rc=0
+ROCKET FA checksum: 8852206bf3ccda62 over 288 ops, 2818572288 bytes
+ROCKET FA total(ms): gather=7677 (17%) compute=33375 (74%) scatter=3977 (9%) over 288 ops, n_kv [1024..2048]
+--- run 2: ROCKET_FA_THREADS=4 ---
+  rc=0
+ROCKET FA checksum: 8852206bf3ccda62 over 288 ops, 2818572288 bytes
+ROCKET FA total(ms): gather=2696 (7%) compute=33139 (90%) scatter=1107 (3%) over 288 ops, n_kv [1024..2048]
+--- run 3: ROCKET_FA_THREADS=1 ---
+  rc=0
+ROCKET FA checksum: 8852206bf3ccda62 over 288 ops, 2818572288 bytes
+ROCKET FA total(ms): gather=7694 (17%) compute=33445 (74%) scatter=3979 (9%) over 288 ops, n_kv [1024..2048]
+--- run 4: ROCKET_FA_THREADS=4 ---
+  rc=0
+ROCKET FA checksum: 8852206bf3ccda62 over 288 ops, 2818572288 bytes
+ROCKET FA total(ms): gather=2636 (7%) compute=33426 (90%) scatter=1111 (3%) over 288 ops, n_kv [1024..2048]
+--- run 5: ROCKET_FA_THREADS=1 ---
+  rc=0
+ROCKET FA checksum: 345a87c827fa972b over 288 ops, 2818572288 bytes
+ROCKET FA total(ms): gather=7718 (17%) compute=33435 (74%) scatter=3992 (9%) over 288 ops, n_kv [1024..2048]
+[2026-09-07T19:42:25+00:00] REPRO-DONE

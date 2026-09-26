@@ -1,0 +1,77 @@
+### ro readout selftest  Mon Aug 31 19:04:14 UTC 2026
+## part 1: placement columns, compacted against shattered
+== compacted   rss_pg=1050669   buddy=1230 4061 4043 3641 2728 2636 2251 1923 1560 412 4662 
+   who=compacted
+   pfn_zero_frac=0.0000
+   maps=1
+   sampled=24576
+   present_frac=0.9816
+   l2color_cv=0.0015
+   l3color_cv=0.0098
+   contig_frac=0.9934
+   mean_run=116.5
+   vapa16=0.0005
+   gib_regions=27
+   anon_pg=24124
+   anon_l2cv=0.0015
+   anon_contig=0.9934
+   anon_run=116.5
+   anon_gib=27
+   ro_cost_ms=36
+   shatter took 12s; buddy after shatter: 555 936 3545 3223 2585 2634 2249 1924 1558 65 1748 
+== shattered   rss_pg=1050679   buddy=555 392 2777 3222 2584 2633 2248 1924 1558 65 724 
+   who=shattered
+   pfn_zero_frac=0.0000
+   maps=1
+   sampled=24576
+   present_frac=0.9972
+   l2color_cv=0.0003
+   l3color_cv=0.0006
+   contig_frac=0.9990
+   mean_run=340.4
+   vapa16=0.9819
+   gib_regions=24
+   anon_pg=24508
+   anon_l2cv=0.0003
+   anon_contig=0.9990
+   anon_run=340.4
+   anon_gib=24
+   ro_cost_ms=37
+## part 2: thread placement through the real harness (taskset extremes)
+== ro-a76only  Mon Aug 31 19:04:50 UTC 2026 ==
+### ro-a76only [a76only] pass 1  env=''  args=''  19:05:01  clk=600 MHz  MemAvail=31512176 kB
+<!--PRED 1	a76only	memavail_kb=31512176	anonhuge_kb=0	hugepagesz_kb=2048	buddy=4675,6019,5884,5180,3121,3690,3729,3513,2964,2150,4890-->
+<!--RO 1	a76only	busy=12,19,13,13,738,750,775,616	busy_tot=2936	busy_little_share=0.0194	a55_cpu_cycles=1873855576	a55_inst_retired=403448571	context_switches=189405	a76_cpu_cycles=62027605855	a76_l3d_cache_refill=746235747	a76_l2d_cache_refill=438255941	cpu_migrations=6361	page_faults=109922	a76_dtlb_walk=198365097	a76_mem_access=32383105023	a76_inst_retired=110416031600	a76_l1d_cache_refill=1086031755	a55_inst_share=0.0036	a76_ipc=1.780	l2ref_pki=3.969	l3ref_pki=6.758	l1dref_pki=9.836	memacc_pki=293.28	dtlbw_pki=1.7965	pmu_enabled=100.0	pmu_secs=108.6	who=at_s=7,rss_pg=182880,settled=2	pfn_zero_frac=0.0000	maps=3	sampled=73728	present_frac=0.6331	l2color_cv=0.0026	l3color_cv=0.0141	contig_frac=0.5601	mean_run=2.3	vapa16=0.0618	gib_regions=25	anon_pg=2056	anon_l2cv=0.0274	anon_contig=0.8112	anon_run=5.2	anon_gib=24	file_pg=24576	file_l2cv=0.0005	file_contig=0.3748	file_run=1.6	file_gib=24	other_pg=20046	other_l2cv=0.0062	other_contig=0.7617	other_run=4.2	other_gib=25	ro_cost_ms=59-->
+<!--DATA 1	a76only	pp512	123.08-->
+
+#### summary: per-arm mean over 1 passes, ratios paired within a pass against [a76only]
+| test | arm | mean t/s | n | min | max | paired ratio | per-pass ratios |
+|---|---|---:|---:|---:|---:|---:|---|
+| pp512 | a76only | 123.08 | 1 | 123.08 | 123.08 | -- | -- |
+
+== ro-a55only  Mon Aug 31 19:05:16 UTC 2026 ==
+### ro-a55only [a55only] pass 1  env=''  args=''  19:05:47  clk=600 MHz  MemAvail=31572812 kB
+<!--PRED 1	a55only	memavail_kb=31572812	anonhuge_kb=0	hugepagesz_kb=2048	buddy=6122,6204,6037,5285,4040,3714,3264,3013,2974,2147,4977-->
+<!--RO 1	a55only	busy=2017,1978,1807,1992,369,290,287,301	busy_tot=9041	busy_little_share=0.8621	a55_cpu_cycles=140420521869	a55_inst_retired=64053098942	context_switches=203550	a76_cpu_cycles=27857909393	a76_l3d_cache_refill=255405367	a76_l2d_cache_refill=179541405	cpu_migrations=9732	page_faults=119617	a76_dtlb_walk=13239949	a76_mem_access=5623756888	a76_inst_retired=48056578347	a76_l1d_cache_refill=333328385	a55_inst_share=0.5713	a76_ipc=1.725	l2ref_pki=3.736	l3ref_pki=5.315	l1dref_pki=6.936	memacc_pki=117.02	dtlbw_pki=0.2755	pmu_enabled=100.0	pmu_secs=328.3	who=at_s=8,rss_pg=182880,settled=2	pfn_zero_frac=0.0000	maps=3	sampled=73728	present_frac=0.6350	l2color_cv=0.0045	l3color_cv=0.0187	contig_frac=0.8508	mean_run=6.6	vapa16=0.0228	gib_regions=26	anon_pg=2056	anon_l2cv=0.0248	anon_contig=0.8424	anon_run=6.2	anon_gib=23	file_pg=24576	file_l2cv=0.0012	file_contig=0.9805	file_run=46.7	file_gib=25	other_pg=20184	other_l2cv=0.0104	other_contig=0.6937	other_run=3.2	other_gib=26	ro_cost_ms=57-->
+<!--DATA 1	a55only	pp512	40.86-->
+
+#### summary: per-arm mean over 1 passes, ratios paired within a pass against [a55only]
+| test | arm | mean t/s | n | min | max | paired ratio | per-pass ratios |
+|---|---|---:|---:|---:|---:|---:|---|
+| pp512 | a76only | 123.08 | 1 | 123.08 | 123.08 | 3.012x | 3.012 |
+| pp512 | a55only | 40.86 | 1 | 40.86 | 40.86 | -- | -- |
+
+== ro-free  Mon Aug 31 19:06:29 UTC 2026 ==
+### ro-free [free] pass 1  env=''  args=''  19:06:42  clk=600 MHz  MemAvail=31453160 kB
+<!--PRED 1	free	memavail_kb=31453228	anonhuge_kb=0	hugepagesz_kb=2048	buddy=5932,6423,6177,5391,2801,3697,3223,2911,2953,2136,4992-->
+<!--RO 1	free	busy=437,446,460,457,699,689,646,641	busy_tot=4475	busy_little_share=0.4022	a55_cpu_cycles=32421048076	a55_inst_retired=19270617401	context_switches=171314	a76_cpu_cycles=58747043195	a76_l3d_cache_refill=586628238	a76_l2d_cache_refill=417383491	cpu_migrations=5000	page_faults=111597	a76_dtlb_walk=155182586	a76_mem_access=28826271190	a76_inst_retired=108693838435	a76_l1d_cache_refill=928499022	a55_inst_share=0.1506	a76_ipc=1.850	l2ref_pki=3.840	l3ref_pki=5.397	l1dref_pki=8.542	memacc_pki=265.21	dtlbw_pki=1.4277	pmu_enabled=100.0	pmu_secs=114.5	who=at_s=6,rss_pg=182880,settled=2	pfn_zero_frac=0.0000	maps=3	sampled=73728	present_frac=0.6332	l2color_cv=0.0041	l3color_cv=0.0158	contig_frac=0.8336	mean_run=5.9	vapa16=0.0125	gib_regions=26	anon_pg=2056	anon_l2cv=0.0326	anon_contig=0.5220	anon_run=2.1	anon_gib=26	file_pg=24576	file_l2cv=0.0010	file_contig=0.9838	file_run=55.1	file_gib=25	other_pg=20053	other_l2cv=0.0093	other_contig=0.6814	other_run=3.1	other_gib=26	ro_cost_ms=62-->
+<!--DATA 1	free	pp512	116.97-->
+
+#### summary: per-arm mean over 1 passes, ratios paired within a pass against [free]
+| test | arm | mean t/s | n | min | max | paired ratio | per-pass ratios |
+|---|---|---:|---:|---:|---:|---:|---|
+| pp512 | a76only | 123.08 | 1 | 123.08 | 123.08 | 1.052x | 1.052 |
+| pp512 | a55only | 40.86 | 1 | 40.86 | 40.86 | 0.349x | 0.349 |
+| pp512 | free | 116.97 | 1 | 116.97 | 116.97 | -- | -- |
+
+### selftest done, board reset  19:06:59

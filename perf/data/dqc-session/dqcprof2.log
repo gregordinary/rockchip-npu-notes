@@ -1,0 +1,11 @@
+=== arm dqc512 (12:14:03) clk=600000000
+rc=0 for dqc512
+[dq-cache] 165 weights held (2976MB): 2475 dequants skipped, 165 one-time fills, 0 still-streaming calls
+ROCKET profile total(ms): pack=57846 (packA=14066 packB=31779) gen=1127 sync=4607 submit=1026 wait=154187 read=28235  over 16080 job-batches
+ROCKET convert total(ms): pack_act=2524 (2640 calls, 3926M elems) weight_dequant=3299 (165 calls, 1560M elems) unpack_out=1689 (2640 calls, 5083M elems)
+=== arm dqc2048 (12:16:18) clk=600000000
+rc=0 for dqc2048
+[dq-cache] 165 weights held (2976MB): 495 dequants skipped, 165 one-time fills, 0 still-streaming calls
+ROCKET profile total(ms): pack=43755 (packA=20995 packB=8897) gen=1103 sync=5067 submit=583 wait=189853 read=46263  over 4260 job-batches
+ROCKET convert total(ms): pack_act=2267 (660 calls, 3926M elems) weight_dequant=3156 (165 calls, 1560M elems) unpack_out=1560 (660 calls, 5083M elems)
+[12:19:04] PROF-DONE

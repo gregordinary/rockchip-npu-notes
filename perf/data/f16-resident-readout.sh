@@ -29,6 +29,7 @@ path_for() {
     llama32-3b-f16)    echo llama32-3b/Llama-3.2-3B-Instruct-F16.gguf ;;
     ministral3-3b-f16) echo ministral3-3b/Ministral-3-3B-Instruct-2512-F16.gguf ;;
     phi4mini-f16)      echo phi4mini/Phi-4-mini-instruct-F16.gguf ;;
+    gemma4-12b-f16)    echo gemma4/gemma-4-12b-it-F16.gguf ;;
     *) echo "" ;;
   esac
 }

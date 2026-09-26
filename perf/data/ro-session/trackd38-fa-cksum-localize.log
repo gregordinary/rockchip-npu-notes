@@ -1,0 +1,34 @@
+[2026-09-07T19:44:55+00:00] FA per-op checksum, six runs at ROCKET_FA_THREADS=1
+  so=138de09d05f235f8c50c7d9d7df3eaa5
+  librocketnpu.a=1fd95700abdad3143afdd04c6458b5f1
+--- run 1 ---
+  rc=0
+ROCKET FA checksum: 8852206bf3ccda62 over 288 ops, 2818572288 bytes
+  per-op lines: 288
+--- run 2 ---
+  rc=0
+ROCKET FA checksum: 8852206bf3ccda62 over 288 ops, 2818572288 bytes
+  per-op lines: 288
+--- run 3 ---
+  rc=0
+ROCKET FA checksum: 8852206bf3ccda62 over 288 ops, 2818572288 bytes
+  per-op lines: 288
+--- run 4 ---
+  rc=0
+ROCKET FA checksum: 8852206bf3ccda62 over 288 ops, 2818572288 bytes
+  per-op lines: 288
+--- run 5 ---
+  rc=0
+ROCKET FA checksum: 8852206bf3ccda62 over 288 ops, 2818572288 bytes
+  per-op lines: 288
+--- run 6 ---
+  rc=0
+ROCKET FA checksum: 8852206bf3ccda62 over 288 ops, 2818572288 bytes
+  per-op lines: 288
+--- pairwise diffs against run 1 ---
+  run1 vs run2: 0 differing op lines
+  run1 vs run3: 0 differing op lines
+  run1 vs run4: 0 differing op lines
+  run1 vs run5: 0 differing op lines
+  run1 vs run6: 0 differing op lines
+[2026-09-07T20:08:30+00:00] LOCALIZE-DONE

@@ -1,0 +1,4 @@
+load_backend: loaded CPU backend from ~/npu/llama.cpp/build/bin/libggml-cpu.so
+load_backend: loaded ROCKET backend from ~/npu/ggml-rocket/build-dl/libggml-rocket.so
+ROCKET profile total(ms): pack=22196 (packA=10750 packB=4395) gen=495 sync=2371 submit=293 wait=96343 read=23912  over 2130 job-batches
+ROCKET convert total(ms): pack_act=1223 (330 calls, 1963M elems) weight_dequant=3972 (330 calls, 3121M elems) unpack_out=946 (330 calls, 2542M elems)

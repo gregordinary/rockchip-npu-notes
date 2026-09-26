@@ -38,11 +38,48 @@ mechanism is identical on both, and the board whose A76 may park at 408 MHz pays
 2.5x more for it. A board read right after a delegated run shows the cluster sitting at its
 floor.
 
+## The deep CPU idle state
+
+Every RK3588 core has one deep idle state, `cpu-sleep`, a PSCI power-down. Its sysfs exit
+latency is 220 µs and its target residency 1000 µs. The `menu` idle governor picks it for a
+predicted idle of 1 ms or more. **Disabling it makes the offloaded arm of a prefill ~3% faster
+and leaves the CPU-only arm unchanged** [HW sweep 2026-09-26]. It is the governor's bias again,
+smaller.
+
+The setup was the mainline board with `rocket` 1.3.0 at 600 MHz, the governor `performance` on
+every policy, and `llama-bench -p 512 -n 0`. The arms ran in balanced ABBA blocks, with the page
+cache dropped and memory compacted before each. Each ratio pairs the two arms inside one block.
+
+| model | arm | ABBA blocks | disabled / enabled, per block |
+|---|---|---:|---|
+| Qwen3.5-0.8B F16 | NPU, `ROCKET_KACC=1` | 4 | 1.029, 1.023, 1.027, 1.032 |
+| Qwen3.5-0.8B F16 | CPU only | 2 | 1.005, 1.001 |
+| Llama-3.2-3B F16 | NPU, `ROCKET_KACC=1` | 2 | 1.030, 1.040 |
+
+The cost is not the NPU completion's wakeup. On one fd, a job of 16 tasks lasting ~3 ms moves by
++14 µs with the stock IRQ affinity, the sign split across blocks. With the IRQs on an A76 it
+moves by -33 µs, at most 1%. Both are the disabled arm minus the enabled one. The busy-polling
+waiter moves as much as the blocking one [HW sweep, same board,
+`submit_overhead_rocket 256 512 256 400 8000 16`]. So the waiter is not where the state costs
+anything.
+
+The likely cause is the host thread pool, idle for over a millisecond while a matmul runs and
+paying the exit at each hand-back (inferred, not isolated).
+
+Two runs in one campaign read 13-15% faster in both arms at once. Pairing inside the block
+cancelled them, and their cause is not located. An unpaired A/B would have read them as an
+effect.
+
 ## What to do
 
 - **Pin the CPU governor before quoting any NPU-versus-CPU number**, and put it back
   afterwards. Reading `scaling_governor` is not enough: read `scaling_min_freq` too, because
   that is what sets the cost.
+- **Disable `cpu-sleep` for the same comparison**, with `echo 1` into every core's
+  `cpuidle/state1/disable`, and put it back afterwards. It is worth ~3% to the NPU arm at
+  `pp512` and nothing to the CPU arm. Larger models and quantized ones are untested. In a
+  deployment, a service holding a `/dev/cpu_dma_latency` request under 220 µs keeps the state
+  off at an idle-power cost **[expected]**.
 - **In a deployment, raise the floor rather than the governor.** A detection service does not
   need `performance` on every core; it needs the cores its offloading process runs on not to
   park. `scaling_min_freq`, or an affinity that keeps one busy thread on the cluster, both

@@ -1,0 +1,19 @@
+[2026-09-07T16:16:07+00:00] trackd35: the two controls trackd34 lacked
+  so=5eaf4076a9f50dcb7e953156823d1d4e
+--- fa1a: ROCKET_FLASH_ATTN=1 ---
+  rc=0
+Final estimate: PPL = 13.8994 +/- 0.82808
+[1]10.8620 
+--- fa1b: ROCKET_FLASH_ATTN=1 ---
+  rc=0
+Final estimate: PPL = 13.8994 +/- 0.82808
+[1]10.8620 
+--- fa0: ROCKET_FLASH_ATTN=0 ---
+  rc=0
+Final estimate: PPL = 13.9024 +/- 0.82829
+[1]10.8643 
+--- driver version at -p 2048, debug level explicit ---
+  rc=0
+opened rocket: rocket 1.3.0
+  rocket lines seen: 11825
+[2026-09-07T16:22:56+00:00] TRACKD35-DONE

@@ -1,0 +1,13 @@
+diff --git a/examples/server/server.cpp b/examples/server/server.cpp
+index f6ab80a..ad8055f 100644
+--- a/examples/server/server.cpp
++++ b/examples/server/server.cpp
+@@ -955,7 +955,7 @@ int main(int argc, char ** argv) {
+ 
+             wparams.temperature      = params.temperature;
+             wparams.no_speech_thold  = params.no_speech_thold;
+-            wparams.temperature_inc  = params.temperature_inc;
++            wparams.temperature_inc  = params.no_fallback ? 0.0f : params.temperature_inc;
+             wparams.entropy_thold    = params.entropy_thold;
+             wparams.logprob_thold    = params.logprob_thold;
+ 

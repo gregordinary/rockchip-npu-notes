@@ -67,3 +67,28 @@ real base.en encoder is 0.9998 (rockchip-npu-notes/encodings/whisper-encoder.md,
 validation harness), the fp16-accumulation fidelity that underlies the identical transcript.
 
 build: whisper.cpp v1.8.6-56-g84bd03a4; ggml-rocket DL against whisper's bundled ggml.
+
+== Re-measured 2026-09-26: base.en at the 30 s and 20 s windows ==
+
+Turing RK1, mainline `rocket` 1.3.0, 600 MHz, CPU governor `performance` on every policy,
+`taskset -c 4-7`, `-t 4`, flash attention on (whisper.cpp's default; the unmasked encoder
+attention stays on the CPU). whisper.cpp `eacbd82`, shared and DL-capable; ggml-rocket
+`143f848` and rocket-userspace `333fc67`, built against it; `ROCKET_KACC=1`. Five
+interleaved reps per arm, the arm order alternating, page cache dropped and memory compacted
+before every arm. The 30 s window is `whisper-bench` (1500 positions). The 20 s window is
+`whisper-cli -ac 1000` on `jfk.wav`, whose encoder time is fixed by the window, not the clip.
+
+| window | CPU (ms) | NPU (ms) | speedup |
+| ------ | -------: | -------: | ------: |
+| 30 s   |  1513.5  |  1015.8  |  1.49x  |
+| 20 s   |   883.6  |   619.0  |  1.43x  |
+
+Per-rep encode (ms):
+
+  30 s  CPU 1512.04 1512.09 1514.45 1514.91 1514.24   NPU 1024.60 1003.91 1013.17 1013.31 1024.21
+  20 s  CPU  881.50  883.17  883.76  884.84  884.81   NPU  621.89  613.00  619.13  620.64  620.35
+
+The 20 s transcript of `jfk.wav` is identical across all ten runs, CPU and NPU. For the 20 s
+window against a whole-graph vendor compile of the same encoder, see
+[encodings/whisper-encoder.md](../../encodings/whisper-encoder.md) §"In-model fused
+integration".
