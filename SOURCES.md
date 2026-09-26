@@ -441,11 +441,8 @@ driver (see the [README](README.md) evidence tags).
   wide-output poisoning, a property of the preceding submit, is invisible to it however
   exhaustive it is. `charsiu`'s harness does not share the blind spot: its bisects judge a
   following job run in a separate process (see its entry below). Blog moved to
-  `blog.gahingwoo.com/posts/rk3576-npu-mainline/`. Our draft give-back is
-  `../RK3576-REPORT-FOR-GAHINGWOO.md` (private, unsent); its chaining and OUT_CVT sections
-  are superseded, `charsiu` chains multi-task jobs and places the OUT_CVT triple at
-  `0x40ac/0x40b0/0x40b4` itself, so what remains to send is the `RK3576_CNA_MAP.md`
-  corrections, the wide-output poisoning, and the float-mode three-register condition.
+  `blog.gahingwoo.com/posts/rk3576-npu-mainline/`. `charsiu` chains multi-task jobs and
+  places the OUT_CVT triple at `0x40ac/0x40b0/0x40b4` itself.
 
   Their upstream series is at **v14, posted 2026-09-24** with 15 patches against next-20260914
   ([v14](https://lore.kernel.org/all/20260924102135.92217-1-gahing@gahingwoo.com/)). At v13
