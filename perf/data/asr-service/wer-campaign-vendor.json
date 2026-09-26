@@ -1,0 +1,242 @@
+[
+ {
+  "arm": "cpu",
+  "rep": "1",
+  "stream": "s61-70968",
+  "cond": "clean_c20",
+  "ref_words": 548,
+  "hyp_words": 545,
+  "edits": 49,
+  "wer": 0.08941605839416059
+ },
+ {
+  "arm": "cpu",
+  "rep": "1",
+  "stream": "s61-70968",
+  "cond": "ssb15_c20",
+  "ref_words": 659,
+  "hyp_words": 666,
+  "edits": 111,
+  "wer": 0.16843702579666162
+ },
+ {
+  "arm": "cpu",
+  "rep": "1",
+  "stream": "s61-70968",
+  "cond": "ssb5_c20",
+  "ref_words": 659,
+  "hyp_words": 368,
+  "edits": 466,
+  "wer": 0.7071320182094082
+ },
+ {
+  "arm": "cpu",
+  "rep": "2",
+  "stream": "s61-70968",
+  "cond": "clean_c20",
+  "ref_words": 548,
+  "hyp_words": 545,
+  "edits": 49,
+  "wer": 0.08941605839416059
+ },
+ {
+  "arm": "cpu",
+  "rep": "2",
+  "stream": "s61-70968",
+  "cond": "ssb15_c20",
+  "ref_words": 659,
+  "hyp_words": 666,
+  "edits": 111,
+  "wer": 0.16843702579666162
+ },
+ {
+  "arm": "cpu",
+  "rep": "2",
+  "stream": "s61-70968",
+  "cond": "ssb5_c20",
+  "ref_words": 659,
+  "hyp_words": 368,
+  "edits": 466,
+  "wer": 0.7071320182094082
+ },
+ {
+  "arm": "npu-ac1200-nf-nt-sns",
+  "rep": "1",
+  "stream": "s61-70968",
+  "cond": "clean_c20",
+  "ref_words": 548,
+  "hyp_words": 554,
+  "edits": 40,
+  "wer": 0.072992700729927
+ },
+ {
+  "arm": "npu-ac1200-nf-nt-sns",
+  "rep": "1",
+  "stream": "s61-70968",
+  "cond": "ssb15_c20",
+  "ref_words": 659,
+  "hyp_words": 671,
+  "edits": 91,
+  "wer": 0.13808801213960548
+ },
+ {
+  "arm": "npu-ac1200-nf-nt-sns",
+  "rep": "1",
+  "stream": "s61-70968",
+  "cond": "ssb5_c20",
+  "ref_words": 659,
+  "hyp_words": 505,
+  "edits": 416,
+  "wer": 0.6312594840667678
+ },
+ {
+  "arm": "npu-ac1200-nf-nt-sns",
+  "rep": "2",
+  "stream": "s61-70968",
+  "cond": "clean_c20",
+  "ref_words": 548,
+  "hyp_words": 554,
+  "edits": 40,
+  "wer": 0.072992700729927
+ },
+ {
+  "arm": "npu-ac1200-nf-nt-sns",
+  "rep": "2",
+  "stream": "s61-70968",
+  "cond": "ssb15_c20",
+  "ref_words": 659,
+  "hyp_words": 671,
+  "edits": 91,
+  "wer": 0.13808801213960548
+ },
+ {
+  "arm": "npu-ac1200-nf-nt-sns",
+  "rep": "2",
+  "stream": "s61-70968",
+  "cond": "ssb5_c20",
+  "ref_words": 659,
+  "hyp_words": 505,
+  "edits": 416,
+  "wer": 0.6312594840667678
+ },
+ {
+  "arm": "npu-c30-nf-nt",
+  "rep": "1",
+  "stream": "s61-70968",
+  "cond": "clean_c30",
+  "ref_words": 486,
+  "hyp_words": 487,
+  "edits": 26,
+  "wer": 0.053497942386831275
+ },
+ {
+  "arm": "npu-c30-nf-nt",
+  "rep": "1",
+  "stream": "s61-70968",
+  "cond": "ssb15_c30",
+  "ref_words": 659,
+  "hyp_words": 609,
+  "edits": 125,
+  "wer": 0.18968133535660092
+ },
+ {
+  "arm": "npu-c30-nf-nt",
+  "rep": "1",
+  "stream": "s61-70968",
+  "cond": "ssb5_c30",
+  "ref_words": 659,
+  "hyp_words": 284,
+  "edits": 524,
+  "wer": 0.795144157814871
+ },
+ {
+  "arm": "npu-c30-nf-nt",
+  "rep": "2",
+  "stream": "s61-70968",
+  "cond": "clean_c30",
+  "ref_words": 486,
+  "hyp_words": 487,
+  "edits": 26,
+  "wer": 0.053497942386831275
+ },
+ {
+  "arm": "npu-c30-nf-nt",
+  "rep": "2",
+  "stream": "s61-70968",
+  "cond": "ssb15_c30",
+  "ref_words": 659,
+  "hyp_words": 609,
+  "edits": 125,
+  "wer": 0.18968133535660092
+ },
+ {
+  "arm": "npu-c30-nf-nt",
+  "rep": "2",
+  "stream": "s61-70968",
+  "cond": "ssb5_c30",
+  "ref_words": 659,
+  "hyp_words": 284,
+  "edits": 524,
+  "wer": 0.795144157814871
+ },
+ {
+  "arm": "npu",
+  "rep": "1",
+  "stream": "s61-70968",
+  "cond": "clean_c20",
+  "ref_words": 548,
+  "hyp_words": 545,
+  "edits": 49,
+  "wer": 0.08941605839416059
+ },
+ {
+  "arm": "npu",
+  "rep": "1",
+  "stream": "s61-70968",
+  "cond": "ssb15_c20",
+  "ref_words": 659,
+  "hyp_words": 665,
+  "edits": 110,
+  "wer": 0.1669195751138088
+ },
+ {
+  "arm": "npu",
+  "rep": "1",
+  "stream": "s61-70968",
+  "cond": "ssb5_c20",
+  "ref_words": 659,
+  "hyp_words": 368,
+  "edits": 466,
+  "wer": 0.7071320182094082
+ },
+ {
+  "arm": "npu",
+  "rep": "2",
+  "stream": "s61-70968",
+  "cond": "clean_c20",
+  "ref_words": 548,
+  "hyp_words": 545,
+  "edits": 49,
+  "wer": 0.08941605839416059
+ },
+ {
+  "arm": "npu",
+  "rep": "2",
+  "stream": "s61-70968",
+  "cond": "ssb15_c20",
+  "ref_words": 659,
+  "hyp_words": 665,
+  "edits": 110,
+  "wer": 0.1669195751138088
+ },
+ {
+  "arm": "npu",
+  "rep": "2",
+  "stream": "s61-70968",
+  "cond": "ssb5_c20",
+  "ref_words": 659,
+  "hyp_words": 368,
+  "edits": 466,
+  "wer": 0.7071320182094082
+ }
+]

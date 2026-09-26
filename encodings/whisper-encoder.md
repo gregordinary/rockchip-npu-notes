@@ -172,17 +172,32 @@ to 2.14x (large-v3), the win growing with model size ([perf/benchmarks.md](../pe
 section, [perf/data/whisper-encoder.md](../perf/data/whisper-encoder.md)), so this fused whole-block
 path (3.4-4.4x *slower*) is strictly worse. The per-op readback floor
 ([not-mac-bound.md](../perf/not-mac-bound.md)) bounds any composition that returns each
-intermediate to the host. It does not bound a resident encoder, and an outside measurement puts
-one well under the drop-in on this silicon.
+intermediate to the host. It does not bound a resident encoder, and a whole-graph compile runs
+1.70x faster than the drop-in on the same board.
 
-**A whole-graph vendor compile runs the 20 s whisper-base encoder in ~250 ms.** That is Seeed's
-measurement of `rknn_model_zoo`'s fp16 encoder on all three cores of an RK3588 at 1 GHz. It is
-not reproduced here ([SOURCES.md](../SOURCES.md)).
+**On one board, a whole-graph vendor compile runs the 20 s whisper-base encoder 1.70x faster
+than the drop-in.** The RKNN encoder takes 344 ms at 1000 MHz on three cores, and the drop-in
+585 ms, against 830 ms on the CPU. At 600 MHz the ratio is 1.60x, 364 ms against 581 [HW sweep,
+Turing RK1, `6.1.172-vendor-rk35xx`, `rknpu` 0.9.8, 2026-09-26].
 
-The drop-in takes 619 ms at the same window, against 883 ms on the CPU [HW sweep, Turing RK1, 600 MHz, 2026-09-26]. The
-encoder at 1000 positions is 52.1 GFLOP, so theirs runs at ~210 GFLOP/s and ours at ~84. Both are
-under the ~460 GOP/s the fp16 matmul sustains, so their figure is plausible for this datapath.
-The clocks differ, and no same-board comparison has been run.
+The RKNN arm is `rknn_model_zoo`'s fp16 encoder, compiled by rknn-toolkit2 2.3.0 and run
+through `librknnrt`. The drop-in is stock `whisper-cli -ac 1000` with ggml-rocket through rknpu-submit. The
+encoder at 1000 positions is 52.1 GFLOP, so the RKNN graph runs at ~151 GFLOP/s here and the
+drop-in at ~89. The comparison is timing only: the two encoders' outputs were not compared.
+
+The RKNN encoder's wall is its fused attention op. `exSDPAttention` runs on one core whatever
+the core mask, and it takes 240 ms of the 345 ms three-core frame. Only the matmul-type ops
+split across cores, so three cores buy 14% over one, 344 against 400 ms. No op runs on the CPU.
+
+The attention op slows 1.56x from 1000 MHz to 300, but only 1.06x from 1000 to 600, and the frame
+follows it. DDR frequency does not bind it: DDR stays at 2112 MHz through the run, and pinning
+it there changes nothing. The bound above 600 MHz is not located. **[expected]** A clock the
+NPU devfreq does not scale, such as the NPU's bus clock, would produce this shape.
+
+Seeed's ~250 ms for the same encoder is not reproduced on this board ([SOURCES.md](../SOURCES.md)).
+Their model file with their runtime version, 2.3.0, on all three cores at 1000 MHz reads 344 ms,
+and 2.3.2 reads the same. The raw figures are in
+[perf/data/whisper-encoder.md](../perf/data/whisper-encoder.md).
 
 The fused path's value is the proven correctness milestone + a substrate
 for future fusion. If ever pursued, the lever is to keep all intermediates on-NPU across the block

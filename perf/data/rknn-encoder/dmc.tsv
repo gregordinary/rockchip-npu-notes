@@ -1,0 +1,24 @@
+1	od	1000	ours	577.69	ddr: 23@2112MHz 10@528MHz 
+1	od	1000	cpu	876.31	ddr: 17@2112MHz 19@528MHz 
+1	od	1000	rknn3	343.72	ddr: 165@2112MHz 3@528MHz 
+1	od	600	rknn3	364.38	ddr: 179@2112MHz 2@528MHz 
+1	pin	1000	ours	574.14	ddr: 32@2112MHz 
+1	pin	1000	cpu	817.28	ddr: 36@2112MHz 
+1	pin	1000	rknn3	343.68	ddr: 165@2112MHz 
+1	pin	600	rknn3	364.24	ddr: 180@2112MHz 
+2	pin	1000	cpu	817.51	ddr: 36@2112MHz 
+2	pin	1000	rknn3	344.14	ddr: 171@2112MHz 
+2	pin	1000	ours	581.70	ddr: 33@2112MHz 
+2	pin	600	rknn3	363.91	ddr: 177@2112MHz 
+2	od	1000	cpu	847.81	ddr: 8@1068MHz 15@2112MHz 13@528MHz 
+2	od	1000	rknn3	344.05	ddr: 159@2112MHz 16@528MHz 
+2	od	1000	ours	591.02	ddr: 28@2112MHz 5@528MHz 
+2	od	600	rknn3	364.16	ddr: 178@2112MHz 2@528MHz 
+3	od	1000	rknn3	344.29	ddr: 168@2112MHz 3@528MHz 
+3	od	1000	ours	576.61	ddr: 29@2112MHz 4@528MHz 
+3	od	1000	cpu	858.03	ddr: 4@1068MHz 20@2112MHz 12@528MHz 
+3	od	600	rknn3	363.80	ddr: 173@2112MHz 2@528MHz 
+3	pin	1000	rknn3	343.95	ddr: 168@2112MHz 
+3	pin	1000	ours	569.62	ddr: 32@2112MHz 
+3	pin	1000	cpu	817.09	ddr: 36@2112MHz 
+3	pin	600	rknn3	364.08	ddr: 177@2112MHz 

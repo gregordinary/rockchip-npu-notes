@@ -1075,10 +1075,13 @@ driver (see the [README](README.md) evidence tags).
   the Raspberry Pi. On Rockchip it runs the vendor RKNN and RKLLM runtimes and carries no
   register-level material. Four of its measurements bear on this silicon.
 
-  **A whole-graph Whisper encoder runs ~2.5x faster than our matmul offload** [their
-  measurement, not reproduced here]. `rknn_model_zoo`'s whisper-base encoder, fp16 at a 20 s
-  window on three cores, takes ~250 ms on their RK3588 at an NPU clock of 1 GHz. It takes about
-  the same on their RK3576. The comparison with our drop-in is in
+  **A whole-graph Whisper encoder runs faster than our matmul offload, by 1.70x on one board
+  rather than the ~2.5x their figure implies.** `rknn_model_zoo`'s whisper-base encoder, fp16 at
+  a 20 s window on three cores, takes ~250 ms on their RK3588 at an NPU clock of 1 GHz by their
+  measurement, and about the same on their RK3576. Their model file, run with their runtime
+  version (`rknnlite` 2.3.0) on all three cores of a vendor-kernel RK1 at 1000 MHz, takes
+  344 ms [HW sweep 2026-09-26]. Their figure is not reproduced. The same-board comparison and
+  what bounds the RKNN graph are in
   [encodings/whisper-encoder.md](encodings/whisper-encoder.md) §"In-model fused integration".
   Their vendor default also ran the decoder on the NPU with no KV cache, a 12-slot window. A CPU
   decoder with a cache took their RK3588 from RTF 0.149 to 0.061 and cut long-form WER, the

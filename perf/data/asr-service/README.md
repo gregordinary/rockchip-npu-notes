@@ -15,8 +15,10 @@ memory reset before each arm. 2026-09-03.
 | `campaign3.tsv` | The headroom context (`-ac 1200`), the 20 s and 25 s `-nt` stacks, and the `-sns` probe |
 | `campaign4.tsv` | The three surviving configurations on the second chapter (`s121-127105`), two passes |
 | `campaign5.tsv` | The defaults and the 20 s stack under `ondemand`, unpinned, one pass |
+| `campaign-vendor.tsv` | The shipped arm, the CPU arm and the 20 s and 30 s recommendations on a vendor-kernel RK1 (`6.1.172-vendor-rk35xx`, `rknpu` 0.9.8, through rknpu-submit), NPU 1000 MHz and DDR 2112 MHz pinned, two passes, 2026-09-26 |
 | `wer-campaign*.json` | Word error rate per arm, pass, chapter and condition against the LibriSpeech references, one file per sweep |
 | `svc-campaign.sh` / `svc-campaign2.sh` | The arm tables; `ARMS`, `PASSES` and the stream are the knobs |
+| `svc-campaign-vendor.sh` / `svc-arm-vendor.sh` | The vendor-board run: the same arms, the server run as the invoking user, the governors pinned and restored |
 | `svc-arm.sh` | One arm: start the server under this arm's environment and flags, drive it, stop it |
 | `svc-client.py` | The client: posts chunks like `owrx/transcribe.py`, bills the server PID, keeps the text |
 | `mkradio.py` | Builds the chunk sets from LibriSpeech `test-clean`: one chapter per stream, cut at 20 s and 30 s, through an SSB-shaped channel |

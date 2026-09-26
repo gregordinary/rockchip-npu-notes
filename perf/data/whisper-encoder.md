@@ -92,3 +92,64 @@ The 20 s transcript of `jfk.wav` is identical across all ten runs, CPU and NPU. 
 window against a whole-graph vendor compile of the same encoder, see
 [encodings/whisper-encoder.md](../../encodings/whisper-encoder.md) §"In-model fused
 integration".
+
+== Same board against a whole-graph RKNN compile, 2026-09-26: base.en at the 20 s window ==
+
+Turing RK1 on the vendor kernel, `6.1.172-vendor-rk35xx`, `rknpu` 0.9.8, CPU governor
+`performance` on every policy, `taskset -c 4-7`. The NPU clock is pinned through its devfreq node
+(`performance`, `max_freq` capped) and read back before every arm. The RKNN arm is
+`whisper_encoder_base_20s.rknn` from `harvestsu/whisper-edge` `e318664` (rknn_model_zoo's fp16
+encoder, rknn-toolkit2 2.3.0, input `[1,80,2000]`, output `[1,1000,512]`), run through
+`librknnrt` 2.3.2 by a C harness that times `rknn_run` alone, median of 20 warm runs after 5.
+The harnesses, scripts and raw files are in [rknn-encoder/](rknn-encoder/).
+The drop-in arm is stock `whisper-cli -ac 1000 -t 4` on `jfk.wav` (whisper.cpp `d09f61a`) with
+ggml-rocket `cfcc0f5` through rknpu-submit `db7c3ab` and rocket-userspace `c7e7c47`,
+`ROCKET_KACC=1`. Five passes, the clock order alternating and the arm order rotating, page cache
+dropped and memory compacted before every arm.
+
+| arm | 1000 MHz (ms) | 600 MHz (ms) | 600 / 1000 |
+| --- | ---: | ---: | ---: |
+| RKNN, cores 0-2 | 344.25 | 364.36 | 1.058 |
+| RKNN, core 0 | 399.61 | 421.40 | 1.054 |
+| drop-in | 585.09 | 581.46 | 0.994 |
+| CPU | 830.4 over both clocks | | |
+
+Per pass (ms):
+
+  RKNN 0-2  1000: 344.25 344.30 344.14 344.30 344.12   600: 364.49 364.36 364.27 364.34 364.37
+  RKNN 0    1000: 399.60 399.60 399.64 399.62 399.61   600: 421.54 421.40 421.28 421.41 421.20
+  drop-in   1000: 574.15 777.75 753.07 585.09 581.24   600: 578.88 579.70 581.46 586.81 615.70
+  CPU       1000: 825.97 845.96 882.29 820.47 871.52   600: 821.08 817.61 879.62 828.87 831.99
+
+Two drop-in passes at 1000 MHz read 753-778 ms. Their cause is not isolated, and the medians
+carry the other three. The CPU arm's spread is the DDR governor, below.
+
+Clock sweep of the RKNN arm, one process a cell, 10 runs (ms): cores 0-2 read 344.3 at 1000 MHz,
+364.4 at 600 and 513.5 at 300. Core 0 reads 399.6, 421.4 and 584.9. `RKNN_QUERY_PERF_RUN`
+agrees with the harness to within 1% in every cell.
+
+Per-op time from `RKNN_QUERY_PERF_DETAIL`, core 0 (ms):
+
+| op | 300 MHz | 600 MHz | 1000 MHz | 300 / 1000 | 600 / 1000 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `exSDPAttention` (6 calls) | 373.2 | 254.9 | 239.6 | 1.56 | 1.06 |
+| `ConvAdd` (12) | 85.8 | 79.2 | 77.7 | 1.10 | 1.02 |
+| `ConvExGelu` (8) | 56.4 | 37.1 | 34.9 | 1.62 | 1.06 |
+| `exNorm` (13) | 26.3 | 22.8 | 22.3 | 1.18 | 1.02 |
+| `Conv` (6) | 29.1 | 15.8 | 14.0 | 2.07 | 1.13 |
+| everything else | 16.9 | 14.4 | 14.0 | 1.21 | 1.03 |
+| total | 587.6 | 424.2 | 402.6 | 1.46 | 1.05 |
+
+On cores 0-2 `exSDPAttention` is unchanged at 239.6 ms, `ConvAdd` falls to 29.1 and `Conv` to
+6.6, and the total is 344.8. No op runs on the CPU (23 µs of the frame). The runtime reports
+197,407 KB of memory traffic per frame.
+
+Runtime version: `librknnrt` 2.3.0, the version the model was compiled with and the one Seeed
+names, reads 344.32 and 344.43 ms against 2.3.2's 344.34 and 344.33, alternated at 1000 MHz on
+cores 0-2. Its `exSDPAttention` is 239.6 ms.
+
+DDR: `dmc_ondemand` against `dmc` pinned at 2112 MHz, three passes alternating, DDR sampled
+every 50 ms. RKNN at 1000 MHz reads 344.05 against 343.95 ms, and at 600 MHz 364.16 against
+364.08. The drop-in reads 577.69 against 574.14. The CPU arm reads 858.0 (847.8-876.3) against
+817.3 (817.1-817.5). Under `dmc_ondemand` DDR sits at 2112 MHz for 165 of the RKNN arm's 168
+samples, and at 528 or 1068 MHz for 44-58% of the CPU arm's.

@@ -70,6 +70,29 @@ Two runs in one campaign read 13-15% faster in both arms at once. Pairing inside
 cancelled them, and their cause is not located. An unpaired A/B would have read them as an
 effect.
 
+## The DDR frequency governor on a vendor kernel
+
+The vendor kernel also scales DDR, and there the bias runs the other way: **the CPU-only arm
+pays and the NPU arm does not.** Its `dmc` devfreq node runs `dmc_ondemand` over 528, 1068, 1560
+and 2112 MHz. An NPU job drives DDR to the top rate by itself, and a multi-threaded CPU encoder
+does not. Pinning `dmc` to `performance` makes the CPU arm 4.7% faster and removes nearly all of
+its spread. The NPU arms move by nothing measurable [HW sweep 2026-09-26].
+
+The setup was the vendor RK1 on `6.1.172-vendor-rk35xx` with `rknpu` 0.9.8 and the NPU pinned at
+1000 MHz. The CPU governor was `performance` on every policy, with `taskset -c 4-7`. The workload
+was the whisper base.en encoder at a 20 s window. The arms alternated the DDR governor over three
+passes, with DDR sampled every 50 ms:
+
+| arm | `dmc_ondemand` (ms) | `dmc` at 2112 MHz (ms) | DDR below 2112 MHz under `dmc_ondemand` |
+|---|---:|---:|---|
+| CPU only, `whisper-cli -t 4` | 858.0 (847.8-876.3) | 817.3 (817.1-817.5) | 44-58% of samples |
+| ggml-rocket drop-in | 577.7 | 574.1 | 12-30% of samples |
+| RKNN whole-graph encoder | 344.05 | 343.95 | 2-9% of samples |
+
+Each cell is the median of three passes. The samples carry no timestamps, so which phase of a
+run the low ones fall in is not known. The mainline kernel on the same board exposes no DDR devfreq node,
+so this bias cannot arise there. DDR runs at the rate the bootloader set.
+
 ## What to do
 
 - **Pin the CPU governor before quoting any NPU-versus-CPU number**, and put it back
@@ -80,6 +103,9 @@ effect.
   `pp512` and nothing to the CPU arm. Larger models and quantized ones are untested. In a
   deployment, a service holding a `/dev/cpu_dma_latency` request under 220 µs keeps the state
   off at an idle-power cost **[expected]**.
+- **On a vendor kernel, pin DDR as well**, with `performance` in `/sys/class/devfreq/dmc/governor`,
+  and put it back afterwards. Left on `dmc_ondemand` it slows the CPU-only arm by ~5% and widens
+  its spread, which flatters the NPU arm.
 - **In a deployment, raise the floor rather than the governor.** A detection service does not
   need `performance` on every core; it needs the cores its offloading process runs on not to
   park. `scaling_min_freq`, or an affinity that keeps one busy thread on the cluster, both

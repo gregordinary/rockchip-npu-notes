@@ -295,3 +295,33 @@ the big cores, and the host half of every request runs slow. The stack's ratio a
 defaults holds at 0.69 either way (0.63 / 0.77 / 0.68 against the deployed defaults). So a
 stock board gets the stack's 31%, and pinning at `performance` returns another 20% on top. That
 is the bias the governor page measured on LLM prefill, seen from the service side.
+
+## On a vendor kernel
+
+The recommendations hold on the vendor kernel. The board was a second RK1 on
+`6.1.172-vendor-rk35xx` and `rknpu` 0.9.8, with ggml-rocket through rknpu-submit. Every
+configuration's ratio against the shipped arm lands within 0.03 of the mainline one [HW sweep, 2
+passes, 2026-09-26]. The setup was the first chapter, NPU 1000 MHz, DDR pinned at 2112 MHz, CPU
+governor `performance` and `taskset -c 4-7`. The model file and chunk sets were the same, and
+the whisper.cpp commit was `d09f61a`:
+
+| | CPU (clean / 15 dB / 5 dB) | Mainline RK1 | WER clean / 15 dB / 5 dB |
+|---|---|---|---|
+| CPU only | 1.623 / 1.706 / 1.755 | 1.645 / 1.730 / 1.813 | 8.9 / 16.8 / 70.7 |
+| NPU, shipped (the reference) | 1.000 / 1.000 / 1.000 | 1.000 | 8.9 / 16.7 / 70.7 |
+| 20 s, `-nt -ac 1200 -sns`, ladder off | 0.639 / 0.777 / 0.718 | 0.638 / 0.774 / 0.689 | 7.3 / 13.8 / 63.1 |
+| 30 s, `-nt`, ladder off | 0.641 / 0.743 / 0.575 | 0.639 / 0.741 / 0.557 | 5.3 / 19.0 / 79.5 |
+
+The shipped arm's request wall is 6.2 / 5.0 / 4.7 s, 4-8% under the mainline board's. Its
+absolute cost is 1.022 / 0.826 / 0.768 core-seconds per audio-second.
+
+The two ladder-off configurations reproduce the mainline WER to within half a point. The two
+arms that keep the temperature ladder match it on clean speech and at 15 dB. At 5 dB, where the
+ladder fires most, they read 2-4 points worse. Each board agrees with itself across both passes.
+**[expected]** The ladder samples at a nonzero temperature, so a different build's arithmetic
+takes a different path through it. The whisper.cpp commit and CPU flags differ between the two
+boards, and neither was isolated.
+
+On a stock vendor board, DDR runs under `dmc_ondemand`, and that slows the CPU-only arm and not
+the NPU arms, see [cpu-governor-and-offload.md](cpu-governor-and-offload.md). An A/B there
+needs DDR pinned as well as the CPU governor.
