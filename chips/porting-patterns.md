@@ -13,26 +13,27 @@ register but a rule for deciding which RK3588 facts to trust.
 
 ## The base rate
 
-Of the nineteen CNA geometry registers in the RK3588↔RK3576 delta table
-([rk3576.md](rk3576.md)), **two** coincide by both offset and meaning: `0x1014`
+Of the nineteen CNA geometry registers in the RK3588-to-RK3576 delta table
+([rk3576.md](rk3576.md)), two coincide by both offset and meaning: `0x1014`
 (stride) and `0x1110` (weight address). Everything else moved, re-packed, appeared, or
 collided.
 
-So carrying an RK3588 CNA geometry register to a new revision *by offset* is right about one time
+So carrying an RK3588 CNA geometry register to a new revision by offset is right about one time
 in ten. That is worse than no prior at all, because a wrong geometry register does not fault. It
 computes silently wrong, or completes and writes nothing. Both signatures are indistinguishable
 from a dozen other causes
 ([rk3576-regcmd.md](rk3576-regcmd.md), "The wall has two signatures").
 
-The RK3566 is expected to be the opposite case. The RK3568 `rocket` RFC reports the same NVDLA core and a matching register layout as the RK3588
-[source]. It therefore likely needs only a `rocket_hw_profile` and no encoder. That expectation is itself a prior to test rather than to rely
-on.
+The RK3566 is expected to be the opposite case. The RK3568 `rocket` RFC reports the same
+NVDLA core and a matching register layout as the RK3588 [source-confirmed]. It therefore
+likely needs only a `rocket_hw_profile` and no encoder. That expectation is itself a prior
+to test rather than to rely on.
 
-## The encoding delta is a small vocabulary of edits
+## The encoding delta
 
 Every RK3576 difference from the RK3588 map falls into one of six operations. There is no
-seventh. In particular there is **no bit-reversal, no endianness flip, no field rotation, and no
-constant offset delta**, so there is nothing to invert or rotate. The re-pack
+seventh. In particular there is no bit-reversal, no endianness flip, no field rotation, and no
+constant offset delta, so there is nothing to invert or rotate. The re-pack
 is an edit list, not a transform.
 
 | Edit | Example |
@@ -46,10 +47,11 @@ is an edit list, not a transform.
 
 A value appearing twice is a signal, not a transcription error: the part expects both.
 
-## Match by value and by function, never by offset
+## Matching by value and by function
 
-The identification method that worked is to **hold the semantic function fixed and search for the
-offset, using constants as the anchor**. Two properties make it work:
+Match a register by value and by function, never by offset. The identification method is to
+hold the semantic function fixed and search for the offset, using constants as the anchor.
+Four properties make it work:
 
 - **Constants are the invariants across a re-pack.** The int8 conv's CVT control word is
   `0x0b` on both parts. The burst word is `0x000F000F` on both. When the same magic
@@ -66,16 +68,16 @@ offset, using constants as the anchor**. Two properties make it work:
   different one.** The vendor's float `0x501C` makes the DPU write nothing at all
   against this library's coefficient group. Transcribe programs, not fields.
 
-## The safe priors: what is IP-inherent
+## IP-inherent priors
 
 These held across both parts and are the things worth assuming on a third:
 
 - Matmul is a 1×1 convolution over CNA→CORE→DPU, and the block sequence is the same.
-- **Block bases** within a core: PC at +0x0, CNA at +0x1000, CORE at +0x3000, DPU at
+- Block bases within a core: PC at +0x0, CNA at +0x1000, CORE at +0x3000, DPU at
   +0x4000, DPU_RDMA at +0x5000.
 - The precision-field encodings and the BS/BN/EW/LUT datapath semantics (the NVDLA SDP
   X1/X2/Y mapping).
-- The coefficient algebra. The DPU **adds** `B*sum(x)`, so a weight zero point is programmed
+- The coefficient algebra. The DPU adds `B*sum(x)`, so a weight zero point is programmed
   negated, and the input zero point folds into the `A` term.
 - Requant is `(acc * SCALE) >> SHIFT` with a per-output-channel multiplier and one
   global shift.
@@ -84,33 +86,33 @@ These held across both parts and are the things worth assuming on a third:
 
 ## Where the behavior inverts
 
-This is the part that actually catches you out. Nearly every *performance* fact
-established on the RK3588 is false on the RK3576, and several *correctness* constraints
-invert outright.
+**Nearly every performance fact established on the RK3588 is false on the RK3576**, and
+several correctness constraints invert outright.
 
 | Axis | RK3588 | RK3576 |
 |---|---|---|
-| Matmul precision | fp16 wins; resident int8 prefill is 0.60x fp16 | **int8 wins**; one int8 task contracts 4608 input channels against fp16's 16, so fp16 is 30-300x slower |
-| M alignment | `M % 4`; `M == 1` is padded to 4 | **No constraint**; `M = 1` is bit-exact |
-| Matmul output | raw int32 readback | **int8 through the DPU requant** |
-| Integer partials | no on-chip integer K-accumulation ships, and the eltwise ALU's integer mode is unestablished | **an int32 output writer exists**, so a K split carries exact integer partials out |
-| M=1 GEMV | ~82x slower than CPU; decode stays on the host | bit-exact and unconstrained (still submit-bound) |
-| Multiple cores | 3 cores, per-fd entities, scheduling shipped and correct | 2 cores; **two jobs in flight at once compute wrong answers**, 96-100% of calls |
-| Completion | maskable completion interrupt | `PC_DONE` read-only in `INTERRUPT_MASK`; must be polled |
+| Matmul precision | fp16 wins. Resident int8 prefill is 0.60x fp16 | int8 wins. A resident fp16 GEMM costs 2.0-2.2x the resident int8 one. The convolution-form fp16 program contracts 16 input channels a task, and is 30-299x slower |
+| M alignment | `M % 4`. `M == 1` is padded to 4 | No constraint. `M = 1` is bit-exact |
+| Matmul output | raw int32 readback | int8 through the DPU requant |
+| Integer partials | no on-chip integer K-accumulation ships. The eltwise ALU adds integers exactly under the whole precision bundle, and a K-accumulation on it is not measured | an int32 output writer exists, so a K split carries exact integer partials out |
+| M=1 GEMV | ~82x slower than CPU. Decode stays on the host | bit-exact and unconstrained (still submit-bound) |
+| Multiple cores | 3 cores, per-fd entities, scheduling shipped and correct | 2 cores. **Two jobs in flight at once compute wrong answers**, 96-100% of calls |
+| Completion | maskable completion interrupt | `PC_DONE` read-only in `INTERRUPT_MASK`, so the driver polls it. The DPU's completion interrupt does reach the GIC |
 | HW byte counters | reading the `0x2xxx` page hard-locks the SoC | `dt_wr`/`dt_rd`/`wt_rd` are readable |
-| Matmul tile cap | `max_tile` 256, `ngroup` 16 | `max_tile` **2048**, `ngroup` **32** |
-| Where the wall is | DMA/dispatch-bound at this operating point | the **host cube scatter** was most of every wall, not the submit |
+| Matmul tile cap | `max_tile` 256, `ngroup` 16 | `max_tile` 2048, `ngroup` 32 |
+| Where the wall is | DMA/dispatch-bound at this operating point | the host cube scatter was most of every wall, not the submit |
 
-One hazard has no RK3588 counterpart at all. On the RK3576, **any job whose DPU output element is
-wider than one byte leaves the next submit of any kind writing nothing**. That holds across
-processes, until the power domain cycles.
+One hazard has no RK3588 counterpart at all. On the RK3576, **a wide output written through a
+partial output stage leaves the next submit of any kind writing nothing**. That holds across
+processes, until the power domain cycles. The cause is the partial stage and not the width: the
+whole output stage writes int32 and fp32 and poisons nothing
+([rk3576.md](rk3576.md) §"The poisoning is one hazard, and its cost is a system setting").
 
-### The rule that falls out
+### The sorting rule
 
-The inversions are not random, and they are not a transform either. They cluster on the
-axes where a **machine parameter** moved: contraction width, tile cap, core count,
-completion routing, output writer width. The invariants cluster on the axes that are
-pure datapath algebra.
+The inversions cluster on the axes where a machine parameter moved: contraction width, tile
+cap, core count, completion routing, output writer width. They are neither random nor a
+transform. The invariants cluster on the axes that are pure datapath algebra.
 
 So the usable prior is a question to ask of any RK3588 claim before carrying it:
 
@@ -122,14 +124,16 @@ The answer sorts every claim:
   composes, how a matmul maps to a convolution, and the field conventions.
 - **Machine parameter** (which precision wins, which axis is free, whether a second
   core helps, where the bottleneck sits, any tile or alignment cap): **re-measure.**
-  These are the ones that inverted, and they inverted because the number underneath
-  them changed, not because the silicon disagrees about anything.
+  These are the ones that inverted. They inverted because the number they derive from
+  changed, not because the silicon disagrees about anything.
 
-A useful sharpening. Much of the RK3576 performance delta is downstream of one machine
-parameter. An int8 task contracts 4608 input channels, and an fp16 task contracts 16.
+Much of the RK3576 performance delta follows from one machine parameter, the contraction one
+task holds. An int8 task contracts 4608 input channels. The convolution-form fp16 program
+contracts 16, which is why an fp16 convolution needs an `ic/16` submit split. The matmul-form
+fp16 program contracts the whole of K in one task, inside a 4096-entry CBUF data window.
 
-That alone accounts for int8 being the matmul precision, for fp16 needing an `ic/16` submit
-split, and for the K split past one task's contraction.
+That parameter accounts for int8 being the faster matmul precision, and for the K split past one
+task's contraction.
 
 Treating a single dominant parameter as the root of a cluster of "laws" is a hypothesis worth
 holding rather than a result. It is still the right first thing to look for on a new part.
@@ -138,19 +142,19 @@ holding rather than a result. It is still the right first thing to look for on a
 
 - Machine parameters belong in one `rocket_hw_profile` per chip, read by the planners,
   never as bare literals. That mechanism already exists.
-- The geometry-register **encoder** is per-chip, not an offset table. A single
+- The geometry-register encoder is per-chip, not an offset table. A single
   address-translation layer cannot express widened fields, compaction, or collisions.
-- The refusal belongs at the **generator**, not at the capability mask. A dtype mask
+- The refusal belongs at the generator, not at the capability mask. A datatype mask
   says which precisions a chip can run, and both parts run int8 and fp16 perfectly well,
   through different encoders. The check that belongs at the seam is on the encoding.
 
-## Method notes that generalized
+## Method notes
 
 Each of these was learned on one part and paid off on the other. The notes are:
 
 - **A vendor capture can be manufactured, and it beats a sweep.** Compile an ONNX for
   the target and read the register program for the exact geometry you want. Captures
-  you *find* are confounds: the vendor compiles real models, so real models'
+  you find are confounds: the vendor compiles real models, so real models'
   co-varying axes co-vary in every one.
 - **Submit a captured stream verbatim before believing a register-identical emitter.**
   Register-identical is not geometry-identical.
@@ -159,6 +163,6 @@ Each of these was learned on one part and paid off on the other. The notes are:
 - **Sentinel-stamp an output BO.** A fresh BO's zeros cannot distinguish unwritten from
   legitimately zero. Never bare-memset an output BO before a submit. Bracket the fill in
   `PREP_BO` and `FINI_BO`, or the dirty lines race the DPU's DMA.
-- **Score a canary, never the program under test**, when the question is whether a
-  program damages *something else*. A dead program and a poisoning program look
-  identical if you only score the program under test.
+- **When the question is whether a program damages something else, score a canary, never
+  the program under test.** If you score only the program under test, a dead program and a
+  poisoning program look identical.

@@ -43,6 +43,13 @@ carried by the per-matmul cosine against an fp64 reference and by `test-rocket-m
 match; see "The accept boundary" and the MoE gate table below for why the greedy comparison has no
 resolution here.
 
+**The quantized rows' ×CPU is against an unrepacked CPU.** The NPU arm has to run without
+llama.cpp's weight repack, and the repack speeds the CPU arm 1.26-1.71x at pp2048 on these four
+models. Against a repacked CPU at pp2048 the NPU leads Phi-4 **3.06x** and DeepSeek-V2-Lite
+**1.44x**. It leads gpt-oss-20b **1.90x** and Qwen3.6-27B **3.21x** [HW sweep 2026-09-29, llama.cpp
+b11242, governor pinned].
+[cpu-repack-baseline.md](cpu-repack-baseline.md) has the method. The F16 rows are unaffected.
+
 The prefill multiple grows with model size, to Qwen3.6-27B's **4.4x at pp2048, the largest here**,
 because the CPU baseline degrades faster than the NPU as the matmuls grow. The exceptions are
 architectural: the **MoE expert FFNs** of gpt-oss-20b and DeepSeek-V2-Lite route through
@@ -101,7 +108,7 @@ mechanism control, that stacking pays before residency arrives.
 | gpt-oss-20b MXFP4 (MoE) | `-ub 2048` (experts default-on) | 22.8 | 28.6 | **1.25x** |
 | DeepSeek-V2-Lite Q4_K_M (MoE) | `-ub 2048` (experts default-on) | 21.3 | 28.2 | **1.32x** |
 | Qwen3.6-27B Q4_K_M | `-ub 2048` | 6.1 | 9.3 | **1.53x** |
-| Qwen3-30B-A3B Q4_K_M (MoE) | defaults — every tuned arm loses | 14.7 | 14.7 | **1.00x** |
+| Qwen3-30B-A3B Q4_K_M (MoE) | defaults, every tuned arm loses | 14.7 | 14.7 | **1.00x** |
 
 One row still shows the stacked form. `Qwen3.5-0.8B`'s class cannot resolve a ratio of this
 size at any affordable pass count, so its unstacked cell was not run. Every other resident row
@@ -144,7 +151,7 @@ Beyond OpenAI Whisper, the same `.so` drops into **transcribe.cpp** (a ggml-base
 and offloads a range of speech models. The unifying result: **the NPU offloads encoders, not
 autoregressive decode**, so the win tracks how encode-heavy the model is, and (on long audio) how
 much of decode is offloadable prefill vs per-token M=1 steps. Single fresh-process runs, warm,
-A76-pinned, Q8_0, on a hard 120 s two-speaker clip. [HW A/B]
+A76-pinned, Q8_0, on a hard 120 s two-speaker clip. [HW sweep, A/B]
 
 | Model | encoder + decoder | NPU × (120 s) | rt (NPU) | best at |
 |---|---|---:|---:|---|
@@ -161,14 +168,15 @@ generation on the CPU (M=1), so it barely moves despite a 1.6x encode.
 
 ### Detection (SSD-MobileDet, tflite-rocket)
 
-A single inference is host cube-gather-bound, so the NPU's value is **throughput under a
-multi-camera pool** (Frigate's regime), not single-stream latency. Accuracy is COCO mAP.
+A single inference is bound by host work, so its latency follows the host path and the CPU
+governor. The NPU's larger value is throughput under a multi-camera pool, Frigate's regime.
+Accuracy is COCO mAP.
 
 | Metric | Value |
 |---|---|
 | COCO mAP@[.5:.95] | 0.3321 NPU vs 0.3318 CPU (parity) |
-| Single-stream latency, warm | ~336 ms (host gather-bound) |
-| Multi-camera pool, P=1->4 | 3.20 -> 9.55 detection_fps (2.98x at P=4) |
+| Single-stream latency, warm | 56 ms with the governor pinned, 76 ms on `ondemand` (2026-09-28) |
+| Multi-camera pool, P=1->4 | 3.20 -> 9.55 detection_fps (2.98x at P=4), measured at a ~336 ms single stream |
 
 ## Method
 
@@ -839,8 +847,8 @@ one process per rung; `perf/data/moe-ballast-ladder.sh`.]
 | 16 | 14.2 | 8225 | 21 | 5372 | **0** | 15.36 | 0.531 |
 
 **There is no turn, at any rung.** Throughput falls monotonically and very nearly linearly in the
-number of placed stacks — `t/s = 8.32 + 0.315 x stacks`, residuals within ±0.8 t/s over a 15-29
-range — and every rung reports **100% resident, 0 streamed, and no OOM line in `dmesg`**. The
+number of placed stacks (`t/s = 8.32 + 0.315 x stacks`, residuals within ±0.8 t/s over a 15-29
+range), and every rung reports **100% resident, 0 streamed, and no OOM line in `dmesg`**. The
 predicted collapse into the 0.42-0.97x partial-residency regime does not happen; neither does the
 "any memory pressure at all" rival's earlier turn. What the ladder shows instead is the route
 degrading exactly as its own code says it should: fewer stacks placed, the rest left on the CPU,
@@ -851,18 +859,18 @@ pre-flight budget is `MemAvailable - 6 GiB`, and the budget column falls by exac
 4 GiB rung. So ballast makes the route **more** conservative, never less: it cannot reach a state
 where the route holds more than the board can honour, because the memory it removes is removed
 from the budget first. **An induced-scarcity ladder of this shape cannot test the over-placement
-hypothesis at all** — that is a fact about the instrument, and it is the useful output here.
+hypothesis at all**. That is a fact about the instrument, and it is the useful output here.
 
 **And the account that predicted `B` ~ 6-7 over-counts a file-backed GGUF.** At `B` = 16 the
 accounted hot set is 5372 MB of int8 codes + 11.27 GiB of GGUF + 16 GiB of ballast = **32.5 GB
 against 31.7 GB of RAM**, and nothing streamed, nothing was killed, and the linear fit did not
 bend. So at least some of what that account calls hot is being reclaimed under pressure, and the
-GGUF — file-backed, unlike the ballast — is the only candidate [hypothesis: not separated from a
+GGUF, file-backed unlike the ballast, is the only candidate [hypothesis: not separated from a
 smaller-than-assumed activation footprint]. The charge model treats each placed expert's source
 bytes as unreclaimable because **decode** reads them from the mmap every token; during a `-n 0`
 prefill they are not touched after ingest.
 
-**What this does not settle.** It does not refute the charge omission itself — the uncharged
+**What this does not settle.** It does not refute the charge omission itself: the uncharged
 remainder is still real and still largest at low placement, and the ladder never reached a state
 where it could bite. What it refutes is that **this** experiment can reach that state. The
 remaining route to it is memory that disappears **after** the budget is frozen, which the
@@ -879,8 +887,8 @@ is allocated **after** the pre-flight line prints rather than before [HW sweep 2
 
 The budget was resolved at 24608 MB against an idle board and then **kept** while 18 GB of the
 board disappeared underneath it, so the route went on reserving 63 stacks and 24529 MB against
-11.1 GB of available RAM. The board recovered only because the OOM killer picked the **ballast**
-— 16.8 GB of anonymous RSS, the largest badness score on the box. A competing allocation smaller
+11.1 GB of available RAM. The board recovered only because the OOM killer picked the **ballast**,
+16.8 GB of anonymous RSS, the largest badness score on the box. A competing allocation smaller
 than the inference process would have made `llama-bench` the victim instead. The run itself
 returned **rc=0 and a plausible number**; nothing in its output says a process was killed.
 
@@ -1683,8 +1691,6 @@ The unlock is not a new dtype but a **resident vision-encoder path** (the `rocke
 pattern) wired into the mtmd frontend, deferred; the drop-in clip route is faithful and modestly
 positive as-is.
 
-### (next model, append here)
-
 ## ASR (whisper.cpp via ggml-rocket)
 
 Whisper through the `ggml-rocket` drop-in `.so` on stock whisper.cpp, no fork. The NPU's job in
@@ -1761,7 +1767,7 @@ diarize, Voxtral, SenseVoice, FunASR) with no fork: transcribe.cpp vendors a ggm
 model's runner logs `using accel backend: ROCKET` and offloads the encoder. This section is the
 cross-model result; it uses two clips, `jfk.wav` (11 s, clean) and a hard 120 s two-speaker
 conversational recording, A76-pinned (`taskset -c 4-7 --threads 4`), Q8_0, warm, fresh
-single-process runs (no session reuse), `ROCKET_KACC=1`. [HW A/B, 2026-07-21].
+single-process runs (no session reuse), `ROCKET_KACC=1`. [HW sweep, A/B, 2026-07-21].
 
 ### The offload taxonomy: encoders, not autoregressive decode
 
@@ -1904,10 +1910,49 @@ dominates the audio-LLMs stays a CPU problem, exactly as for LLM decode.
 ## Detection (tflite-rocket)
 
 SSD-MobileDet (uint8) through the tflite-rocket external delegate on `librocketnpu`, RK3588 at
-600 MHz, `native_int8=1`. Detection's NPU story differs from LLM prefill: a single inference is
-**host cube-scatter/gather-bound** (warm ~336 ms), not compute- or submit-bound, so the NPU's
-value is not single-stream latency but **throughput under a multi-camera pool**: the regime
-Frigate actually runs. Faithfulness here is COCO mAP (not perplexity).
+600 MHz, `native_int8=1`. Detection differs from LLM prefill: a single inference is bound by the
+host's cube scatter and gather, and by neither compute nor submits. So its latency follows the
+host path, and the NPU's larger value is throughput under a multi-camera pool, the regime
+Frigate runs. Faithfulness here is COCO mAP rather than perplexity.
+
+### Single-stream latency
+
+Host-path changes, and moving the requant on chip, take MobileDet from 205 to 56 ms. Each row
+is the warm latency once that change is in, on one operating point: RK1, 600 MHz, governor `performance`, the process on
+the A76 cores, four rotated passes [HW sweep, 2026-09-27 and 2026-09-28].
+
+| Host path | MobileDet | SSD MobileNet v2 | EfficientDet-Lite0 |
+|---|---:|---:|---:|
+| Per-element cube packs, fp16-approximated depthwise | 205 ms | 201 ms | 309 ms |
+| Blocked packs, uint8 depthwise on chip through CPEND | 151 | 131 | 256 |
+| Matmul output and regcmd BOs sized to the call's tiles | 130 | 120 | 229 |
+| Table-driven unary and concat, a one-K-tile gather straight into C, `lrintf` inlined, transposed conv packs | 105.5 | 94 | 150 |
+| Transposed delegate conversions, BO size classes, int8 depthwise row bands | ~93 | ~78 | ~133 |
+| Per-axis depthwise on the per-channel multiplier | unchanged | unchanged | 121 |
+| uint8 direct convs on the int8-out writer | 75 | ~66 | unchanged |
+| Large-plane 1×1s on the int8-out writer, per-axis direct convs on it | 55.7 | 52.1 | 101.3 |
+
+Rows 3 to 5 leave every output byte identical, apart from SSD MobileNet v2's two 150×150
+depthwise layers, which move to the int8 route. Rows 2 and 6 to 8 change which program computes
+a layer, so outputs move there. COCO mAP over 100 images does not fall at any of them. At the
+last row it is 0.4040, 0.3229 and 0.3023, against the CPU's 0.3980, 0.3215 and 0.2996. The last
+row is one A/B on one build: 76.6 -> 55.7 ms, 65.6 -> 52.1 and 123.3 -> 101.3.
+
+The same build unpinned, on `ondemand` with a 1.2 GHz floor and no `taskset`, reads 75.8, 70.5
+and 135.0 ms. The governor parks the cores an offloading process leaves idle
+([cpu-governor-and-offload.md](cpu-governor-and-offload.md)).
+
+Three host costs carried most of the gap:
+
+- The conv entries packed their cubes one element at a time. That loop was 83% of the int8
+  depthwise call ([../depthwise-conv.md](../depthwise-conv.md)).
+- Buffers were sized for the largest call and synced whole on every call
+  ([bo-sync-cost.md](bo-sync-cost.md)).
+- The int32 readback and the host requant. On MobileDet's direct convs the `read` phase is the
+  int32 copy, 262 ms over 21 invokes against 19 ms of `FINI_BO`. The int8-out writer removes it
+  ([../encodings/out-cvt-converter.md](../encodings/out-cvt-converter.md)).
+
+The `tflite-rocket` README carries the per-change ratios.
 
 **Faithfulness: COCO-val mAP, the detection correctness check.**
 
@@ -1941,9 +1986,60 @@ below the submit-bound delegate ceiling (`tools/pool_throughput.py`: 1.00 / 2.17
 The pool needs no delegate or driver change; it is exactly how Frigate runs cameras (one process
 each).
 
+The pool table was measured when a single inference took ~336 ms. It is not re-measured on the
+host path above, so its absolute rates and its scaling are that build's.
+
 **Verdict.** For detection the FOSS-NPU delegate is a CPU-parity-accuracy accelerator whose value
 is throughput: run one pinned process per camera and it serves ~3x the aggregate detection rate of
 a single stream, offloading the conv/matmul work of four cameras to the NPU so the A76 cluster is
-free and the A55s handle decode. Single-stream latency is host cube-gather-bound, so the levers
-there are the NEON requant epilogue (shipped) and resident NCHW intermediates, not the NPU submit
-path.
+free and the A55s handle decode. Single-stream latency is bound by host work, so its levers are
+the host path's, as the table above shows, and not the NPU submit path.
+
+## ONNX Runtime (ort-rocket)
+
+`ort-rocket` is an ONNX Runtime execution provider on `librocketnpu`. It claims whole encoders
+and single ConvTranspose nodes, and leaves the rest of a graph on the CPU EP. Its README owns the
+full per-model table. The figures here are warm, on the RK1 at 600 MHz, against the CPU EP at
+`ORT_ENABLE_ALL` [HW sweep].
+
+| Model | Offloaded | Single stream, x the CPU EP | Faithfulness against the CPU EP |
+|---|---|---:|---|
+| SigLIP-B/16 | plain ViT, d=768, 196 tokens | 1.27x | hidden-state cosine 0.9999864 |
+| RF-DETR base | windowed DINOv2 ViT-S, d=384 | 1.05x | COCO mAP 0.564 against 0.564 |
+| SAM ViT-B | ViT-Det, d=768, 4096 tokens | 1.03-1.11x | mask IoU 0.9998 |
+| Depth Anything v2 Small | DINOv2 ViT-S, global attention over 1370 tokens | 0.78x | depth cosine 0.9999999 |
+| Laya English | ModernBERT-large, d=1024, 48-512 tokens | 1.66-3.11x | 4 of 4 answers agree |
+| pix2pix generator | ConvTranspose nodes, 65% of the CPU wall | 1.76x at 4 threads, 2.15x at 2 | PSNR 80.8 dB |
+
+A model's single-stream ratio follows its attention-to-projection ratio, `ntok / 4d`, with a
+windowed layer counted at its window length. The NPU runs the large-K projection GEMMs about 2.7x
+more efficiently per MAC than attention. So the one global-attention encoder loses, and the wide
+text encoder gains most. ONNX Runtime's CPU kernels run the Laya graph at ~77 GOP/s, which is
+why its ratio sits above what the vision models predict.
+
+### ONNX Runtime's spinning threads cost the EP
+
+ONNX Runtime's intra-op threads spin while idle by default. An offloaded node leaves them idle,
+so they spin on the A76 cores the EP's host threads and NPU workers need [hypothesis]. With
+`session.intra_op.allow_spinning` set to `0` the EP arm gains and the CPU arm does not move
+[HW sweep, mainline RK1, `taskset -c 4-7`, governor `performance`, 2026-09-27]:
+
+| Case | Default session | Spinning off |
+|---|---:|---:|
+| Laya, one 58-token request, EP | 137-139 ms | 118-121 ms |
+| pix2pix, 4 threads, EP | 99.9 ms, 1.46x the CPU EP | 82.9 ms, 1.76x |
+| pix2pix, 4 threads, CPU EP | 145.5 ms | 146.6 ms |
+| SAM mask decoder, EP, x the CPU EP | 1.017x | 1.049x |
+
+At 2 threads pix2pix shows no difference. A 726-token Laya request varies +-10% between passes
+either way, so that cell is unresolved. An execution provider cannot change a session's options,
+so the application sets this one. The ViT and Laya rows in the table above were taken under the
+default session, and the pix2pix row with spinning off.
+
+```python
+so.add_session_config_entry("session.intra_op.allow_spinning", "0")
+```
+
+This is the same class of bias as a load-sampling CPU governor
+([cpu-governor-and-offload.md](cpu-governor-and-offload.md)): a host-side default that costs
+the offloading arm and leaves the CPU arm alone.

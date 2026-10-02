@@ -56,5 +56,5 @@ padding, though how large it is remains unknown.
   layer 45) or in the handler's own arithmetic.
 - **Why that op.** The same op in the warm-up pass never differed. A run-time-dependent route (the
   residency latch on `MemAvailable`, core placement across three cores) is a candidate
-  [expected], and the conditions differ from the 2026-09-07 runs, which pinned the governor and
+  [hypothesis], and the conditions differ from the 2026-09-07 runs, which pinned the governor and
   `power/control`.

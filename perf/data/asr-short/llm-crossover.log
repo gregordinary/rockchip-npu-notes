@@ -1,0 +1,6 @@
+start Wed Sep 30 01:59:37 UTC 2026
+02:00:20 npu.r1 rc=0 "n_prompt": 16 "avg_ts": 10.943116 "n_prompt": 32 "avg_ts": 20.882302 "n_prompt": 64 "avg_ts": 37.501527 "n_prompt": 128 "avg_ts": 58.130260
+02:01:20 cpu.r1 rc=0 "n_prompt": 16 "avg_ts": 15.579869 "n_prompt": 32 "avg_ts": 16.610158 "n_prompt": 64 "avg_ts": 16.205645 "n_prompt": 128 "avg_ts": 16.255765
+02:02:21 cpu.r2 rc=0 "n_prompt": 16 "avg_ts": 15.557996 "n_prompt": 32 "avg_ts": 16.703345 "n_prompt": 64 "avg_ts": 16.061339 "n_prompt": 128 "avg_ts": 16.190939
+02:02:51 npu.r2 rc=0 "n_prompt": 16 "avg_ts": 10.808488 "n_prompt": 32 "avg_ts": 20.870332 "n_prompt": 64 "avg_ts": 38.021248 "n_prompt": 128 "avg_ts": 58.120489
+done Wed Sep 30 02:02:51 UTC 2026

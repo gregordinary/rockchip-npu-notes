@@ -1,15 +1,15 @@
-# An offloading process defeats a load-based CPU governor
+# The CPU governor under an offloading process
 
 A workload that hands its heavy arithmetic to the NPU spends that time blocked, with its
 threads off the run queue. A load-sampling CPU governor reads that as idle and drops the big
-cores toward their floor, and the half of the work that never left the host, the cube scatter
-and gather, then runs at that floor. **The NPU arm pays the penalty and the CPU-only arm does
-not**, so an A/B taken under the default governor understates the offload and can read as
-a regression [HW sweep 2026-08-25].
+cores toward their floor. The half of the work that never left the host, the cube scatter and
+gather, then runs at that floor. **The NPU arm pays the penalty and the CPU-only arm does
+not.** So an A/B taken under the default governor understates the offload and can read as a
+regression [HW sweep 2026-08-25].
 
-Measured with the same TFLite detector (SSDLite-MobileDet, `native_int8=1`) on two RK3588
-boards, twelve invokes per arm with the first three discarded, the governor arms interleaved
-and the run repeated twice:
+The measurement ran the same TFLite detector (SSDLite-MobileDet, `native_int8=1`) on two
+RK3588 boards. Each arm took twelve invokes, with the first three discarded. The governor arms
+were interleaved, and the run was repeated twice:
 
 | board | CPU governor | NPU delegate (median) | plain CPU TFLite (median) |
 |---|---|---|---|
@@ -18,11 +18,11 @@ and the run repeated twice:
 | vendor `rknpu` 0.9.8, kernel 6.1 | `performance` | 199.7 ms | 183.4 ms |
 | | `ondemand` | **639.4 ms** | 183.3 ms |
 
-The CPU-only arm is flat to a tenth of a millisecond in both governors on both boards: a
+The CPU-only arm is flat to a tenth of a millisecond in both governors on both boards. A
 multi-threaded XNNPACK inference keeps every core busy, so `ondemand` ramps and stays ramped.
-The delegated arm costs **1.27x** on one board and **3.2x** on the other.
+The delegated arm costs 1.27x on one board and 3.2x on the other.
 
-## The size of the penalty is the CPU's minimum frequency
+## The CPU's minimum frequency and the size of the penalty
 
 The two boards run the same governor with the same tunables (`up_threshold` 95,
 `sampling_rate` 6.7-10 ms, `powersave_bias` 0). What differs is the floor the governor is
@@ -33,17 +33,16 @@ allowed to fall to on the A76 cluster:
 | mainline, kernel 7.2 | 1 200 MHz | 2 400 MHz | 2.0x | 1.27x |
 | vendor, kernel 6.1 | 408 MHz | 2 352 MHz | 5.8x | 3.2x |
 
-So this is a platform-configuration effect and **not a property of either driver**: the
-mechanism is identical on both, and the board whose A76 may park at 408 MHz pays about
-2.5x more for it. A board read right after a delegated run shows the cluster sitting at its
-floor.
+So this is a platform-configuration effect, and it is not a property of either driver. The
+mechanism is identical on both. The board whose A76 can park at 408 MHz pays about 2.5x more
+for it. A board read right after a delegated run shows the cluster sitting at its floor.
 
 ## The deep CPU idle state
 
 Every RK3588 core has one deep idle state, `cpu-sleep`, a PSCI power-down. Its sysfs exit
 latency is 220 µs and its target residency 1000 µs. The `menu` idle governor picks it for a
-predicted idle of 1 ms or more. **Disabling it makes the offloaded arm of a prefill ~3% faster
-and leaves the CPU-only arm unchanged** [HW sweep 2026-09-26]. It is the governor's bias again,
+predicted idle of 1 ms or more. Disabling it makes the offloaded arm of a prefill ~3% faster
+and leaves the CPU-only arm unchanged [HW sweep 2026-09-26]. It is the governor's bias again,
 smaller.
 
 The setup was the mainline board with `rocket` 1.3.0 at 600 MHz, the governor `performance` on
@@ -67,7 +66,7 @@ The likely cause is the host thread pool, idle for over a millisecond while a ma
 paying the exit at each hand-back (inferred, not isolated).
 
 Two runs in one campaign read 13-15% faster in both arms at once. Pairing inside the block
-cancelled them, and their cause is not located. An unpaired A/B would have read them as an
+canceled them, and their cause is not located. An unpaired A/B would have read them as an
 effect.
 
 ## The DDR frequency governor on a vendor kernel
@@ -90,10 +89,21 @@ passes, with DDR sampled every 50 ms:
 | RKNN whole-graph encoder | 344.05 | 343.95 | 2-9% of samples |
 
 Each cell is the median of three passes. The samples carry no timestamps, so which phase of a
-run the low ones fall in is not known. The mainline kernel on the same board exposes no DDR devfreq node,
-so this bias cannot arise there. DDR runs at the rate the bootloader set.
+run the low ones fall in is not known. The mainline kernel on the same board exposes no DDR
+devfreq node, so this bias cannot arise there. DDR runs at the rate the bootloader set.
 
-## What to do
+## LLM prefill
+
+The same bias holds on llama.cpp prefill through ggml-rocket. The NPU arm at pp2048
+(`-b 2048 -ub 2048`, llama.cpp b11242) reads 1.130x faster pinned than under `ondemand` on
+DeepSeek-V2-Lite `Q4_K_M` and 1.079x on Phi-4 `Q4_K_M`. That is paired over three rotated
+passes, each within 0.01 of the mean, on the mainline RK1 with `rocket` 1.3.0 [HW sweep
+2026-09-29]. The CPU arm of the same models keeps every core busy and reproduced a campaign that
+recorded no governor within 2%. See [cpu-repack-baseline.md](cpu-repack-baseline.md).
+
+## Governor, idle-state and DDR settings
+
+For an NPU-against-CPU comparison and for a deployment:
 
 - **Pin the CPU governor before quoting any NPU-versus-CPU number**, and put it back
   afterwards. Reading `scaling_governor` is not enough: read `scaling_min_freq` too, because
@@ -102,16 +112,17 @@ so this bias cannot arise there. DDR runs at the rate the bootloader set.
   `cpuidle/state1/disable`, and put it back afterwards. It is worth ~3% to the NPU arm at
   `pp512` and nothing to the CPU arm. Larger models and quantized ones are untested. In a
   deployment, a service holding a `/dev/cpu_dma_latency` request under 220 µs keeps the state
-  off at an idle-power cost **[expected]**.
+  off at an idle-power cost [expected].
 - **On a vendor kernel, pin DDR as well**, with `performance` in `/sys/class/devfreq/dmc/governor`,
   and put it back afterwards. Left on `dmc_ondemand` it slows the CPU-only arm by ~5% and widens
   its spread, which flatters the NPU arm.
 - **In a deployment, raise the floor rather than the governor.** A detection service does not
-  need `performance` on every core; it needs the cores its offloading process runs on not to
-  park. `scaling_min_freq`, or an affinity that keeps one busy thread on the cluster, both
-  work.
-- **The effect grows with the host share of the workload.** A detection inference on this part
-  is host cube-gather-bound, which is why it shows here so strongly; a workload whose wall is
-  mostly device time would barely notice. See
-  [device-vs-host-split.md](device-vs-host-split.md) for how to split one, and
-  [not-mac-bound.md](not-mac-bound.md) for why the host share is large on this silicon.
+  need `performance` on every core. It needs the cores its offloading process runs on not to
+  park. Either `scaling_min_freq` or an affinity that keeps one busy thread on the cluster
+  works.
+
+The effect grows with the host share of the workload. A detection inference on this part is
+host cube-gather-bound, which is why it shows here so strongly. A workload whose wall is mostly
+device time would barely notice. See [device-vs-host-split.md](device-vs-host-split.md) for how
+to split one, and [not-mac-bound.md](not-mac-bound.md) for why the host share is large on this
+silicon.

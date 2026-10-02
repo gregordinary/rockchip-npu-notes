@@ -60,11 +60,13 @@ DPU_RDMA_SURF_NOTCH / EW_SURF_NOTCH = surf_notch
 `COMB_USE(5)`, to deliver the *operand* (SRC_BASE and EW_BASE both point at the
 add tensor). MRDMA is never simultaneously a flying main and an operand feed.
 
-So the flying-mode LUT activation (MRDMA flying = main, no operand) and a two-buffer
-EW op are different MRDMA roles. A pure flying-MRDMA-main + ERDMA-operand multiply
-(our `gen_ew_mul_fp16`) has no valid main once MRDMA is needed for the operand ->
-the operand reads 0. **A fully-on-NPU two-buffer EW multiply requires a conv (even
-an identity 1×1) as the main feed.**
+That is Mesa's program, not a requirement of the datapath. A pure flying-MRDMA-main plus
+ERDMA-operand program computes a two-buffer EW op exactly, with no conv
+[HW sweep, RK3588, `tests/ew_int_probe.c`], once `DATA_CUBE_CHANNEL` carries `ORIG_CHANNEL`
+and `COMB_USE` bit 0 is clear. `gen_ew_mul_fp16` carries both wrong, which is why it
+fails. The fields are in
+[../encodings/sdp-stage-precision.md](../encodings/sdp-stage-precision.md) §"A two-buffer EW op
+needs no conv main feed".
 
 Feeding the EW operand path with an **identity matmul** as the main (the fp16 K-accum
 machinery, `gen_matmul_fp16` `accumulate=1`) and switching the EW op add->mul

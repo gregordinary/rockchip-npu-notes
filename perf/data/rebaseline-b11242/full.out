@@ -1,0 +1,38 @@
+=== 03:41:13 full  governor pinned: policy0:performance policy4:performance policy6:performance   npu_clk=600000000
+=== 03:41:13 deepseek-v2-lite start
+=== 04:19:03 deepseek-v2-lite rc=0
+#### summary: per-arm mean over 3 passes, ratios paired within a pass against [cpu-rp0]
+| test | arm | mean t/s | n | min | max | paired ratio | per-pass ratios |
+|---|---|---:|---:|---:|---:|---:|---|
+| pp2048 | cpu-rp0 | 18.78 | 3 | 18.74 | 18.86 | -- | -- |
+| pp2048 | cpu-rp1 | 23.66 | 3 | 23.62 | 23.68 | 1.260x | 1.260 1.256 1.263 |
+| pp2048 | npu | 34.07 | 3 | 33.88 | 34.26 | 1.814x | 1.828 1.807 1.808 |
+
+=== 04:19:03 gpt-oss-20b start
+=== 05:12:35 gpt-oss-20b rc=0
+#### summary: per-arm mean over 3 passes, ratios paired within a pass against [cpu-rp0]
+| test | arm | mean t/s | n | min | max | paired ratio | per-pass ratios |
+|---|---|---:|---:|---:|---:|---:|---|
+| pp2048 | cpu-rp0 | 11.97 | 3 | 11.94 | 11.99 | -- | -- |
+| pp2048 | cpu-rp1 | 15.91 | 3 | 15.85 | 15.95 | 1.329x | 1.327 1.330 1.330 |
+| pp2048 | npu | 30.20 | 3 | 30.00 | 30.37 | 2.523x | 2.513 2.520 2.535 |
+
+=== 05:12:35 phi4-14b start
+=== 07:35:08 phi4-14b rc=0
+#### summary: per-arm mean over 3 passes, ratios paired within a pass against [cpu-rp0]
+| test | arm | mean t/s | n | min | max | paired ratio | per-pass ratios |
+|---|---|---:|---:|---:|---:|---:|---|
+| pp2048 | cpu-rp0 | 3.38 | 3 | 3.37 | 3.39 | -- | -- |
+| pp2048 | cpu-rp1 | 5.45 | 3 | 5.44 | 5.46 | 1.613x | 1.611 1.609 1.620 |
+| pp2048 | npu | 16.67 | 3 | 16.63 | 16.73 | 4.932x | 4.906 4.950 4.941 |
+
+=== 07:35:08 qwen36-27b start
+=== 10:34:42 qwen36-27b rc=0
+#### summary: per-arm mean over 2 passes, ratios paired within a pass against [cpu-rp0]
+| test | arm | mean t/s | n | min | max | paired ratio | per-pass ratios |
+|---|---|---:|---:|---:|---:|---:|---|
+| pp2048 | cpu-rp0 | 1.75 | 2 | 1.75 | 1.75 | -- | -- |
+| pp2048 | cpu-rp1 | 2.99 | 2 | 2.99 | 2.99 | 1.709x | 1.709 1.709 |
+| pp2048 | npu | 9.59 | 2 | 9.58 | 9.61 | 5.483x | 5.474 5.491 |
+
+=== 10:34:42 DONE  governor restored: ondemand

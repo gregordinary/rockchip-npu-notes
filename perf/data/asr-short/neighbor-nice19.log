@@ -1,0 +1,11 @@
+start Wed Sep 30 02:06:26 UTC 2026 gov=ondemand
+02:06:34 alone.rw0 nb_rc=0 stt_files_during=0 stt_alive=0 tg="avg_ts": 7.134057
+02:07:18 cpu.r1 nb_rc=0 stt_files_during=48 stt_alive=1 tg="avg_ts": 0.934006
+02:07:36 forced.r1 nb_rc=0 stt_files_during=9 stt_alive=1 tg="avg_ts": 3.247983
+02:07:51 forcedp.r1 nb_rc=0 stt_files_during=9 stt_alive=1 tg="avg_ts": 4.739719
+02:07:59 alone.r1 nb_rc=0 stt_files_during=0 stt_alive=0 tg="avg_ts": 7.326831
+02:08:16 forced.r2 nb_rc=0 stt_files_during=8 stt_alive=1 tg="avg_ts": 3.490146
+02:08:31 forcedp.r2 nb_rc=0 stt_files_during=10 stt_alive=1 tg="avg_ts": 4.862423
+02:08:39 alone.r2 nb_rc=0 stt_files_during=0 stt_alive=0 tg="avg_ts": 7.139526
+02:09:25 cpu.r2 nb_rc=0 stt_files_during=51 stt_alive=1 tg="avg_ts": 0.874156
+done Wed Sep 30 02:09:25 UTC 2026

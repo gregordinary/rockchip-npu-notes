@@ -1,0 +1,81 @@
+adm b01 floor=4 2094-142345-0041 265 calls
+adm b01 floor=4 7127-75947-0012 265 calls
+adm b01 floor=8 2094-142345-0041 265 calls
+adm b01 floor=8 7127-75947-0012 265 calls
+adm b01 floor=16 2094-142345-0041 265 calls
+adm b01 floor=16 7127-75947-0012 265 calls
+adm b01 floor=32 2094-142345-0041 24 calls
+adm b01 floor=32 7127-75947-0012 24 calls
+adm b01 floor=64 2094-142345-0041 0 calls
+adm b01 floor=64 7127-75947-0012 0 calls
+adm b01 floor=128 2094-142345-0041 0 calls
+adm b01 floor=128 7127-75947-0012 0 calls
+adm b02 floor=4 1089-134686-0014 265 calls
+adm b02 floor=4 237-126133-0020 265 calls
+adm b02 floor=8 1089-134686-0014 265 calls
+adm b02 floor=8 237-126133-0020 265 calls
+adm b02 floor=16 1089-134686-0014 265 calls
+adm b02 floor=16 237-126133-0020 265 calls
+adm b02 floor=32 1089-134686-0014 24 calls
+adm b02 floor=32 237-126133-0020 24 calls
+adm b02 floor=64 1089-134686-0014 0 calls
+adm b02 floor=64 237-126133-0020 0 calls
+adm b02 floor=128 1089-134686-0014 0 calls
+adm b02 floor=128 237-126133-0020 0 calls
+adm b03 floor=4 1089-134686-0001 265 calls
+adm b03 floor=4 2300-131720-0014 265 calls
+adm b03 floor=8 1089-134686-0001 265 calls
+adm b03 floor=8 2300-131720-0014 265 calls
+adm b03 floor=16 1089-134686-0001 265 calls
+adm b03 floor=16 2300-131720-0014 265 calls
+adm b03 floor=32 1089-134686-0001 265 calls
+adm b03 floor=32 2300-131720-0014 265 calls
+adm b03 floor=64 1089-134686-0001 24 calls
+adm b03 floor=64 2300-131720-0014 24 calls
+adm b03 floor=128 1089-134686-0001 0 calls
+adm b03 floor=128 2300-131720-0014 0 calls
+adm b05 floor=4 1089-134686-0004 265 calls
+adm b05 floor=4 2300-131720-0000 265 calls
+adm b05 floor=8 1089-134686-0004 265 calls
+adm b05 floor=8 2300-131720-0000 265 calls
+adm b05 floor=16 1089-134686-0004 265 calls
+adm b05 floor=16 2300-131720-0000 265 calls
+adm b05 floor=32 1089-134686-0004 265 calls
+adm b05 floor=32 2300-131720-0000 265 calls
+adm b05 floor=64 1089-134686-0004 265 calls
+adm b05 floor=64 2300-131720-0000 265 calls
+adm b05 floor=128 1089-134686-0004 24 calls
+adm b05 floor=128 2300-131720-0000 0 calls
+adm b08 floor=4 1089-134686-0013 265 calls
+adm b08 floor=4 2300-131720-0015 265 calls
+adm b08 floor=8 1089-134686-0013 265 calls
+adm b08 floor=8 2300-131720-0015 265 calls
+adm b08 floor=16 1089-134686-0013 265 calls
+adm b08 floor=16 2300-131720-0015 265 calls
+adm b08 floor=32 1089-134686-0013 265 calls
+adm b08 floor=32 2300-131720-0015 265 calls
+adm b08 floor=64 1089-134686-0013 265 calls
+adm b08 floor=64 2300-131720-0015 265 calls
+adm b08 floor=128 1089-134686-0013 24 calls
+adm b08 floor=128 2300-131720-0015 24 calls
+adm b12 floor=4 1089-134686-0011 265 calls
+adm b12 floor=4 237-126133-0000 265 calls
+adm b12 floor=8 1089-134686-0011 265 calls
+adm b12 floor=8 237-126133-0000 265 calls
+adm b12 floor=16 1089-134686-0011 265 calls
+adm b12 floor=16 237-126133-0000 265 calls
+adm b12 floor=32 1089-134686-0011 265 calls
+adm b12 floor=32 237-126133-0000 265 calls
+adm b12 floor=64 1089-134686-0011 265 calls
+adm b12 floor=64 237-126133-0000 265 calls
+adm b12 floor=128 1089-134686-0011 265 calls
+adm b12 floor=128 237-126133-0000 265 calls
+prof b01 floor=4 ROCKET profile total(ms): pack=6488 (packA=6 packB=5889) gen=85 sync=385 submit=294 wait=5389 read=133  over 13250 job-batches
+prof b01 floor=16 ROCKET profile total(ms): pack=6512 (packA=6 packB=5913) gen=81 sync=384 submit=292 wait=5371 read=133  over 13250 job-batches
+prof b02 floor=4 ROCKET profile total(ms): pack=6795 (packA=9 packB=5988) gen=84 sync=390 submit=301 wait=5507 read=163  over 13250 job-batches
+prof b02 floor=16 ROCKET profile total(ms): pack=6865 (packA=9 packB=6047) gen=83 sync=386 submit=300 wait=5493 read=165  over 13250 job-batches
+prof b05 floor=4 ROCKET profile total(ms): pack=8343 (packA=47 packB=6705) gen=99 sync=461 submit=345 wait=6852 read=302  over 13250 job-batches
+prof b05 floor=16 ROCKET profile total(ms): pack=8380 (packA=47 packB=6759) gen=101 sync=461 submit=340 wait=6847 read=303  over 13250 job-batches
+prof b12 floor=4 ROCKET profile total(ms): pack=11708 (packA=220 packB=7706) gen=137 sync=763 submit=475 wait=13390 read=767  over 13250 job-batches
+prof b12 floor=16 ROCKET profile total(ms): pack=11654 (packA=219 packB=7664) gen=141 sync=775 submit=501 wait=13389 read=774  over 13250 job-batches
+done Wed Sep 30 01:59:37 UTC 2026

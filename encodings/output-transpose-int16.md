@@ -1,46 +1,107 @@
-# int16 has no native matmul output: `tp_org_en` + the transposed 8/16-bit writer
+# int16 matmul output: the int32 writer and the transposed writer
 
-The int16 *conv* computes correct int16xint16 dot products (`precision=1`, see
-[precision-field.md](precision-field.md)), but getting them **out of the DPU** has
-no clean full-precision path. There are exactly two output regimes, and neither is
-"full iteration + int32":
+An int16 × int16 matmul contracts at precision 1 and has two output writers. The plain
+DPU path writes a full int32 surface in the standard `[N/4,M,4]` output cube, saturating
+to int32. The transposed path (`tp_org_en`) writes 8- or 16-bit elements in a layout of
+its own, truncated rather than saturated. Each needs its own output geometry, and each
+hangs under the other's. Scope: one task, single K pass, the RK3588.
 
-| regime | how | what you get |
+| writer | registers | what you get |
 |---|---|---|
-| **no transpose** | default DPU output | int32, full-width, **saturates** to int32 range, but only **one output tile** is written (row 0, channels 1..16); iteration is broken regardless of M/N/qd_en/size_e/grains/kernel_groups (all swept, zero effect) |
-| **`tp_org_en=1`** | DPU "original transpose" (DPU_BS_OW_CFG bit 27) | the **entire M×N buffer** is written, but as **8- or 16-bit** elements (`tp_precision`: 0=int8, 1=int16), **transposed**, and **saturating** to that width |
+| int32 | `size_e` 3, `surf_add` = stride × 4, `out_precision` 4 | the whole M×N surface as int32, **saturating**, exact against the int64 dot product clamped to int32 |
+| transposed | `tp_org_en`=1 (DPU_BS_OW_CFG bit 27), `tp_precision` 0 or 1, `size_e` 7, surface add × 8 | the whole M×N surface as int8 or int16, transposed. The int16 form holds the **low 16 bits** of the sum clamped to int32, verified at N<=32 |
 
-There is no register combination that gives full-iteration int32. This is unique to
-int16; int8 (->int32) and int4 (->int16) iterate fully on the plain path.
+## The int32 writer
 
-**No dtype but int16 lacks a full-iteration output.** Every other matmul iterates
-fully (int8->int32, int4->int16, fp16->fp32); int16 alone has no full-iteration output
-regime across the entire sweep, so it is not a native matmul *output* type.
+The int32 writer takes the output geometry of fp16 -> fp32, which also reads two-byte
+operands and writes four-byte results. That is `size_e` 3 and a surface add of the
+destination stride times 4. The CNA and CORE side is the fp16 matmul's, with the precision
+fields at 1 and `qd_en` at 1.
 
-## The DPU output-writer cluster [source-confirmed: Mesa `registers.xml`]
+The int32 writer is bit-exact on every element at six shapes with M, K and N all
+different (M 4-100, K 32-1024, N 48-256). The reference is the int64 dot product saturated
+to int32. The run covers four operand fills at two reps each, 48 of 48 arms [HW sweep,
+RK3588, `rocket` 1.3.0, 600 MHz, 2026-09-26, `tests/int16_native_probe`]:
 
-Four DPU fields control the transpose/output-width path (wired through
-`gen_matmul_task`; **int16-only; fp16/int8/int4 regcmd is byte-identical**,
-verified with `/tmp/diff16.c`):
+| fill | A | B | what it checks |
+|---|---|---|---|
+| small | [-16, 15] | [-16, 15] | the range earlier evidence used, whose high byte is a sign extension |
+| afull | all of int16 | within the int32 bound for K | A's high byte |
+| bfull | within the int32 bound for K | all of int16 | B's high byte |
+| big | all of int16 | all of int16 | sums past int32, scored against the saturated model |
+
+An independent generator agrees on the same silicon under the vendor `rknpu` driver.
+allbilly's `experimental/gemm_int16.py` writes the same `size_e` 3 pair. It is exact under
+all four fills at those six shapes and at 64³ and 256³ [HW sweep, vendor kernel
+`6.1.172-vendor-rk35xx`, `rknpu` 0.9.8, 2026-09-26]. Its input layout differs from this
+project's at non-square shapes, so the agreement covers the writer rather than one program.
+
+### The accumulator and the saturation
+
+The `big` fill reaches dot products of 2^35.5 at K=1024. Every result that lands back
+inside int32 had a running sum that left it on the way, and all of them are exact. Every
+result outside int32 reads as the clamped value, not the wrapped one. So the accumulator
+holds at least 36 bits, and the writer saturates on the way out [HW sweep]. NVDLA's note
+that Mesa cites (`rkt_coefs.c:152`) gives a 48-bit CACC for INT16 that rounds and
+saturates to 32 bits [source-confirmed]. That agrees, and nothing here reached past 2^35.5.
+
+Saturation sets what the int32 writer is exact for. A product of two full-range int16
+values is up to 2^30, so two of them can pass int32. When the operand ranges keep
+`|sum| < 2^31` over the task's K, a result is exact. One operand full-range and the other
+within `(2^31-1) / (K · 32768)` is one such pair. For full-range operands at any useful K,
+the int64-exact route is the int8 byte decomposition below.
+
+### int8 output geometry on an int16 task
+
+**Do not give an int16 program the int8 integer-output geometry**, `size_e` 7 with the
+surface add × 8 ([size-e-quirk.md](size-e-quirk.md)). The DPU writes row 0's first sixteen
+channels, exact, and the task never completes. `rocket` retires it at its 500 ms watchdog
+and signals the fence as if it had finished. So `PREP_BO` returns 0, and the buffer reads
+as one correct 1×16 tile over whatever it held before. All 48 of 48 such tasks did this,
+and the kernel logged each as a job timeout [HW sweep].
+
+A surface that reads "one tile, the rest untouched" is a retired task, not a missing
+output mode. Read the kernel log's timeout count, or the wait time, before reading the
+surface.
+
+## The transposed writer
+
+With `tp_org_en=1` the DPU writes the whole M×N buffer as 8- or 16-bit elements,
+transposed. `tp_precision` (DPU_WDMA_SIZE_0 bit 27) picks the width: 0 is 8-bit and 1 is
+16-bit. It is a single bit. A sweep over byte-width-looking values (8, 16, 32, 64, 256)
+writes only even values and never sets it, so it reads as no effect while testing nothing.
+Sweep `{0, 1}`.
+
+**The 16-bit form truncates.** Each element is the low 16 bits of the dot product after
+the sum is clamped to int32. A sum past int16 wraps, and a sum past int32 reads -1 above
+and 0 below. That model is exact on every element at 15 arms [HW sweep, RK3588, `rocket`
+1.3.0, 2026-09-26, `matmul_int16_rocket` with `ROCKET_INT16_TP16=1`]. The arms span M
+4-32, K 32-64, N 16-32, with operands in ±16, ±1024 and all of int16.
+
+None of the elements outside int16 equaled a clamp to int16. The 8-bit form was not
+scored. So this writer is exact only where the sums fit int16, and a requantizing caller
+must bound them.
+
+The transposed writer's geometry is int8's, `size_e` 7 with the surface add × 8, and all
+15 arms are exact there. Under the int32 writer's `size_e` 3 it writes half the surface or
+less, and at M >= 16 the task hangs to the watchdog.
+
+**At N=16 the task hangs after a complete write.** `12×64×16` writes every element right,
+and the 500 ms watchdog still retires it. That held on 4 of 4 runs, at three
+ranges [HW sweep]. A correct surface does not show that the task completed.
+
+Four DPU fields control this path [source-confirmed: Mesa `registers.xml`]:
 
 | field | register | meaning |
 |---|---|---|
-| `mc_surf_out`  | DPU_DATA_FORMAT bit3   | how many surfaces serialize the DPU output |
-| `tp_precision` | DPU_WDMA_SIZE_0 bit27  | **transpose precision: 0 = 8-bit, 1 = 16-bit** |
-| `size_c_wdma`  | DPU_WDMA_SIZE_0 b26:16 | Size_c for the WDMA |
-| `tp_org_en`    | DPU_BS_OW_CFG  bit27   | **enable original transpose** (unlocks full-buffer iteration) |
+| `mc_surf_out`  | DPU_DATA_FORMAT bit 3   | how many surfaces serialize the DPU output |
+| `tp_precision` | DPU_WDMA_SIZE_0 bit 27  | transpose precision: 0 = 8-bit, 1 = 16-bit |
+| `size_c_wdma`  | DPU_WDMA_SIZE_0 b26:16  | Size_c for the WDMA |
+| `tp_org_en`    | DPU_BS_OW_CFG bit 27    | enable original transpose |
 
-`tp_org_en=1` is the iteration unlock; `tp_precision=1` picks 16-bit elements (so a
-small int16 result round-trips losslessly). `tp_precision` is a **single bit** (DPU_WDMA_SIZE_0
-bit27): only `&1` matters. A sweep over byte-width-looking values (8/16/32/64/256) is all
-even, so `&1==0` and 16-bit transpose is never enabled, and the sweep reads as "no effect" while
-testing nothing. Sweep `{0, 1}`, not byte widths.
-
-## The transposed int16 output layout
-
-With `tp_org_en=1, tp_precision=1` the output is **int16** at this element index
-(0-based `m,n`; `na = n/4`). Strides were measured across M∈{4,8,16}, N∈{16,32,64}
-(see `matmul_int16_rocket.c` probe mode) and **scale with M, not N** [HW sweep]:
+With `tp_org_en=1, tp_precision=1` the output is int16 at the element index below, for
+0-based `m,n` and `na = n/4`. The strides were measured across M in {4, 8, 16} and N in
+{16, 32, 64}, and they scale with M, not N [HW sweep]:
 
 ```
 slot(m,n) = 4·m  +  (na%4)  +  (na/4)·4M  +  (n%4)·16M
@@ -53,30 +114,31 @@ slot(m,n) = 4·m  +  (na%4)  +  (na/4)·4M  +  (n%4)·16M
 | `na/4`       | 4·M  |
 | `n%4` (lane) | 16·M |
 
-**HW-verified bit-exact at N<=32** (`8×32×32`, `16×32×32`, `32×32×32`, `4×32×32` all
-pass 100% vs the int16-saturated reference). At N>=64 the `n/16` super term stops
-extrapolating linearly (elements n>=32 read wrong), so the native path is capped at
-**per-task N<=32**. It is dense (== M·N slots) exactly at N=32.
+The layout is bit-exact at N<=32 (`4×32×32`, `8×32×32`, `16×32×32`, `32×32×32`,
+`12×64×16`). At
+N>=64 the `n/16` term stops extrapolating linearly, and elements with n>=32 read wrong. So
+this layout holds per task at N<=32. It is dense (M·N slots) exactly at N=32.
 
-Decode method: a layout-map probe (`ROCKET_INT16_PROBE=1`) feeds inputs making
-each `C[m,n] = m·N + (n+1)`, a unique, small, decodable signature, then reads the
-buffer as int8/int16/int32 simultaneously to identify both the element size (int16
-under `tp_precision=1`) and the exact slot->(m,n) map. **Trap:** the lane stride is
-`16·M`, but a probe run at `N=4M` cannot distinguish `16·M` from `N·4` (they coincide),
-so a single-shape fit ambiguously reads `N·4`. Probe at least one shape with `N≠4M` to
-pin the lane stride to `M`.
+The layout came from a map probe, `ROCKET_INT16_PROBE=1` in `matmul_int16_rocket`. It feeds
+inputs that make each `C[m,n] = m·N + (n+1)`, a unique and decodable signature. It then
+reads the buffer as int8, int16 and int32 at once, which gives both the element size and
+the slot-to-(m,n) map. **Trap:** the lane stride is `16·M`, and a probe at `N=4M` cannot
+tell `16·M` from `N·4` because they coincide. Probe at least one shape with `N≠4M`.
 
-## Output saturation
+## Full-precision int16
 
-The int16-output path **saturates** to int16 (and the broken-iteration int32 tile
-saturates to int32: 5 exact / 11 saturate / 0 wrap measured under near-full-range
-inputs) [HW sweep]. NVDLA, which Mesa cites (`rkt_coefs.c:152`), notes a "48-bit CACC for INT16
-… round and saturation … to 32-bit." int8/int4 never exposed an output-overflow
-regime; int16 does, at whatever width the writer is in.
+For an int64-exact result over full-range operands, decompose into int8.
+`rocket_matmul_int16_exact` runs four int8 matmuls and recombines in int64, as
+[tile-layouts.md](tile-layouts.md) describes. It costs four int8 matmuls where the int32
+writer costs one int16 matmul, and it does not saturate. The two have not been timed
+against each other.
 
-## Consequence
+## Unmeasured cases
 
-The native int16 path is a working **int16->int16 (saturating, N<=32)** HW primitive,
-useful only with output requant, like a quantized conv layer. For a real
-full-precision int16 matmul, decompose into int8: `rocket_matmul_int16_exact`
-(4 int8 matmuls, int64 recombine; see [tile-layouts.md](tile-layouts.md)).
+For the int32 writer, none of these is measured:
+
+- A K split across tasks
+- A tiled or chained int16 job
+- The multi-core path
+- Speed against the byte decomposition
+- The RK3576

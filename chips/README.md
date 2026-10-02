@@ -28,7 +28,7 @@ What **does** change per SoC lives here, one sheet per chip:
 | SoC | NPU cores | Status | Sheet |
 |---|---|---|---|
 | RK3588 | 3 | Hardware-validated (the reference target) | [rk3588.md](rk3588.md) |
-| RK3576 | 2 | Runs on hardware. int8 direct, depthwise and packed-image convolution, fp16 convolution, int8, fp16 and bf16 matmul, PPU pooling and the DPU LUT all compute bit-exactly; five ImageNet classifiers and two COCO detectors run at CPU-parity accuracy through `tflite-rocket` | [rk3576.md](rk3576.md), [rk3576-regcmd.md](rk3576-regcmd.md) |
+| RK3576 | 2 | Runs on hardware. int8 direct, depthwise and packed-image convolution, fp16 convolution, int8, fp16 and bf16 matmul, PPU pooling and the DPU LUT all compute bit-exactly on `rocket` 1.6.0. Five ImageNet classifiers and two COCO detectors run at CPU-parity accuracy through `tflite-rocket` | [rk3576.md](rk3576.md), [rk3576-regcmd.md](rk3576-regcmd.md) |
 | RK3566 | 1 | Planned (hardware incoming) | [rk3566.md](rk3566.md) |
 
 A chip can need two sheets. The RK3576's parameter sheet covers identity, SoC integration and the

@@ -1770,7 +1770,7 @@ resident arm at an identical 286 of 328 weights (18078 MB, 87%); raw in
 multiply to 1.1299. The measured pair reads 1.1134, a shortfall of 1.65 pp. The interaction
 factor is 0.9854 with a per-pass se of 0.34 pp, 4.3 standard errors below 1.00, and it holds the
 same sign in all three passes. So roughly 1.5 pp of each lever is the same win. Both remove A76
-pack and readback work, so the second one applied finds less of it left [expected].
+pack and readback work, so the second one applied finds less of it left [hypothesis].
 
 **This answers the caveat every ratio in this file carries.** The matrix takes both arms
 unpinned, which is sound only if pinning does not interact with the knob under test. On this unit

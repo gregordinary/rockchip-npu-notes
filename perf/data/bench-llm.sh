@@ -23,8 +23,10 @@
 #
 # An EMPTY env field and an empty args field is the stock arm, and that is the point: stock is
 # the absence of settings, so it must be spelled as an absence rather than as a flag that
-# happens to match a default. The label `cpu` is special-cased to drop GGML_BACKEND_PATH, so the
-# absolute reference can ride along in the same pass at the same clock.
+# happens to match a default. The label `cpu`, or any `cpu-*` label, is special-cased to drop
+# GGML_BACKEND_PATH, so the absolute reference can ride along in the same pass at the same clock.
+# The `cpu-*` form is what lets two CPU arms share a pass, e.g. `cpu-rp1` and `cpu-rp0` for the
+# host's weight repack on and off (`--repack 1|0`).
 #
 # Every arm runs under ROCKET_LOG_STDERR=1 and keeps its stderr, because the mode/budget/OUTCOME
 # lines are what make a row self-documenting.
@@ -147,8 +149,9 @@ pinned_or_refuse() {
 # GGML_BACKEND_PATH resolves, and a wrong path prints only a `failed to load` line. So an NPU arm
 # without the line ran on the CPU under an NPU label, and a `cpu` arm with it ran the NPU under a
 # CPU label (an inherited GGML_BACKEND_PATH does that). Either one's numbers are kept out of DATA.
+is_cpu_label() { case "$1" in cpu|cpu-*) return 0 ;; esac; return 1; }
 registered_ok() {  # $1 = arm label, $2 = the arm's stderr file
-  if [ "$1" = cpu ]; then ! grep -q "loaded ROCKET backend" "$2" 2>/dev/null
+  if is_cpu_label "$1"; then ! grep -q "loaded ROCKET backend" "$2" 2>/dev/null
   else grep -q "loaded ROCKET backend" "$2" 2>/dev/null; fi
 }
 
@@ -347,7 +350,7 @@ ro_line() { # $1 pass, $2 arm, $3 cpu snapshot before, $4 after, $5 pmu csv, $6 
 arm() { # $1 = label, $2 = env assignments, $3 = extra llama-bench args, $4 = pass number
   local label="$1" envs="$2" args="$3" pass="${4:-1}" tag
   tag="$LABEL.$label.p$pass"
-  [ "$label" = cpu ] || envs="GGML_BACKEND_PATH=$SO $envs"
+  is_cpu_label "$label" || envs="GGML_BACKEND_PATH=$SO $envs"
   mkdir -p "$ERRD"
   reset_mem
   # The warmup spins the NPU clock off idle and pays this arm's one-time residency ingest
@@ -410,7 +413,7 @@ arm() { # $1 = label, $2 = env assignments, $3 = extra llama-bench args, $4 = pa
   local reg=1
   if ! registered_ok "$label" "$ERRD/$tag.err"; then
     reg=0
-    if [ "$label" = cpu ]; then
+    if is_cpu_label "$label"; then
       echo "    ARM FAILED: the cpu arm loaded the ROCKET backend (GGML_BACKEND_PATH inherited?) -- no DATA rows" | tee -a "$OUT"
     else
       echo "    ARM FAILED: no 'loaded ROCKET backend' line in $ERRD/$tag.err, so it ran on the CPU -- no DATA rows" | tee -a "$OUT"

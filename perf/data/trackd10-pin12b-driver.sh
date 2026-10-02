@@ -8,7 +8,7 @@
 # identical in every arm of both campaigns. Both units that measured a win are 100% resident, so
 # their host half is pack and readback. This one is 22.18 GiB and streams its weights from mmap
 # per micro-batch, and that term is bandwidth-bound, where four cores issue fewer outstanding
-# misses than eight. [expected] -- a mechanism story, not a measurement.
+# misses than eight. [hypothesis] -- a mechanism story, not a measurement.
 #
 # WHY IT MIGHT BE METHOD. The recorded 12B cell has no raw evidence file and no recorded protocol
 # anywhere in the workspace, and this board does not settle a sign at one process per arm.

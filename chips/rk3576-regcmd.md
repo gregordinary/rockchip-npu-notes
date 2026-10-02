@@ -9,7 +9,7 @@ does not. The SoC-level parameter sheet (identity, integration, clocks, power) i
 
 Provenance: RKNN-Toolkit2 register programs for known conv geometries, from two
 capture sets under
-[../../rocket-userspace/tests/data/rk3576-vendor-capture/](../../rocket-userspace/tests/data/rk3576-vendor-capture/).
+[rocket-userspace `tests/data/rk3576-vendor-capture/`](https://github.com/gregordinary/rocket-userspace/blob/main/tests/data/rk3576-vendor-capture/).
 
 Found captures, from Ga Hing Woo's bring-up repo, real convolutions, including a
 MobileNet-shaped stem:
@@ -37,9 +37,9 @@ all of it; see "Depthwise" below, where four register formulas that had been fit
 or guessed are now transcribed.
 
 The emitter built from them is
-[npu_regcmd_rk3576.c](../../rocket-userspace/src/npu_regcmd_rk3576.c); the gate
+[npu_regcmd_rk3576.c](https://github.com/gregordinary/rocket-userspace/blob/main/src/npu_regcmd_rk3576.c); the gate
 that diffs it against the captures register-for-register is
-[regcmd_rk3576_gate.c](../../rocket-userspace/tests/regcmd_rk3576_gate.c). It
+[regcmd_rk3576_gate.c](https://github.com/gregordinary/rocket-userspace/blob/main/tests/regcmd_rk3576_gate.c). It
 reproduces every checked register of every captured program, 110 conv programs,
 88 of them depthwise, with no open field left.
 
@@ -50,7 +50,7 @@ registers point at, a capture carries a register program and says nothing about 
 memory it addresses. Both of that path's buffer layouts had to be read off the part
 (see "Depthwise" below), and that is the general lesson rather than a depthwise one.
 The correctness gate is
-[rk3576_conv_gate.c](../../rocket-userspace/tests/rk3576_conv_gate.c), a shape table
+[rk3576_conv_gate.c](https://github.com/gregordinary/rocket-userspace/blob/main/tests/rk3576_conv_gate.c), a shape table
 swept in one process, each entry compared against a CPU model bit-exactly over the
 whole surface, covering the envelope, the row window, the channel-group jump and the
 weight-slice boundary, and the depthwise envelope beside them. It runs gap-free on a
@@ -190,7 +190,7 @@ range. [HW sweep, H96 MAX M9]
 
 Measured on an H96 MAX M9 (RK3576, mainline 7.1.3), driving the emitter above
 through `librocketnpu` with an int8 1x1 conv, IC=OC=32, 8x8, symmetric
-quantization. [HW, H96]
+quantization. [HW sweep, H96]
 
 **The encoder is the difference between no output and an output surface.** With
 the RK3588 register program this part writes nothing at all, the output BO comes
@@ -588,7 +588,7 @@ state where the weight loader never arms again: every later job completes cleanl
 with no timeout and no new dmesg line, and writes a bias-only surface. It survived
 7 hours of idle and a full `rmmod rocket` / `modprobe rocket` cycle, and only a
 reboot cleared it. Budget a reboot after any unmapped-IOVA probing, and re-run a
-known-good conv before trusting a negative result taken afterwards. [HW, H96]
+known-good conv before trusting a negative result taken afterwards. [HW sweep, H96]
 
 **The feature strides are confirmed one axis at a time.** A uniform feature fill
 proves nothing about addressing, every read that lands inside the buffer returns
@@ -741,7 +741,7 @@ task costs a submit.
 
 **What a window costs.** With the cold-start wall closed, the same 64x64 ic64 oc64 k3
 SAME output cut into progressively more windows and submitted with no inter-task gap:
-[HW, H96 MAX M9, measured 2026-07-25]
+[HW sweep, H96 MAX M9, measured 2026-07-25]
 
 | windows | 2 | 4 | 5 | 11 | 32 |
 |---|---|---|---|---|---|
@@ -775,7 +775,64 @@ fault, no dmesg line, and identical in appearance to a broken geometry encoder. 
 worth stating because the un-windowed path in `rk3576_first_light` sets the window
 directly and never trips it, so the defect only appears once a caller starts routing
 every conv through the planner, which is what a tiler does. Set `ih_full`/`oh_full`
-from the plane on every task. [HW, H96 MAX M9]
+from the plane on every task. [HW sweep, H96 MAX M9]
+
+## The geometry fields are narrower than their register halves
+
+The encoder writes each extent into a 16-bit half or a whole register. The part computes
+with fewer bits. Past each field a task writes a full, plausible, wrong surface and
+completes normally. Measured through the public entries, every element scored [HW sweep,
+H96 MAX M9, 2026-09-26, `tests/rk3576_conv_width_probe`]:
+
+| Extent | Field | Past it |
+|---|---|---|
+| Width, input or output | 13 bits, exact at 8192 | `W & 0x1FFF` columns written, the rest wrong |
+| Output channels | 13 bits, depthwise exact at 8192 | 8224 retires at the backstop, unwritten |
+| Kernel height and width, `0x1024` | 5 bits, exact at 32 | 33 wrong from the first element |
+| Stride, `0x1014` | 3 bits, exact at 7 | 9 runs as 1 and 14 as 6 |
+| Task rows | at least 13 bits | the CBUF caps a task at 6144 rows first |
+| Input channels | at least 15 bits | the matmul form contracts K 16384 through it |
+| Plane strides | whole words | exact at 409600 elements |
+| PPU rows and channels | 13 bits | 8300 rows wrong from row 107, 8208 channels from channel 16 |
+
+**A wrapped width also breaks the next legal job in the same process.** After an
+8300-wide task, an 8192-wide one returned 259665 of 262144 elements wrong and a 2048-wide
+one 64961 of 65536, both with rc 0. A third job retired, and the entry's guard redid it
+exactly. The mechanism is not decoded. So a driver has to refuse these extents before the
+device sees one, not recover after.
+
+The library refuses every extent past its field, at claim time and in the encoder. Nothing
+on this part tiles a convolution's width. The probe could not say which width register
+holds the 13-bit field, since every arm had the input and output widths equal. Strides 8
+and 16 program 0 and did not run.
+
+### The fields the vendor compiler checks
+
+RKNN-Toolkit2 checks each field it emits against its width and prints the ones that
+overflow, as `REGTASK: ... target: f2, offset: 0x1090, shift = 0, limit: 0x3fff`. One-op
+graphs sized past a field along one axis at a time make it name fields
+[`rocket-userspace/tests/data/rk3576-vendor-capture/regtask/mkregtask.py`, toolkits 2.2.0
+and 2.3.0, 2026-09-27]. On the RK3588 every field it printed matches Mesa's `registers.xml`:
+DPU_RDMA `0x500C` [12:0], DPU `0x4038` [12:0] and DPU `0x403C` [12:0] and [28:16]
+[source-confirmed]. So the method reads the compiler's widths correctly. The RK3576 prints
+target `f2` and these:
+
+| Offset | Field | Printed by |
+|---|---|---|
+| CNA `0x1090`, the line stride | [13:0], limit `0x3FFF` | a stride-2 1×1 conv 16400 wide |
+| CORE `0x3020` | [12:0] | a depthwise conv of 8400 channels |
+| DPU `0x402C` | [12:0] | the same |
+| DPU_RDMA `0x5014` | [12:0] | the same |
+
+**A compiler width is the compiler's, and the line stride shows it.** The encoder writes
+`iw*4` there, and the row planner gives 2-row tasks at `iw` 4096 and 6000. Those tasks carry
+`0x4000` and `0x5DC0`, past the 14 bits, and compute exactly [HW sweep, H96 MAX M9,
+2026-09-27, `tests/rk3576_conv_width_probe r4`]. So read a printed width as a bound to test,
+not as one measured. The three channel fields agree with the 13 bits in the table above.
+
+The sweep sees only fields the compiler overflows. An axis it tiles, splits across cores or
+sends to the CPU prints nothing. On both targets that was width, height, input and output
+channels, and a matmul's K and M.
 
 ## The first-conv ARGB sub-encoding
 
@@ -1435,6 +1492,19 @@ unconditionally and the BS stage above C=32 gets a word the vendor never uses, w
 returns **a wholly untouched output BO**: no surface at all, no fault, no dmesg
 line.
 
+**The direct path's `0x4050` is the even-count word at every count this emitter programs.** A
+direct conv's output channels are programmed as a whole number of 32-channel groups
+(`rocket_rk3576_pad_oc`), because a partial group computes wrong. So the programmed 16-channel
+atom count is always even. `gahingwoo/mesa-rk3576` clears bit 8 only when `DIV_ROUND_UP(oc, 16)`
+is odd, and it programs `oc` verbatim to get there. At every count programmed here, its rule
+gives our `0x80011111`.
+
+Real `oc` 8-112, padded, are exact through the emitter and the tiling entry [HW sweep, H96
+MAX M9, rocket 1.6.0, 2026-09-30]. Written alone into those even-count programs, the odd-count
+word `0x80011011` computes 19 of 21 shapes wrong, most at the backstop, consistent with that
+rule. Two are exact, `oc` 112 at stride 2 and `oc` 48 windowed, which it does not explain.
+Whether the odd-count word lets an unpadded partial group compute is not measured.
+
 **`0x40B8`'s plane term is a whole destination surface, and the multiplier is flat in
 the kernel size.** The register is `4*surface - ow*oh_task` on the depthwise path and
 `2*surface - ow*oh_task` on the direct one, where `surface` is `0x401C`. The 4 was
@@ -1451,7 +1521,7 @@ has a plane that separates it, a VALID-padded oc=128 conv at `ow*oh_full = 105` 
 bit-exact with 105 programmed and wrong with 108. Carrying the depthwise rounding
 onto the direct path costs that shape and nothing else in the 67-shape gate, which is
 worth knowing: one shape in the whole envelope is sensitive to it.
-[source-confirmed + HW sweep, H96 MAX M9]
+[source-confirmed, HW sweep, H96 MAX M9]
 
 **`0x118C` is `iw-1` in both halves.** The low half read as the full plane height for
 as long as every capture was a square plane. 142 non-ARGB programs carry `iw-1`
@@ -1712,7 +1782,7 @@ the fp16 path's wall time against the correctness of every other path.
 ### What an fp16 conv costs
 
 Priced against the `ic/16` submits the split spends, which is what the convolution is
-here today. [HW, H96 MAX M9, measured 2026-07-26, `oc` 64, third of three runs]
+here today. [HW sweep, H96 MAX M9, measured 2026-07-26, `oc` 64, third of three runs]
 
 | shape | submits | NPU | host pack + de-scatter | total |
 |---|---|---|---|---|
@@ -1967,7 +2037,7 @@ OUT_CVT and downstream of the MAC.
 ## The cold-start wall
 
 On an unpatched `rocket`, only the **first** job of each NPU power session computes.
-Submitting the same job N times and counting how many wrote: [HW, H96]
+Submitting the same job N times and counting how many wrote: [HW sweep, H96]
 
 | Gap between jobs | Result |
 |---|---|
@@ -2461,7 +2531,7 @@ caller's next submit attaches and computes normally, and the device suspends.
 **Check `power/runtime_status` before believing any int32 result.** A board in this state
 makes every other experiment lie: a poll-period sweep run through it reports the matmul
 failing at every period, which is what it looks like when the poll has nothing to do
-with it. [HW, H96 MAX M9, measured 2026-07-27]
+with it. [HW sweep, H96 MAX M9, measured 2026-07-27]
 
 ### A per-job core reset is not the way to clear the poisoning
 
@@ -2480,7 +2550,7 @@ page-table pointer was gone. The matmul gate falls from 43 shapes passing to 2, 
 gate to 0, and the damage outlives the setting, the part stays wedged until the module
 is reloaded. The driver's own timeout path resets inside `drm_sched_stop()`, an IOMMU
 detach and a re-attach, and it is that surrounding re-init the bare call is missing. The
-vendor `rknpu` driver never resets per job either. [HW, H96 MAX M9, measured 2026-07-27]
+vendor `rknpu` driver never resets per job either. [HW sweep, H96 MAX M9, measured 2026-07-27]
 
 The vendor's recovery reset covers the CBUF, and `rocket`'s does not. `rknpu_soft_reset()`
 runs on a job timeout or on request, never per job. It sleeps 100 ms, then asserts all four
@@ -2508,7 +2578,7 @@ after which every submit times out and every output BO comes back untouched,
 which reads exactly like "the encoder writes nothing" and will send a register
 hunt down a false trail. The rail, the clock and the driver binding all still
 look healthy while this is true, so they do not discriminate. Check `dmesg` for
-the stall timeout before trusting any negative result on this part. [HW, H96]
+the stall timeout before trusting any negative result on this part. [HW sweep, H96]
 
 **Reloading the module clears the compute path**, which is worth trying before rebooting:
 `rmmod rocket; sleep 8; insmod rocket.ko` re-runs the IOMMU attach and the conv gates
@@ -2520,7 +2590,7 @@ induced wedges, a 100 us poll period and a per-job core reset.
 leaves a leaked runtime-PM reference in place, because that lives on the platform device,
 and the part then computes convolutions perfectly while every int32 matmul writes nothing;
 see the section above. Check `power/runtime_status` after a reload; if it does not
-return to `suspended`, reboot. [HW, H96 MAX M9, measured 2026-07-27]
+return to `suspended`, reboot. [HW sweep, H96 MAX M9, measured 2026-07-27]
 
 **With 0010 and 0011 the wedge is much harder to reach in the first place.** The
 `Enable stall request timed out` / `MMU_DTE_ADDR is not functioning` sequence above is
@@ -2558,7 +2628,7 @@ a job owns one from the moment it exists; `patches/rocket/085` carries the
 complementary NULL guard in the put. The two touch different files and compose.
 Measured with `tests/uapi_submit_errpath_rocket`, which fires one malformed submit per
 site from a forked child: **0 of 5 sites returned to userspace before, 5 of 5 after**
-[HW, H96 MAX M9, 7.1.3].
+[HW sweep, H96 MAX M9, 7.1.3].
 
 **The client that emitted one here was our own uAPI selftest, and the mechanism is a
 refusing generator.** `gen_matmul_fp16()` emits the RK3588 geometry encoding and
@@ -2593,7 +2663,7 @@ unchanged, and the matmul gate 46/46 immediately afterwards**. The RK3576's IOMM
 absorbs a bad address as a stall rather than the NPU's PC raising a DMA-error bit. So
 the `WARN_ON`-as-unprivileged-DoS concern is real upstream in principle, a `WARN_ON`
 on a hardware error condition taints and panics under `panic_on_warn`, but it is **not
-demonstrated to be client-triggerable here**. [HW, H96 MAX M9, 2026-07-28]
+demonstrated to be client-triggerable here**. [HW sweep, H96 MAX M9, 2026-07-28]
 
 **A job whose program faults still retires cleanly.** The submit returns 0, `PREP_BO`
 returns 0, the output BO is untouched, and userspace is told nothing. That is the same
@@ -2617,7 +2687,7 @@ and disable-paging requests time out and the detach WARNs. `patches/rocket/083`
 (keep-the-domain-attached-across-jobs) is applied on that board and does not cover it,
 keeping the domain attached across *jobs* says nothing about a reset that detaches
 explicitly. So on both parts the reachable path is the reset, not the IRQ handler; the
-parts differ only in whether the detach WARNs. [HW, Turing RK1, 2026-07-28]
+parts differ only in whether the detach WARNs. [HW sweep, Turing RK1, 2026-07-28]
 
 ## A BO in an in-flight job must survive the file that made it
 
@@ -2648,7 +2718,7 @@ lr : drm_mm_remove_node+0x1e8/0x380
 `patches/rk3576/npu/0014` anchors the allocator to `struct rocket_iommu_domain`, which
 is refcounted and outlives the file, every mapped BO and the attached core: **0 of 16
 after**, same kernel, only that patch changed. It is the RK3588 series' `084` ported,
-and applies to this series with offsets only. [HW, H96 MAX M9, 2026-07-28]
+and applies to this series with offsets only. [HW sweep, H96 MAX M9, 2026-07-28]
 
 **Match the symbol, not drm_mm's message text.** A 7.1 kernel prints `warning:
 drivers/gpu/drm/drm_mm.c:965 at drm_mm_takedown+0x28/0x38`; the older "allocator still
@@ -2914,7 +2984,7 @@ and at pixel counts 4/5/6/7/8/12/13/16/21/33.
   it is a pre-existing intermittent in that gate, not a load effect. It has not been
   pinned to a case.) The conv entries' own "did it write" check is per row task and would
   not see a task that wrote all but a few atoms, so this is a measured negative rather
-  than a covered one. [HW, H96 MAX M9, 2026-07-28, `tests/hostload.c`]
+  than a covered one. [HW sweep, H96 MAX M9, 2026-07-28, `tests/hostload.c`]
 
 - **Every wrong element comes back zero**, past the bound and inside it alike. Over the
   whole map, eight channel counts, 57 heights each, not one wrong element aliases
@@ -3031,6 +3101,47 @@ reading, an atom that still holds it, *is* the poisoning and that redo keeps its
 So the delivered-channel rule survives every oc register on the part. Scaling them
 together buys address extent and nothing else, which is what says the rule is in the
 datapath rather than in a geometry field. [HW sweep, H96 MAX M9, measured 2026-07-27]
+
+### The dense writer: every accumulator as an int32, and no poisoning
+
+**Eight DPU words make the int8 direct program write every accumulator as a raw int32.**
+Emitted together over it, one task delivers all `M*N` accumulators exactly, in `M*N` words,
+with no bias added. Seven are the `charsiu` project's wide output stage, read from vendor
+streams (`src/job.c`), and its `0x40B8` is theirs too, fitted there at one row:
+
+| register | int8 direct | dense int32 |
+|---|---|---|
+| `0x4010` | `0` | `0xa0000002`, `out` 5 and `proc` 2 |
+| `0x4030` low half | `0x0710` | `0x0310` |
+| `0x4038` | `0x00120080` | `0x00000053` |
+| `0x4044` | `1` | `2` |
+| `0x4050` | `0x80011111` | `0x00023333` |
+| `0x40AC` / `0x40B0` / `0x40B4` | the requant | `0` / `1` / `0` |
+| `0x40B8` | `2*S - ow*oh_task` | `3*S` |
+
+`S` is the task's pixel count `ow*oh`, and `0x401C` stays at `S`. [HW sweep, H96 MAX M9,
+rocket 1.6.0, `tests/rk3576_matmul_probe out32`, 2026-09-30]
+
+**The map is the wide writer's stream with all four lane groups delivered.** With `A` the
+pixel count, `g = c/32`, `j = (c%32)/16`, `L = (c%16)/4` and `s = 2p + j`:
+
+```
+atom = 8A*g + 4A*(s/A) + A*L + s%A
+word = 4*atom + c%4
+```
+
+It decodes as a bijection, every accumulator distinct, at `N` 32, 64, 96 and 128. The planes
+run from 3x2 to 12x10, `M` 4-120, and `K` 32-4096 on random operands. The programmed `oc` is
+a whole number of 32-channel groups, the int8 program's own rule. A 16-channel trailing group
+computes wrong past `K` 32. One task writes a 38 KiB surface exactly at `K` 32, so the wide
+writer's 8 KiB bound does not hold there. A row window's `0x40B8` is not measured.
+
+**Doubling `0x401C` and `0x40B8` instead is exact at 32 channels and overlaps past them.** The
+four quad planes then sit twice as far apart, so one 32-channel group lands whole, and the next
+group's start lands one plane in. A count read off an overlapping map is a write race: the same
+registers read 160 and 224 of 256 in two runs.
+
+It does not poison, [rk3576.md](rk3576.md) §"The poisoning is one hazard".
 
 ### An i32out job poisons the next submit, and a power cycle is what clears it
 
@@ -3465,7 +3576,7 @@ excluding the pad from it is what mode `0x18` is for.
 With those, `gen_pool_rk3576()` computes bit-exactly against a CPU model over max and
 average, kernel 2/3/5, stride 1/2/3, non-square and odd planes, 8/32/64 channels, padded
 and not, 11 shapes, `tests/rk3576_pool_probe.c`.
-[Manufactured capture + HW sweep, H96 MAX M9, 2026-07-29]
+[HW sweep, manufactured capture, H96 MAX M9, 2026-07-29]
 
 **`rocket_pool_int8_rk3576()` is the library entry over it**: row-major `[C][IH][IW]` in
 and out, owning the cube, the sentinel, the submit and the de-scatter, the same shape the
@@ -3618,7 +3729,7 @@ supported RK3576 configuration, the close is `kfree(NULL)` and the array leaks o
 open/close, unprivileged and unbounded. `patches/rk3576/npu/0019` keeps the driver's own
 pointer, frees it after `drm_sched_entity_destroy()` rather than before, checks the
 allocation (it was unchecked) and frees it on the init-failure path too.
-[source-confirmed + HW sweep, H96 MAX M9]
+[source-confirmed, HW sweep, H96 MAX M9]
 
 ## The DPU's elementwise stage: one operand, requantized
 
@@ -3631,9 +3742,14 @@ lowering this driver ships does not; see below.)
 What it computes, measured on silicon:
 
 ```
-out = sat8( ((ew + EW_CVT_OFFSET) * EW_CVT_SCALE >> EW_CVT_SHIFT)
-                                  * OUT_CVT_SCALE >> OUT_CVT_SHIFT )
+out = sat8( ( ((ew + EW_CVT_OFFSET) * EW_CVT_SCALE >> EW_CVT_SHIFT)
+                                    * OUT_CVT_SCALE >> OUT_CVT_SHIFT ) + OUT_CVT_OFFSET )
 ```
+
+`OUT_CVT_OFFSET` is added after the final shift, in output counts. The vendor's own Add
+program carries an offset of -1, and replayed verbatim it is exact on 8192 of 8192
+elements under that placement. With the offset added before the scale, every element is
+off by one [HW sweep, H96 MAX M9, 2026-09-26, `tests/rk3576_add_probe.c ga54b`].
 
 **One operand.** Bit-exact over channel counts 16-320 and planes 1x1 to 28x28, in the
 NC1HWC2 cube the convolution path already packs (`tests/rk3576_add_probe.c gate`, 10
@@ -3677,8 +3793,13 @@ rather than a lead not yet chased. Six sweeps cover the whole interface:
   time, the complement of every other sweep here, and not an empty set, since the
   register file is not cleared between jobs on this part, so a base the vendor programs
   in an earlier task would still be standing. Twenty-nine candidates over the DPU and
-  DPU_RDMA blocks, at two gains: nothing carries an operand, and three (`0x5068`,
-  `0x5070`, `0x5074`) stop the write entirely.
+  DPU_RDMA blocks, at two gains: nothing carries an operand. One register stops the write:
+  `0x5068`, the RK3588's `RDMA_WEIGHT`, which holds the four read DMAs' arbiter weights.
+  At any value that is not a weight, the job writes nothing and retires at the driver's
+  125 ms backstop. **Its value then stands**: the shipped program stalled on 8 of 8 jobs
+  after it, until the NPU's power domains had been off for minutes. `0x5070` and `0x5074`
+  alone write exactly behind a power cycle, so their stalls were `0x5068`'s standing value
+  [inferred].
 - **The main DMA feed at every gain from 2^14 down to 2^-31.** The program is configured
   to read one, DPU `0x400C` bit 0 is the NVDLA feature-mode flying bit and the add sets
   it, DPU_RDMA `0x5044` bit 4 is `MRDMA_DISABLE` in the same lineage's map and the add
@@ -3698,6 +3819,21 @@ rather than a lead not yet chased. Six sweeps cover the whole interface:
   middle: the addressed cube's 32 atoms map one to one onto the output and **nothing
   outside it moves anything**. So the two operands are not one allocation at a fixed
   offset either, which is how the RK3588's K-accumulation feeds its pair.
+- **The candidates written together, with the main feed at a second operand**. A condition
+  of two has no sufficient singleton, so all three went in at once, with a second operand,
+  B, at DPU_RDMA `0x5018`. `0x5068` took the RK3588's weight word `0x01010101`, and the
+  other two took B's address, 0, or the plane's area and width. One
+  arm adds the RV1106 vendor Add's `0x5044` word, and each ran over one A and two
+  non-periodic B fills at two gains. Every arm that writes moves 0 elements between the B
+  fills and matches the one-operand model [HW sweep, H96 MAX M9, 2026-09-26, `ga54`].
+- **The vendor's own program, fed the way its container says**. Each `.rknn` carries a
+  relocation table naming the program words the runtime patches with each tensor's
+  address. In `bare_add_c32_16` the first operand goes to DPU_RDMA `0x5018`, the second to
+  `0x5038` and the output to DPU `0x4018`, and `subrev` swaps the two operands. It was
+  replayed verbatim with both bases patched, as one task and as its two slots. It wrote the
+  one-operand surface on 8192 of 8192 elements and ignored B [HW sweep, same]. This cannot
+  see anything else the vendor runtime patches or submits, and the vendor's Add has not
+  been run on this silicon.
 
 What the manufactured captures say the vendor's program does have, which is what makes
 the negative worth stating precisely: **`Sub` compiles to this same program with the
@@ -3761,8 +3897,9 @@ silently, a write-coverage failure, not a wrong value, and one that reads like a
 channel-budget property of the writer. The clamps are `OUT_CLAMP_MIN`/`MAX`
 (`0x40A4`/`0x40A8`); the no-clamp pair is `INT32_MIN`/`INT32_MAX`.
 
-`OUT_CVT_SCALE` is a **signed** 16-bit field: `32768` reads back as `-32768` and flips
-the output's sign, so the usable maximum is 32767.
+`OUT_CVT_SCALE` is a **signed** 16-bit field on both parts: `32768` reads back as `-32768`
+and flips the output's sign. The usable maximum is 32767
+([../encodings/out-cvt-converter.md](../encodings/out-cvt-converter.md)).
 
 ### Manufacturing the capture: what the compiler folds away
 
