@@ -1,23 +1,15 @@
 # Whisper encoder on the NPU
 
-Everything below is validated on hardware on the RK1 at 600 MHz against an fp64 oracle
+The pieces below are validated on hardware on the RK1 at 600 MHz against an fp64 oracle
 (gates `exp_lut_rocket`, `softmax_rocket`, `layernorm_rocket`, `conv1d_rocket`, `mha_rocket`,
-`encoder_block_rocket`). The pieces compose the full Whisper/transformer encoder block.
+`encoder_block_rocket`). They compose the full Whisper/transformer encoder block. The
+section on the whole-graph vendor compile carries its own operating point.
 
 ## EXP LUT (`ROCKET_ACTIVATION_EXP`, enum 10)
 
-EXP uses the shifted single-table path, the same as sqrt/rsqrt/reciprocal
-(`act_shifted_domain` + `build_lut_shifted`). The default domain is `[-16,0]`, the softmax
-case: input <=0 after row-max, output (0,1], `out_lo=0`, `S=1`. The whole domain maps onto
-the positive LUT index half, so there is no LE/LO sign-mux glitch and EXP works standalone
-(unlike the build_lut_affine GELU). The relative interp error of exp is ~constant `Δ²/8`
-(~1e-4 over 512 cells).
-
-**A q=0 LUT table entry mis-decodes to ~4.0 (garbage), not 0.** The deep tail of exp
-(`exp(x)<1.5e-5`, x<~-11) quantizes to q=0 and reads ~4, which inflates the softmax sum. The
-fix is to floor every shifted-table entry to q>=1 (`build_lut_shifted`, `ROCKET_LUT_QFLOOR`
-default 1). The floored value decodes to ~3e-5 (~0 on readback), which is correct. The
-sqrt/rsqrt/reciprocal kinds never hit q=0.
+Softmax's `exp` is the DPU LUT's EXP kind over `[-16,0]`, whose geometry, accuracy and q=0
+table-entry fault are in [dpu-lut-activation.md](dpu-lut-activation.md) §"EXP, the softmax
+numerator".
 
 ## Softmax (`rocket_softmax_fp16`, src/rocket_softmax.c)
 
@@ -107,7 +99,7 @@ give `sum(x²)`: N-columns are weighted sums of the same A, i.e. of x, not x², 
 
 The tail is O(M) on the host (mean,var,rsqrt). The affine folds to `out = x⊙A + B`,
 A=r·gamma, B=beta−mean·r·gamma (one ew_mul + one ew_add). The fp16-square overflow prescale
-matches RMSNorm (k=ceil(log2(|x|max/223)), recover ·4^k). The beta argument can be NULL.
+is RMSNorm's ([rmsnorm-onnpu.md](rmsnorm-onnpu.md)). The beta argument can be NULL.
 
 ## conv1d front-end (`rocket_conv1d_fp16`, src/rocket_conv.c)
 
@@ -152,7 +144,8 @@ d=512/8-head, including T%16≠0.
 ## Encoder block (`rocket_encoder_block_fp16`, src/rocket_encoder.c)
 
 The block is Whisper pre-norm: `x = x + MHA(LN1(x)); x = x + MLP(LN2(x))`, with MLP =
-`GELU(h·Wf1^T+bf1)·Wf2^T+bf2`. It runs fully on the NPU:
+`GELU(h·Wf1^T+bf1)·Wf2^T+bf2`. It runs on the NPU apart from the host steps named above
+(softmax's row-max and `1/s`, LayerNorm's per-row tail, the attention glue and bias adds):
 
 - Both LayerNorms
 - All attention matmuls and every softmax
@@ -210,7 +203,7 @@ channels grow large. The consequences:
 
 - **fp16 x² overflows.** Channel 270 squared is ~1.5e6 > fp16 max (65504), so a naive fp16
   LayerNorm variance sum would be Inf. `rocket_layernorm_fp16`'s power-of-2 prescale
-  (|x|>~223 -> ·4^-k, fp32 reduce, recover) keeps the encoder finite and correct here. It
+  ([rmsnorm-onnpu.md](rmsnorm-onnpu.md)) keeps the encoder finite and correct here. It
   fires on every real Whisper block, not as a corner case.
 - **Outliers amplify fp16 chaining error.** The next block's high-gain weights amplify a
   tiny fp16 difference on an outlier channel. The intermediate rocket-vs-whisper max_abs
@@ -231,8 +224,8 @@ double golden, a C driver calling `rocket_encoder_block_fp16` per block, and an 
 The fused block is wired into whisper.cpp and measured on hardware [HW sweep]. Each encoder
 layer becomes one `ggml_map_custom1`, which calls `rocket_encoder_block_fp16`. The build
 gate is `-DWHISPER_ROCKET=ON` and the run gate is `WHISPER_ROCKET_ENC=1`. Both default off,
-so the stock drop-in is unaffected. The whole encoder then runs on the NPU: every LayerNorm,
-attention, softmax, GELU and residual.
+so the stock drop-in is unaffected. Every LayerNorm, attention, softmax, GELU and residual
+then runs on the NPU, with the host steps that §"Encoder block" names.
 
 ### Correctness
 
@@ -283,7 +276,8 @@ encoder at 1000 positions is 52.1 GFLOP, so the RKNN graph runs at ~151 GFLOP/s 
 drop-in at ~89. The comparison is timing only: the two encoders' outputs were not compared.
 
 The RKNN encoder's wall is its fused attention op. `exSDPAttention` runs on one core whatever
-the core mask, and it takes 240 ms of the 345 ms three-core frame. Only the matmul-type ops
+the core mask, and it takes 240 ms of the 345 ms per-op sum that `RKNN_QUERY_PERF_DETAIL`
+reports on three cores. Only the matmul-type ops
 split across cores, so three cores buy 14% over one, 344 against 400 ms. No op runs on the CPU.
 
 The attention op slows 1.56x from 1000 MHz to 300, but only 1.06x from 1000 to 600, and the frame

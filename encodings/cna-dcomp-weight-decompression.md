@@ -2,8 +2,8 @@
 
 The RK3588 CNA has a weight-decompression block (`DCOMP`, the NVDLA CC/CDMA analog). It
 expands a sparse compressed weight stream into the MAC feed, skipping zero weights. The
-register map is fully decoded, and the compressed format is the NVDLA CWT/WMB/WGS format
-[source-confirmed].
+register map is decoded for the dense mode only, and the compressed format is the NVDLA
+CWT/WMB/WGS format [source-confirmed].
 
 The block is deprioritized. It reduces weight-DRAM bytes and zero MACs, and the matmul is
 bound by neither ([not-mac-bound.md](../perf/not-mac-bound.md)). So it cannot speed up

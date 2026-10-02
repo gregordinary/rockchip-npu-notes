@@ -30,9 +30,9 @@ The A/B compares the default symmetric plan against the asymmetric plan
 | 512×4096×256 (N<=cap) | no-op (N not tiled) | ±0 |
 | 512×256×4096 (nKt=1) | no-op (K not tiled) | ±0 |
 
-The asymmetric plan is a win or a wash on all 12+ shapes where it fires (+2% to +16%, biggest
-on moderate-K). It is never a regression, and it is an exact no-op where the guard stops it
-from firing. The wins cover the square and FFN shapes that dominate LLM prefill.
+The asymmetric plan is a win or a wash on all 10 tabled shapes where it fires (+2% to +16%,
+biggest on moderate-K). It is never a regression, and it is an exact no-op where the guard
+stops it from firing. The wins cover the square and FFN shapes that dominate LLM prefill.
 
 ## Submit and wait profile
 
@@ -80,8 +80,8 @@ A wider A/B ran warm pp2048 through ggml-rocket/llama.cpp, ASYM=0 vs 1 [HW sweep
 | Gemma-4-12B-F16 (3 reps) [2026-07-01] | 14.22 | 15.03 | +5.7% |
 | Qwen3.5-9B-Q4_K, ub2048, resident=auto (3 reps) [2026-07-01] | 25.82 | 26.16 | +1.3% |
 
-The standalone +6-15% matmul win dilutes across the full prefill (attention, norms, host
-pack/readback). It still lands as a clean whole-model gain: large on F16 (+6-9% at 9B/12B)
+The standalone +2-16% matmul win dilutes across the full prefill (attention, norms, host
+pack/readback). It still lands as a clean whole-model gain: large on F16 (+5.7-9.5% at 9B/12B)
 and about noise level on quantized models. Quant prefill is dequant-bound, so the
 matmul-datapath lever has little to move. The result is a win or a wash on every model, never
 a regression. That cleared the default-on bar. The heuristic is default-on as of 2026-07-01

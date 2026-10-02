@@ -39,10 +39,12 @@ The harness, the chunk sets and the raw sweeps are in [data/asr-service/](data/a
 
 ## The request
 
-A 20 s request on the shipped NPU arm is 5.3 s of wall and 17.3 CPU core-seconds. The CPU arm
-is 7.8 s and 29.7. Per second of audio that is 1.06 against 1.74 core-seconds, so the NPU
-frees 39% of the CPU before any tuning. The table is where those core-seconds go, by `perf`
-sample over the NPU arm's process, on a 20 s greedy window [HW sweep].
+The median clean 20 s request on the shipped NPU arm is 5.3 s of wall and 17.3 CPU
+core-seconds. The CPU arm's median is 7.8 s and 29.7. Over the whole clean set, which includes
+one chunk that trips the temperature ladder, the cost per second of audio is 1.06 against 1.74
+core-seconds. So the NPU frees 39% of the CPU before any tuning. The table is where those
+core-seconds go, by `perf` sample over the NPU arm's process, on a 20 s greedy window
+[HW sweep].
 
 | Term | Share of CPU samples | Where it runs |
 |---|---:|---|
@@ -197,7 +199,8 @@ What each row says:
   CPU. The shorter context trips the fallback ladder 31 times in 36 requests against 7, and
   each trip is a full re-decode. On clean speech it costs 12 WER points, and on the 5 dB
   channel it gains 9. The loops that §"The audio context" describes are the reason.
-- **`-nt`** is the one free lever: 12% of the CPU at equal or better WER. It removes the
+- **`-nt`** is the one free lever: 12% of the CPU, at better WER on both noisy sets and 0.6
+  points worse on clean speech. It removes the
   timestamp failure branches (entropy failures 3 to 0), the re-window (encodes 39 to 36) and
   17% of the decoded tokens.
 - **`-t 2`** trades latency for CPU at a fixed rate: 12% fewer core-seconds for a request
@@ -218,8 +221,8 @@ What each row says:
 
 ## Levers stacked
 
-The unit and the reference are the same as in the previous table. The ladder is off in every
-row (`temperature_inc=0`) [HW sweep, 2 passes].
+The unit and the reference are the same as in the previous table. The ladder is off
+(`temperature_inc=0`) in every row except the 25 s defaults row [HW sweep, 2 passes].
 
 | Arm | CPU, clean | CPU, 15 dB | CPU, 5 dB | Encodes per request | WER clean / 15 dB / 5 dB |
 |---|---:|---:|---:|---:|---|
@@ -238,10 +241,11 @@ row (`temperature_inc=0`) [HW sweep, 2 passes].
 | the same, `-t 2` | 0.636 | 0.847 | 0.460 | 1.00 | 101 / 110 / 75 |
 | the same, `ggml-small-q5_1` | 0.816 | 0.938 | 0.563 | 1.00 | 142 / 109 / 73 |
 
-The three `-ac 1000` rows are the run-on, and their CPU columns are the cost of decoding loops
+The three `-ac 1000 -nt` rows are the run-on, and their CPU columns are the cost of decoding loops
 rather than of transcribing. The 25 s chunk with defaults removes most of the re-window, 1.10
 encodes per request against 1.85 at 30 s, and lands near parity anyway. It costs the 15 dB set
-five WER points, and one 5 dB chunk decoded a 151-token loop without a ladder to interrupt it.
+five WER points. With the ladder off, one 5 dB chunk decoded a 151-token loop that nothing
+interrupted.
 The same chunk with `-nt` is the length done right. It encodes once per request, returns 20%
 of the CPU, and beats the shipped arm's WER on every condition, at 25 s of latency.
 

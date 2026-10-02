@@ -74,14 +74,14 @@ a CPU model that spells the requant that way disagrees with the part at a tie.
 probe.
 
 Reaching a tie needs a deliberately chosen scale. The derivation below ends in `+1`, so
-`MUL` is odd for every round scale including every power of two. An odd multiplier moves an
-exact half off the tie in the outward direction, so the rounder never sees one. So no
+`MUL` is odd for every round scale including every power of two. An odd multiplier moves each
+exact half of `acc * scale` outward, off the tie, so the rounder never sees one. So no
 ordinary gate reaches the case. `requant_round_probe` does: it picks a scale whose top 14
 mantissa bits are all ones, where the `+1` carries out and `MUL` is exactly `2^14`. It
 asserts the rule on both parts.
 
-The two rules differ on a small share of elements. With `MUL` odd, ties are one
-accumulator residue in `2^SHIFT`, and the two rules differ on half of those: about
+The two rules differ on a small share of elements. With `MUL` odd, ties of `acc * MUL` are one
+accumulator residue in `2^SHIFT`. The two rules differ on half of those, about
 `2^-(SHIFT+1)` of a surface. At a typical `SHIFT` of 15-20 that is nothing in a small gate
 case and tens of elements in a large prefill. Those elements are one count each, sparse,
 and present in every configuration. They are the standing noise that makes single-element
@@ -160,7 +160,7 @@ padding, it completes. `rocket_conv2d_int8_q` in rocket-userspace does that. Thr
 
 A fractional W8A8 dequant scale (`acc * a_scale[m] * b_scale[n]`, both < 1) cannot fold
 into OUT_CVT to produce a fractional float. `(acc*scale)>>shift` always yields an
-integer-valued float (the fraction is truncated). So:
+integer-valued float (the shift rounds the fraction off). So:
 
 - The host per-row × per-channel dequant stays.
 - The int8 output-readback lever is bigger-Kt (fewer K-partials to read), not OUT_CVT.

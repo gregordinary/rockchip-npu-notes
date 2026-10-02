@@ -248,7 +248,8 @@ depthwise layers run it, with COCO mAP unchanged.
 
 The entry's host pack decides its cost at these shapes. A pack indexed per element is 83%
 of the call, and a blocked pack makes the call 2.9x shorter [HW sweep, RK1,
-`tests/dw_int8_cost_probe`]. The model runs 1.19x warm at 600 MHz over the two changes.
+`tests/dw_int8_cost_probe`]. MobileDet runs 1.19x warm at 600 MHz over two changes together: its
+depthwise layers on this entry, and the blocked pack.
 
 On the direct int32-raw writer, clearing `OD_BYPASS` to reach CPEND makes every value wrong,
 not misplaced, at every `OW_OP` and either `QD_EN`. The direct int8-out writer carries CPEND

@@ -70,7 +70,7 @@ dequant per process. The per-call pack, submit and placement are exactly the shi
 Greedy output is byte-identical, and the `[dq-cache]` teardown line reports engagement.
 
 An A/B of `-ub 512` against `-ub 2048` under the cache is the lever with the dequant term
-removed. The measurement is three units, three rotated passes each, on an audited idle board
+removed. The measurement is six units, three rotated passes each, on an audited idle board
 [HW sweep 2026-08-31, RK1, 600 MHz]:
 
 | model | full `-ub` lever | dequant component | non-dequant residue |

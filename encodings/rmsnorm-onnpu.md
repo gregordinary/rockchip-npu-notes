@@ -9,8 +9,8 @@ is `tests/rmsnorm_rocket.c` (CTest `rmsnorm_rocket`). It builds on the
 ## The cost model
 
 RMSNorm is a memory-bound elementwise+reduce. Standalone on the NPU it is submit-bound: the
-flat `ew_mul` tiles ~1020 rows/submit, so a `[512,3840]` square is ~60 submits. For an
-isolated norm the host A76's single memory pass wins.
+flat `ew_mul` tiles 32,640 elements (1020 rows of 32) per submit, so a `[512,3840]` square is
+~60 submits. For an isolated norm the host A76's single memory pass wins.
 
 The on-NPU value is compositional. When the norm sits between two NPU matmuls
 (FFN/attention), running it on-device keeps the activation in the NC1HWC2 cube. That avoids

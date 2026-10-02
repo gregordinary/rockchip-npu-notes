@@ -62,7 +62,7 @@ output. Both are on one 512×512 image:
 
 | path | mean-layer cos | post-LN cos | embeddings cos |
 |---|---:|---:|---:|
-| simple (`rocket_siglip_encode`) | 0.999983 | 0.999894 | 1.000000 |
+| simple (`rocket_siglip_encode`, host-handoff MLP) | 0.999983 | 0.999894 | 1.000000 |
 | resident (`rocket_siglip_encode_ctx`) | 0.999998 | 0.999987 | 1.000000 |
 
 The comparison points are SHARD 0.95, RKNN-FP16 0.64 and RKNN-INT8 0.02. The fidelity target
@@ -86,6 +86,9 @@ The operating point is the RK1 on mainline 7.1 with the NPU @ 600 MHz and `ROCKE
 |---|---:|
 | simple (per-call matmul, weights re-packed every call) | ~14 s |
 | resident (prepacked weights + multicore + host softmax/GELU) | ~2.71 s |
+
+The resident figure is measured without the head fan-out and the GELU LUT, both on by
+default (§"Latency levers").
 
 SHARD reports 2.24 s on an Orange Pi 5 Max (RKNN, unknown NPU clock). The board, kernel,
 driver and clock all differ, so the latency comparison is indicative only. Cosine is the

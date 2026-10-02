@@ -206,14 +206,15 @@ half of that recipe is a loss. Its rows are why the guide's recipes are per-mode
   not set `-b 2048 -ub 2048`**. Unstacked residency reads 1.346x (51.5 -> 69.3 t/s). The
   stacked recipe reads 1.002x [HW sweep 2026-08-31, RK1, 600 MHz, three rotated passes,
   165 weights resident (2976 MB), 0 streamed].
-- **Why:** `-b 2048 -ub 2048` is a resolved 0.946x loss here. The mechanism control
+- **Why:** `-b 2048 -ub 2048` is a resolved loss here, 0.941x in the matrix run and 0.946x
+  in the mechanism-control run [HW sweep 2026-08-29, 2026-08-31]. The mechanism control
   decomposes it as a 1.199x dequant-amortization win masking a real 0.789x non-dequant
   cost of the larger micro-batch, whose mechanism is open. Residency removes the dequant
   without paying that cost, so it replaces the `-ub` lever on this model instead of
   stacking on it.
 - **Scope:** an idle host. One busy core flips the `-ub` flag's sign back to a win
-  (0.946x -> 1.120x measured under a deliberate one-core load), so on a loaded box the
-  stacked recipe stops losing. The unstacked one needs no such caveat.
+  (0.946x -> 1.120x measured under an accidental one-core load, a leaked spinner), so on a
+  loaded box the stacked recipe stops losing. The unstacked one needs no such caveat.
 - **Vision path:** separate, with its own resident SigLIP encoder work. These rows are
   the text prefill only.
 
@@ -352,8 +353,8 @@ two mechanisms say a smaller micro-batch costs it:
   gather, scatter, M-bucket padding) does not shrink with the row count. So a quarter of
   the rows buys close to the same overhead.
 
-`ROCKET_MOE_MIN_TOKENS` (default 512) also sits right at `-ub 512`, so offload barely
-qualifies.
+The micro-batch gate `ROCKET_MOE_MIN_TOKENS` (default 512), which `ROCKET_MOE=1` does not
+lift, also sits right at `-ub 512`, so offload barely qualifies.
 
 Measured at `-ub 512`, the expert route reads 22.2 t/s at pp512 and 22.5 at pp2048. With
 the experts on the CPU it reads 14.13 and 13.53, so the route is about 1.6x and 1.7x. At
@@ -449,10 +450,12 @@ rotated passes]:
 
 - **Recommended flags:** none. Stock (14.7 t/s at pp2048) beats every tuned arm:
   `-b 2048 -ub 2048` is 0.908x, `ROCKET_MOE=1` is 0.726x and `ROCKET_MOE=0` is 0.908x.
-- **Expert route:** correctly declines this model. Routed experts are 29 of its 30.5 B
-  parameters, and they cannot be held resident on a 31 GiB board. The auto placement
-  places nothing (3 of 3 passes), so the default and `ROCKET_MOE=0` are the same
-  configuration reached two ways (0.908x against 0.908x). **Forcing `ROCKET_MOE=1` places
+- **Expert route:** correctly declines this model, because every expert dispatch at `-ub`
+  2048 and below carries at most 201 MMAC, under the 340 MMAC floor
+  (`ROCKET_MOE_MIN_WORK`). The auto placement places nothing (3 of 3 passes), so the
+  default and `ROCKET_MOE=0` are the same configuration reached two ways (0.908x against
+  0.908x). Routed experts are 29 of its 30.5 B parameters, and they cannot be held resident
+  on a 31 GiB board. **Forcing `ROCKET_MOE=1` places
   62%, streams the rest, and costs 0.800x against the experts-on-CPU baseline.** That is
   the loss the residency pre-flight exists to avoid, measured end to end. Do not set it
   here.
@@ -523,8 +526,8 @@ in three variants:
 | NAR | An iterative non-autoregressive editor, so its decode is larger than base's, ~1.4x slower and rougher. Not the NPU speedster the name implies |
 
 The base variant can drop spans on hard conversational audio. Cross-attn decode is not
-bit-faithful CPU-vs-NPU: greedy can diverge, and plus even loops on CPU while staying
-coherent on NPU.
+guaranteed bit-faithful CPU-vs-NPU: greedy can diverge, and plus even loops on CPU while
+staying coherent on NPU.
 
 Best use: fast clean transcription (base), and coarse diarization (plus).
 
@@ -574,7 +577,7 @@ Under CPU contention the offloaded stream slows more than the CPU one. So pair i
 ### <model> (<quant>)
 
 - Stack status: <prefill faithful? greedy NPU-vs-CPU result + provenance>; <warm pp512/pp2048 vs CPU>; <llama.cpp build / arch caveats>.
-- Recommended flags: <the workload-conditional opt-ins for this model, e.g. -b 2048 -ub 2048 for a quant GGUF; ROCKET_QUANT_RESIDENT=auto if its fp16 fits RAM; ROCKET_MOE=1 iff the expert stack fits. Defaults (KACC/REUSE/ASYM/FA) are on; do not restate them. See TUNING.md>.
+- Recommended flags: <the workload-conditional opt-ins for this model, e.g. ROCKET_QUANT_RESIDENT=auto at the default -ub for a quant GGUF whose fp16 fits RAM, and -b 2048 -ub 2048 only where residency is unavailable; no MoE flag, since the expert offload is default-on and gates itself. Defaults (KACC/REUSE/ASYM/FA) are on; do not restate them. See TUNING.md>.
 - Recommended sampling: <temp/top-p/top-k/min-p + any anti-repetition>.
 - Behavior: <reasoning vs not; loops/confabulation; thinking on/off>.
 - Best use: <canary / transform / chat / bench>.

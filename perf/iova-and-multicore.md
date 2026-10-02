@@ -46,7 +46,7 @@ The vendor driver also allocates from the top of the domain down. BOs land at `0
 allocates from 0 upward.
 
 **On that driver, workloads that map through the kernel's generic path consume the window,
-and nothing in normal operation gives it back.** The consumer is the mapping route, not
+and the driver's own allocator cannot reclaim it.** The consumer is the mapping route, not
 elapsed time. One `llama.cpp` 2048-token prefill (Llama-3.2-3B F16) with
 `RKNPU_MEM_IOMMU_LIMIT_IOVA_ALIGNMENT` clear costs the shared domain 5-11 of its 31 buffers of
 128 MB in 153 s. The loss outlives the process. With that flag set, which is the
@@ -54,7 +54,8 @@ elapsed time. One `llama.cpp` 2048-token prefill (Llama-3.2-3B F16) with
 around the leaking ones left all four size counts byte-identical
 [HW sweep, RK3588, `rknpu` 0.9.8, 2026-08-25].
 
-Because the domain outlives every process that used it, a reboot is the only reset.
+Because the domain outlives every process that used it, the loss persists until a reboot or
+a generic-path allocation to refusal (§"The rcache flush on the generic route").
 Detaching and re-attaching the device (the driver's own soft reset) re-uses the same domain
 object and does not rebuild the allocator.
 
@@ -69,9 +70,10 @@ reported. Read the driver version before crediting the flag with anything.
 ### The IOVA rcache mechanism
 
 The mechanism is the kernel's IOVA rcache, and the driver reaches it by mixing two
-allocators on one domain. The two routes do not differ in size rounding or in placement.
-They differ in which allocator they use, and therefore in where a freed range goes. With the
-flag set, the driver calls `alloc_iova()` / `free_iova()`, which are the rbtree directly.
+allocators on one domain. The loss does not come from the routes' size rounding or
+placement. It comes from which allocator each route uses, and therefore from where a freed
+range goes. With the flag set, the driver calls `alloc_iova()` / `free_iova()`, which are the
+rbtree directly.
 With the flag clear, the mapping falls to the generic `dma_map_sg()`, hence
 `alloc_iova_fast()` / `free_iova_fast()`, which go through the per-CPU IOVA rcache.
 
@@ -79,8 +81,8 @@ On a free, `free_iova_fast()` parks the range in a per-CPU magazine or the globa
 falls through to `free_iova()` only when that fails. **`alloc_iova()` never consults the
 rcache**, so address space freed on the generic route becomes unreachable to the driver's own
 route. The rcache belongs to the `iova_domain`, which here is one domain shared process-wide.
-That is why the loss outlives the process that caused it. Mixing the two allocators on a
-single domain is the defect. Either one used consistently is sound.
+That is why the loss outlives the process that caused it. The loss needs the two allocators
+mixed on a single domain. Either one used consistently is sound.
 
 `iova_rcache_insert()` accepts only sizes up to `2^(IOVA_RANGE_CACHE_MAX_SIZE-1)` = 32 pages =
 128 KB. That bound makes the effect reproducible, and it hides the effect from a probe that
@@ -334,9 +336,11 @@ That is why the detection path needs the throughput pool (model 2), not more cor
 
 The load-bearing per-core knob is IRQ affinity. Set CPU/DDR/NPU to max frequency, pin the
 app to a CPU big core, and **bind the three NPU interrupts to that big core**
-(`/proc/irq/<npu-irq>/smp_affinity_list`). App `taskset` alone is a no-op for fp16 prefill
-(whole-process `taskset`). The IRQ-affinity binding is the knob that matters, and on the
-submit-overhead-bound path it is a large win. See §IRQ affinity below.
+(`/proc/irq/<npu-irq>/smp_affinity_list`). App `taskset` alone leaves the dispatch floor
+unchanged. On llama.cpp prefill, whole-process `taskset 0xf0` is a host-side 1.05-1.13x
+[HW sweep, RK1, 600 MHz] ([data/tuning-matrix.md](data/tuning-matrix.md) §"Pinning to the
+A76s"). The IRQ-affinity binding is the knob that matters, and on the submit-overhead-bound
+path it is a large win. See §IRQ affinity below.
 
 ## IRQ affinity: the default routes the NPU completion IRQ onto a *little* A55 core
 
@@ -395,7 +399,7 @@ path is ~27 µs, against the ~54 µs of stock `rocket` on the default affinity.
 The helpers are `rocket-userspace/tests/irq_affinity_probe.sh` (A/B harness) and
 `rocket-userspace/tools/npu_set_irq_affinity.sh` (applies the recommended binding). The
 lever pays on every many-small-submit path, and it is flat on a single big tiled prefill
-matmul (one submit).
+matmul (one submit per batch of up to 64 tiles).
 
 ## Busy-polling the completion fence
 
@@ -458,9 +462,9 @@ agree, and a third shows where the cost amortizes:
   54->34 µs/submit and min 39->23 µs with keep-attached, so ~20 µs (~38%) is the IOMMU term.
 - `tests/multicore_probe` (64-task jobs, 10 reps): −17 to −18 µs per job (J=1: 7.68->7.50 ms
   over 10 jobs, J=3: 23.56->23.04 ms over 30 jobs).
-- `matmul_tiled_rocket 512 3840 4096` (one big job): flat. The cost is per submit, not per
-  task, so it amortizes to nothing on a single tiled prefill matmul and dominates streams of
-  small jobs.
+- `matmul_tiled_rocket 512 3840 4096` (320 tiles in 5 jobs of 64): flat. The cost is per submit,
+  not per task, so it amortizes to nothing on a single tiled prefill matmul and dominates
+  streams of small jobs.
 
 The lever is RFC patch 5, which keeps the per-context domain attached across same-fd jobs.
 It tracks `attached_domain` in `struct rocket_core`, swaps only on a context change, holds a
@@ -548,7 +552,7 @@ buffer in one example and to `0` in another, so it is don't-care for the stream.
 `rknpu_task` array exists only so the BSP kernel can read per-task fields CPU-side.
 
 An independent FOSS RE of both stacks gives the end-to-end size of the gap. The proprietary
-path issues ~63 IOCTLs / 1 submit per inference, where an open replay path issues
+path issues ~63 IOCTLs / 1 submit per inference, where Mesa's Teflon driver on `rocket` issues
 ~634 IOCTLs / 10 submits. The proprietary path therefore makes ~10x fewer kernel transitions
 [source: an independent FOSS RE of both stacks (orangepi5plus-npu), see
 [SOURCES.md](../SOURCES.md)].

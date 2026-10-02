@@ -35,11 +35,13 @@ that leaves `ew_accumulate` uninitialized reads stack garbage. A nonzero value r
 the ERDMA-armed eltwise path and reproduces the same "timed out, output untouched" hang.
 The fix is one line: `dpu_desc.ew_accumulate = 0;`.
 
-So the rule is symmetric:
+So the DPU-RDMA block must match the op in both directions:
 
 - **Plain matmul**: `mrdma_disable = 1`, `ew_accumulate = 0`
 - **Eltwise or fp16 K-accumulation**: MRDMA enabled and fed (`COMB_USE(5)`), ERDMA armed
   (see [k-accumulation.md](k-accumulation.md))
+- **Two-buffer EW op, no conv**: `flying_mode` 1, MRDMA fed from memory, ERDMA armed,
+  `COMB_USE` bit 0 clear (see [sdp-stage-precision.md](sdp-stage-precision.md))
 
 With the DPU-RDMA block wrong in either direction, the job times out silently and raises
 no useful error. That silence is what makes this a trap rather than a bug.

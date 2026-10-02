@@ -12,10 +12,10 @@ hand a BO between the CPU and the NPU, you must do cache maintenance:
 - `DRM_IOCTL_ROCKET_PREP_BO` runs `dma_sync_sgtable_for_cpu()` on the BO.
 - `DRM_IOCTL_ROCKET_FINI_BO` runs `dma_sync_sgtable_for_device()`.
 
-Both walk the BO's entire scatter-gather list and do per-page cache maintenance. The uAPI
-has no offset or length (`drm_rocket_prep_bo` is just `{handle, timeout}`). So you always
-sync the whole BO, even if the NPU only touched a small live sub-region. The sync cost is
-therefore ∝ the allocated BO size (page count), not ∝ the bytes used
+Both walk the BO's entire scatter-gather list and do per-page cache maintenance. Neither
+ioctl has an offset or length (`drm_rocket_prep_bo` is just `{handle, timeout}`). So they
+always sync the whole BO, even if the NPU only touched a small live sub-region. The sync cost
+is therefore ∝ the allocated BO size (page count), not ∝ the bytes used
 [source-confirmed: `rocket_gem.c`, HW sweep].
 
 This is the same reason the readback de-tile and the pack are memory-bound, not ALU-bound

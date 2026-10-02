@@ -280,8 +280,8 @@ and still moved less, so the difference is not a duration artifact.
 
 The run is `-r 1 -b 2048 -ub 2048`, one process per arm (4096 tokens per arm). This pair,
 the expert route against leaving the experts on the CPU, is the one the byte counter was
-wanted for. Both arms reproduce this board's published rates for those configs. On record,
-`ROCKET_MOE=0` is at 13.68-13.72 and the placed arms are at 24.79-33.03:
+wanted for. Both arms read within 2.1% of this board's published rates for those configs. On
+record, `ROCKET_MOE=0` is at 13.68-13.72 and the placed arms are at 24.79-33.03:
 
 | arm | read | write | total | per prefill token | t/s | wall | bytes / wall |
 |---|---:|---:|---:|---:|---:|---:|---:|
@@ -295,9 +295,10 @@ measured here that is within sight of a DRAM ceiling rather than an order below 
 write column (3.65x) is again where the difference sits.
 
 Two caveats apply to the magnitude, and neither touches the sign. The run is one process per
-arm, which does not settle a percentage on this board (§"Performance discipline"). The
-`ROCKET_MOE=1` total also includes the one-time int8 expert ingest. That ingest is ~30 GB,
-about 3%, so the per-token figure is not an ingest artifact.
+arm, which does not settle a percentage on this board. Settling one takes interleaved passes
+with the arm order rotated and each ratio paired within a pass. The `ROCKET_MOE=1` total also
+includes the one-time int8 expert ingest. That ingest is ~30 GB, about 3%, so the per-token
+figure is not an ingest artifact.
 
 The attribution caveat of §5.2 applies throughout: this is the board's traffic, not the
 NPU's.
@@ -344,7 +345,7 @@ readable register. Three independent observations confirm it:
   amount block, not a separately documented register. So there is no documented "separate
   readable" counter to port to the RK3588.
 - **On the RK3588 it lands in the unmapped, hard-locking page.** Relative to a core's
-  window, 0x2234/0x2434 are phys `0xfdab2234`/`0xfdab4234`. Those are the `0x2000`-gap pages
+  window, 0x2234/0x2434 are phys `0xfdab2234`/`0xfdab2434`. Those are the `0x2000`-gap pages
   that `rocket` never ioremaps (it maps only `pc`/`cna`/`core`), which is §3's read-fatal
   region.
 
@@ -359,7 +360,7 @@ never byte/element counts. NVDLA byte accounting lives in the separate amount bl
 (`rocket`'s unmapped `0x2xxx`), not in the SDP group.
 
 The lead does not reopen the negative. No safe, `rocket`-mapped, per-op output-bytes counter
-exists on the RK3588, and the analytical bytes-moved model (§5) remains the route. No probe
+exists on the RK3588, and the `rockchip_ddr` PMU (§5) remains the route. No probe
 was run. The only candidate register is the known hard-locking page. Reading the mapped
 WDMA/DPU registers returns the programmed output shape, not traffic.
 

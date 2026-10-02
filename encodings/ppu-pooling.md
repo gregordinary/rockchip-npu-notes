@@ -72,6 +72,8 @@ overflows fp16).
 ## Semantics and caveats
 
 - All geometry fields (kernel, stride, dims) are value − 1. Pad counts are not.
+- The kernel and stride fields are 4 bits each, so a window is at most 16×16 and a stride at
+  most 16 [source-confirmed, Mesa `registers.xml`]. `gen_pool_fp16` refuses past them.
 - **Average divides by kh·kw** (count-include-pad = true). TFLite AVERAGE_POOL_2D divides by
   the valid count, so a **padded average diverges at the border**. The delegate therefore
   routes average to the NPU only when VALID (pad=0). MAX with any pad is fine (the −inf pad
@@ -158,7 +160,7 @@ parts without change.
 ### Gating an integer pool
 
 **A wrong precision pair here computes a full, correctly sized, entirely plausible surface.**
-The failing cells in the map return values in range, not zeros or faults. One of them
+The failing cells in the map return values in range, not faults. One of them
 returns an all-zero surface that a gate scoring only "did it write" would pass.
 
 Gate an integer pool against a CPU model of the chip's own arithmetic, along the method axis

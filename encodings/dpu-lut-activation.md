@@ -62,8 +62,8 @@ quant(y) = clamp(round(y * 32768), 0, 32767)        # unsigned Q0.15, [0,1] outp
 These constants place the LUT over the input range and map its Q0.15 output back to fp16
 [HW sweep]. The runtime computes the table contents from the activation itself
 (`quant(f(x))`, the runtime's `build_lut_unit`). The geometry below is verified on hardware:
-the activation is bit-exact on device, and a BNALU sweep pinned the `BN`/OUT_CVT operand
-format.
+sigmoid matches the fp16 CPU reference to max_abs 0.00146, and a BNALU sweep pinned the
+`BN`/OUT_CVT operand format.
 
 | field | value | meaning |
 |---|---|---|
@@ -201,7 +201,8 @@ build PReLU with a per-channel slope (see below).
 ### Default route for HardSwish and SiLU
 
 HardSwish and SiLU default to gate-on-NPU-LUT + multiply-on-host, which takes the
-transcendental off the CPU (`tests/activation_lut_rocket.c` max_abs 0.001 / 0.012).
+transcendental off the CPU (`tests/activation_lut_rocket.c`: HardSwish max_abs 0.001, SiLU
+0.012).
 `ROCKET_ACT_NPU_MUL=1` runs them fully on the NPU through `rocket_ew_mul_fp16`, the
 identity-conv mul. Host-mul stays default because a standalone EW-mul is a second NPU
 round-trip. The perf path is fusing the mul into the producing conv (the
@@ -289,9 +290,10 @@ not the softmax denominator (see [whisper-encoder.md](whisper-encoder.md)).
 `exp(x)` joins the shifted-single-table family (`ROCKET_ACTIVATION_EXP`,
 `act_shifted_domain`). Its default domain is `[-16,0]`, the softmax case: after the
 mandatory row-max subtraction the input is in `(-∞,0]` and the output in `(0,1]`
-(`out_lo=0`, `S=1`). Unlike the symmetric kinds, the domain can include `x<=0` and still
-avoid the LE/LO sign mux. The BN-ALU bias maps the whole domain onto the positive index
-half, so EXP works on the standalone flying path (unlike `build_lut_affine` GELU).
+(`out_lo=0`, `S=1`). Unlike the symmetric kinds, the domain can include `x<=0` with no x~0
+spike, because the output decode is unsigned (QUIRK 2, §"Affected kinds"). The BN-ALU bias maps
+the whole domain onto the positive index half, so EXP works on the standalone flying path
+(unlike `build_lut_affine` GELU).
 
 The relative interpolation error of exp on a uniform grid is ~constant `Δ²/8` (~1e-4 over
 512 cells) because `f''/f = 1`, a good fit for a uniform LUT. `tests/exp_lut_rocket.c`
@@ -470,8 +472,8 @@ tails use the unit-LUT `le_slope` extrapolation (like sigmoid).
 `rocket_activation_fp16(GELU)` takes this route: the gate `ROCKET_ACTIVATION_GELU_GATE` =
 Φ, then the EW-mul by x. `ROCKET_ACT_WIDE_LUT` forces the single-pass path for RE.
 Validated on hardware: cos=1.000000, max_abs 0.0016 vs true erf-GELU over `[-12,12]`
-(`tests/gelu_rocket.c`), including the flat tails. The route makes the Whisper encoder
-block fully on-NPU (cos=1.000000).
+(`tests/gelu_rocket.c`), including the flat tails. The route puts the Whisper encoder
+block's GELU on the NPU (block cos=1.000000).
 
 ### Fused single-pass matmul->GELU
 
@@ -489,11 +491,12 @@ A fused matmul->act (`rocket_matmul_fp16_act`) is therefore not viable for wide 
 ## Consumers
 
 - **Detection:** HardSigmoid + HardSwish (with the EW-mul) move the modern
-  MobileNetV3/MobileDet activation blocks off the CPU. The move waits on the delegate
-  `map_activation` wiring and on the single-pass conv->hardswish fusion for video rate.
+  MobileNetV3/MobileDet activation blocks off the CPU. `tflite-rocket` claims `HARD_SWISH` and
+  `LOGISTIC` nodes and runs them on the LUT under its opt-in `act_npu` option. Its default is
+  the exact host kernel. Video rate waits on the single-pass conv->hardswish fusion.
 - **LLM:** the same LUT does GELU/SiLU gates for fused FFN / Whisper blocks. SiLU/GELU have
-  the on-NPU EW-mul (or a wider-Q single-pass LUT once the OUT_CVT affine form for
-  non-`[0,1]` ranges is RE'd).
+  the on-NPU EW-mul. The affine OUT_CVT also gives a single-pass LUT, which the
+  flat-region and x~0 spikes limit (QUIRK 1, QUIRK 2).
 - **DPU post-processing:** the LUT is a DPU post-processing block that this project drives
   beyond the matmul/conv requant. The BS/BN/EW/LUT/OUT_CVT machinery is partially mapped
   here.

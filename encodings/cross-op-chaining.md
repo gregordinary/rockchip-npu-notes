@@ -150,7 +150,7 @@ SigLIP-B/16 simple-path encode (12 blocks), `ROCKET_MM_PROFILE` aggregate:
 The transform-bound terms drop as predicted (the fc1 output de-tile and the fc2 input scatter
 are removed per block). The `wait` rises because the matched tiling pins fc2's `Kt` to the
 producer's `Nt`=256, fragmenting fc2's K-accumulation into more, smaller passes (the tradeoff
-above). Fidelity is unchanged (SigLIP mean-layer cos 0.999984, identical to the host-handoff
+above). Fidelity is unchanged (SigLIP mean-layer cos 0.999984, against the host-handoff
 0.999983). The result is net-positive in this transform-bound regime. A larger shared tile
 would shrink the `wait` penalty.
 

@@ -34,7 +34,7 @@
      THE KNOB REACHES THE PER-CALL PACK AS WELL AS THE DEQUANT. The pre-registered bracket was
      0.386 for dequant alone and 0.447 for dequant plus three quarters of the pack; 0.4650 is
      above both, so the knob reaches the pack and rather more besides.
-     RULE 147 REFINED. Pinned phi 0.4650, unpinned all-8 0.4655 (+0.0%), unpinned A76 0.4729
+     Pinned phi 0.4650, unpinned all-8 0.4655 (+0.0%), unpinned A76 0.4729
      (-1.7%). Here the ALL-CORES reading is the faithful one, the opposite of the 9B cells --
      and busy_little_share moves only 0.1401 -> 0.1520 across this knob, 1.2 pp against the 9B's
      6.4 and 11.5. The bias tracks how much the knob shifts work between clusters, which the

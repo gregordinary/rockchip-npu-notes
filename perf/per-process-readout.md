@@ -94,7 +94,8 @@ other 4 KiB page of a 16 GiB private mapping, leaving nothing above order 0 to c
 | shattered | 1 047 514 | 0.0000 | 1.0 | 0.1665 |
 
 That is a 106x separation on `mean_run` and 83x on `l2color_cv`. The arming check confirms the
-control fired before the sample was taken: order-0 free pages rose from 4 424 to 2 008 892.
+control fired before the 4 GiB allocation: order-0 free pages rose from 4 424 to 2 008 892. The
+table's count is read at the sample, after that allocation.
 
 ### Cluster placement control
 
@@ -110,7 +111,7 @@ The control forces `llama-bench` onto each cluster with `taskset`
 `pmu_cpu_s` is a duration proxy and not a wall. It is the counters' running time summed over
 the CPUs the event ran on. A system-wide software event therefore reports about eight times
 the elapsed seconds here. As a ratio it tracks the throughput correctly, 0.331 against the
-throughput's 0.332 across these two cells. It must not be quoted as an arm's wall. The six
+throughput's 0.332 across the two pinned cells. It must not be quoted as an arm's wall. The six
 rows taken on 2026-08-31 carry it under the key name `pmu_secs`, with the same meaning.
 
 ### Memory-column contrast
@@ -214,8 +215,8 @@ threads, and `ROCKET_CPU_AFFINITY` is the one that moves the library's.
 Two plausible ways to fragment memory do not fragment it, and both fail quietly by making the
 next allocation more contiguous. Filling the page cache with a large file read leaves the
 allocator tidier, because the kernel reclaims clean page cache in whole high-order blocks
-(`mean_run` 319 against 122 for the compacted control). Holding every other page of a Python
-`mmap.mmap(-1, size)` region does nothing either. That call defaults to `MAP_SHARED`, so with
+(`mean_run` 319 against 122 for that run's own compacted cell). Holding every other page of a
+Python `mmap.mmap(-1, size)` region does nothing either. That call defaults to `MAP_SHARED`, so with
 descriptor -1 it is a shmem object. On shmem, `MADV_DONTNEED` drops only the caller's page
 tables, and the pages stay in the object.
 

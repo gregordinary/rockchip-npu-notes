@@ -1,7 +1,7 @@
-# Sources: external references for FOSS RK3588 NPU work
+# Sources: external references for FOSS Rockchip NPU work
 
-This list holds the external resources others can consult for RK3588 NPU work, with one
-line each on why it matters. Each entry names its upstream so you can find it yourself.
+This list holds the external resources others can consult for Rockchip NPU work, with a
+note on why each one matters. Each entry names its upstream so you can find it yourself.
 These are context and cross-references. The facts in these notes are established by HW sweep
 and the FOSS Mesa driver (see the [README](README.md) evidence tags).
 
@@ -99,7 +99,7 @@ and the FOSS Mesa driver (see the [README](README.md) evidence tags).
   `trm_register_findings.md` carries the results, `elementwise_int.py`, `pooling.py` and
   `conv_simple.py` the probes, each with an offline `--validate` mode that checks the decoded
   streams without opening the device. Their board is an Orange Pi RK3588 on mainline rocket.
-  Nothing below is reproduced here.
+  Only the results below that carry an [HW sweep] tag are measured here.
 
   Two negatives documented in these notes do not survive it. Both are field-semantics errors
   of the same shape, a reading that is correct on everything it could be checked against:
@@ -169,7 +169,7 @@ and the FOSS Mesa driver (see the [README](README.md) evidence tags).
   from the sequence that crashed, so it needs a clean re-run before it reads as that stage's rule.
 
   They have read these notes (at `e0c7213`) and cross-check against them explicitly, which
-  makes their disagreements useful. Two of their readings of these notes are stale rather than
+  makes their disagreements useful. Some of their readings of these notes are stale rather than
   wrong. They report that these notes find no native deconvolution mode, where
   [encodings/conv-transpose.md](encodings/conv-transpose.md) records `CNA_CONV_CON1[16]`
   `DECONV` live on the RK3588. And they note the notes clone does not carry the `tests/` and
@@ -374,9 +374,9 @@ and the FOSS Mesa driver (see the [README](README.md) evidence tags).
   Stock rocket attaches and detaches the IOMMU domain on every job (`iommu_attach_group`
   in `rocket_job_run`, `iommu_detach_group` in `rocket_job_handle_irq`), each toggling the
   rk_iommu stall/reset/paging handshake. Patch 5 keeps the domain attached across same-context
-  jobs. This is a per-job dispatch-floor cost on the RK3588 too. It is a concrete, testable
-  kernel lever for this project's submit-overhead-bound paths (detection 1×1s, KACC's nKt
-  sequential jobs), see [not-mac-bound.md](perf/not-mac-bound.md).
+  jobs. This is a per-job dispatch-floor cost on the RK3588 too. It is a kernel lever, shipped
+  here as `patches/rocket/083`, for this project's submit-overhead-bound paths (detection
+  1×1s, KACC's nKt sequential jobs), see [not-mac-bound.md](perf/not-mac-bound.md).
 
   The author reads the NPU's DMA byte counters ("the NPU reads the full input and weight
   tensors per its DMA counters"). That is a lead against the dead-RK3588-counter finding here
@@ -415,8 +415,8 @@ and the FOSS Mesa driver (see the [README](README.md) evidence tags).
 
   The poll is a driver choice with a price. Retiring on the DPU bit at a 50 us period instead
   of `PC_DONE` at 500 us took the submit floor from 1065 to 439 us. Their 1 ms period is slower
-  again. Two task classes do raise no DPU completion (pooling, and any output element wider
-  than one byte), so a poll or a grace still has to survive as the fallback for those.
+  again. Two task classes do raise no DPU completion (pooling, and the narrow and wide int32
+  writers), so a poll or a grace still has to survive as the fallback for those.
 
   Its patch 2 is the same fix as `patches/rocket/089` (`clk_bulk_data.id` never set, so
   all four entries resolve to the node's first clock). It was found independently, with a
@@ -445,7 +445,7 @@ and the FOSS Mesa driver (see the [README](README.md) evidence tags).
   arms run back to back in one process. The arms are one job/one ioctl (A), two jobs/one
   ioctl/one fd (B), two jobs/two ioctls/one fd (C) and two jobs/two ioctls/two fds (D).
 
-  | k, n | A | B | C | D |
+  | k, n | A (us) | B (us) | C (us) | D (us) |
   |---|---|---|---|---|
   | 1024, 256 | 49.77 | 95.05 | 94.74 | 52.43 |
   | 1024, 1024 | 133.64 | 263.05 | 263.30 | 135.66 |
@@ -456,8 +456,8 @@ and the FOSS Mesa driver (see the [README](README.md) evidence tags).
   the second core is real and free, and they report no corruption from it.
 
   Their board is a ROCK 4D at 594 MHz, the cell where the undervolt table in
-  [chips/rk3576.md](chips/rk3576.md) says two-core corruption vanishes. The board here is at
-  786 MHz. That makes r419 a second, independent reason to re-run two cores at 594 MHz before treating
+  [chips/rk3576.md](chips/rk3576.md) says two-core corruption vanishes. The two-core runs here
+  were at 786 MHz. That makes r419 a second, independent reason to re-run two cores at 594 MHz before treating
   either of two claims as a property of the silicon. The claims are "core 1 buys nothing" and
   "two jobs in flight compute wrong answers".
 
@@ -570,8 +570,8 @@ and the FOSS Mesa driver (see the [README](README.md) evidence tags).
   2026-08-14). It is an open LLM runtime for the RK3576 on
   mainline `rocket`, the same architectural bet as `rocket-userspace` + `ggml-rocket` on the
   sibling part. It names both plus these notes as its stated starting point. Every number
-  in this entry is theirs (ROCK 4D, their v7-lineage kernel, 2026-08-14/15) and none is
-  reproduced on the board here.
+  in this entry is theirs (ROCK 4D, their v7-lineage kernel, 2026-08-14/15) unless the text
+  says it was taken here, and none is reproduced on the board here.
 
   The load-bearing instrument is `tools/rkllm_regcmd.py`: a vendor `.rkllm` carries the
   register-command streams the closed stack submits. The script reads the whole dispatch
@@ -752,10 +752,11 @@ and the FOSS Mesa driver (see the [README](README.md) evidence tags).
 
   Their headline against the vendor is taken on one board (ROCK 4D, `librkllmrt` 1.3.0 run
   on that same board rather than quoted, Llama-3.2-1B, NPU 594 MHz both sides, CPU pinned).
-  Decode is 1.39x the vendor at 594 MHz and 1.46x at 786, and the spread between those two is
-  itself the finding. Their decode scales with the NPU clock and the vendor's does not. So
-  the multiple is a property of the condition rather than of either runtime. Prefill is ahead
-  at every prompt length from 27 to 602 of their own tokens and level at 852.
+  Decode is 1.39x the vendor at 594 MHz and 1.46x with both sides at 786 MHz, and the spread
+  between those two is itself the finding. Their decode scales with the NPU clock and the
+  vendor's does not. So the multiple is a property of the condition rather than of either
+  runtime. Prefill is ahead at every prompt length from 27 to 602 of their own tokens and level
+  at 852.
 
   Two things make that table quotable and are worth copying. The vendor's chat template costs
   a constant 33 tokens at every length, so each row is the same input text. And the margin a
@@ -824,8 +825,9 @@ and the FOSS Mesa driver (see the [README](README.md) evidence tags).
   are not needed at all (`0x37` and `0x1f` both give the exact four-byte accumulator). They
   ship a four-byte output on every dispatch, across processes, and report no poisoning.
 
-  That has two consequences here. The int32 writer here moves `0x4010`'s width field without
-  `0x4050`, which is precisely the partial bundle that wedges for them. And the fp16 poisoning
+  That has two consequences here. The narrow and wide int32 writers here move `0x4010`'s width
+  field without `0x4050`, which is precisely the partial bundle that wedges for them (the
+  library's int32 matmul entry runs on the whole bundle). And the fp16 poisoning
   condition here, decoded by joint sweep to `0x4038[4]` and `0x4050[17]` together and neither
   alone, is two members of this same bundle. Both are recorded against the hazard in
   [chips/rk3576.md](chips/rk3576.md). They also report the width has exactly two values, 1 and
@@ -845,9 +847,9 @@ and the FOSS Mesa driver (see the [README](README.md) evidence tags).
   where it was. That is recorded against the no-partition negative here in
   [chips/rk3576.md](chips/rk3576.md).
 
-  They attribute two-cores-in-flight corruption to an undervolt, and the board here sits at
-  the operating point they name as unsafe. With both cores in flight, the job on the second
-  core wrote one word of a row wrong. The word was the right value plus 1024, a few bits
+  They attribute two-cores-in-flight corruption to an undervolt, and the two-core runs here
+  were at the operating point they name as unsafe. With both cores in flight, the job on the
+  second core wrote one word of a row wrong. The word was the right value plus 1024, a few bits
   around bit 10 of the accumulator. It happened on one row in a few thousand, always at the
   same array position. The test ran four DTBs on one board, with the kernel and binary held.
   It used the element probe at width 24 and KMAX 1024, in four passes of 5400 rows each:
@@ -867,10 +869,11 @@ and the FOSS Mesa driver (see the [README](README.md) evidence tags).
   [their HW sweep, ROCK 4D, 2026-09-04].
 
   The H96 MAX M9's two-core runs were at 786 MHz / 750 mV [live 2026-09-25], outside the table
-  unless it bins at `L5` or above. Their fault is far milder than the one here (tens of words
-  a pass against 72-76% of a victim's calls), so this is not obviously one mechanism. It is
-  still an untested competing explanation for a negative these notes treat as settled, and
-  the test is cheap.
+  unless it bins at `L5` or above. On its kernel 7.2.8-1 image the NPU runs at 594 MHz with
+  core 1 `disabled`, so no two-core run exists here at 594 MHz [live 2026-10-02]. Their fault
+  is far milder than the one here (tens of words a pass against 72-76% of a victim's calls), so
+  this is not obviously one mechanism. It is still an untested competing explanation for a
+  negative these notes treat as settled, and the test is cheap.
 
   The following is directly liftable, and none of it needs their hardware:
 
@@ -1342,7 +1345,7 @@ and the FOSS Mesa driver (see the [README](README.md) evidence tags).
   ("Max K=2048 @ FP16" in one pass), and nobody used the DPU eltwise for K-accumulation.
   That reframed this project's tiling. It is also the clearest external statement of the
   decode split: the NPU is good at MatMul and bad at GEMV (M=1). CPU GGML wins decode
-  (83 ms vs 61 ms/token) because llama.cpp's NEON GEMV is already bandwidth-saturating.
+  (NPU 83 ms vs CPU 61 ms/token) because llama.cpp's NEON GEMV is already bandwidth-saturating.
   See [perf/decode-gemv.md](perf/decode-gemv.md).
 
 - **Hummingbird+** (Li et al., *"Hummingbird+: Advancing FPGA-based LLM Deployment from
@@ -1539,6 +1542,12 @@ and the FOSS Mesa driver (see the [README](README.md) evidence tags).
   CPU/NPU) are ones the rocket stack also implements.
 - **clehaxze gemlog (2023)**: RK3588 NPU per-cycle MACs (2048 int4 / 1024 int8 / 512 fp16).
   It notes that RKNN matmul lacks multi-core (the rocket path runs 3-core via per-fd).
+- **widgetii/orangepi5plus-npu**: an independent FOSS RE of the RK3588 NPU on the same `rocket`
+  driver. It replays the vendor's register programs from `.rknn` binaries rather than generating
+  them. It also carries a standalone driver library, Mesa optimization patches and a QEMU model
+  of the NPU. Its research report counts kernel calls per inference on both stacks. RKNN makes
+  63 IOCTLs and 1 submit, and Mesa's Teflon driver over `rocket` makes 634 and 10.
+  [perf/iova-and-multicore.md](perf/iova-and-multicore.md) cites that count.
 - **t-firefly ROC-RK3588S NPU wiki**: vendor RKNN usage only, with no
   multi-core/SRAM/register/driver detail.
 - **sagi21805/matmul-npu**: a C++/OpenCV matmul wrapper over the proprietary RKNN toolkit2

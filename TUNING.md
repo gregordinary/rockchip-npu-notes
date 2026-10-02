@@ -51,7 +51,7 @@ residency stacked on `-ub 2048`. So the flag is for a model whose fp16 image doe
 resident.
 
 **Run `ROCKET_QUANT_RESIDENT=auto` at the default `-ub`, and do not stack
-`-b 2048 -ub 2048` on it.** Unstacked reads 1.35-1.75x on seven models from 2.2 to
+`-b 2048 -ub 2048` on it.** Unstacked reads 1.35-1.75x on seven models from 1.8 to
 11.9 B, against 1.00-1.66x for the stacked form. No measured model prefers stacking. On a
 model that places only part of its weights, the unstacked form also buys more residency.
 `-ub 2048` spends that RAM on compute buffers instead.
@@ -117,9 +117,9 @@ model.
 
 Pinning and residency overlap, so **do not multiply their published numbers**. Both remove
 A76 pack work, and the second lever applied finds less of it left. On `Qwen3.5-9B` the
-residency knob is worth 1.67x unpinned and 1.61x once the run is pinned. Taking both from
-stock reads 1.77x, not the 1.83x the two multiply to [HW sweep 2026-09-01/02, RK1, six
-rotated passes].
+residency knob stacked on `-b 2048 -ub 2048` is worth 1.67x unpinned and 1.61x once the
+run is pinned. Taking both from stock reads 1.77x, not the 1.83x the two multiply to
+[HW sweep 2026-09-01/02, RK1, six rotated passes].
 
 ## Workload variables
 
@@ -364,20 +364,21 @@ one.
   the budget from free RAM, not a blanket `=1`. On a model larger than the default 2 GB
   budget, `=1` residents only part of it, and that is a **net loss against streaming**.
 - **Delta:** Qwen3.5-9B `Q4_K` pp2048 reads resident 24.6 vs streaming 15.8 = 1.56x
-  (~0.92x the 26.8 F16), with bit-identical PPL [HW sweep]. On a model that does not fit,
-  it falls back to streaming, correctly.
+  (~0.92x the 26.8 F16), with bit-identical PPL [HW sweep 2026-06-28, streaming at
+  `-ub 2048` with serial dequant]. On a model that does not fit, it falls back to
+  streaming, correctly.
 - **Confirm:** `ROCKET_LOG_STDERR=1` prints the one-shot budget decision.
 
 #### Residency in place of `-ub 2048`
 
 **Run residency in place of `-ub 2048`, not stacked on it.** Every model measured both
-ways shows it, seven of seven, across a 2.2-11.9 B span. Each row is three rotated passes
+ways shows it, seven of seven, across a 1.8-11.9 B span. Each row is three rotated passes
 with ratios paired within a pass. Every model is 100% resident on every pass except
-`gemma4-12b`, which places part of its weights [HW sweep 2026-08-31].
+`gemma4-12b`, which places part of its weights [HW sweep 2026-08-29/31].
 
 | model | unstacked, at the default `-ub` | stacked on `-ub 2048` | unstacked over stacked |
 |---|---:|---:|---:|
-| `smolvlm2` (2.2 B) | 1.346x | 1.002x | +34% |
+| `smolvlm2` (1.81 B) | 1.346x | 1.002x | +34% |
 | `llama32-3b` | 1.472x | 1.212x | +21% |
 | `ministral3-3b` | 1.445x | 1.132x | +28% |
 | `phi4mini` | 1.508x | 1.211x | +25% |
@@ -493,10 +494,10 @@ n=1**: one `-r 3` process per arm, behind a `drop_caches`, every arm 0 streamed
 | `ROCKET_MOE_CACHE_MB=28000` | 28000 MB | 71 | 23.79 | 30.25 | +8.3% / +14.1% |
 | `ROCKET_MOE=1` (the ceiling) | none | 72 | 23.34 | 31.27 | +6.3% / +18.0% |
 
-A budget of 28000 is the setting worth knowing. It places 71 of 72 stacks, reaches 79% of
-the pp2048 ceiling, and reads above the forced arm at pp512. The pre-flight still
-guarantees the sign. But it leaves only ~2.8 GB of the headroom the 6 GiB auto reserve
-exists for (KV cache, activations). So it is a knob for a known working set, not a new
+A budget of 28000 is the setting worth knowing. It places 71 of 72 stacks, recovers 79% of
+the default-to-ceiling gain at pp2048, and reads above the forced arm at pp512. The
+pre-flight still guarantees the sign. But it leaves only ~2.8 GB of the headroom the 6 GiB
+auto reserve exists for (KV cache, activations). So it is a knob for a known working set, not a new
 default.
 
 The stack counts are exact and the percentages are not. One process on this board can sit
@@ -624,9 +625,9 @@ DeepSeek, so no row threshold separates them.
   char-identical to fp16 greedy, bf16 token-identical). All tie the ~460 GOP/s floor,
   because the NPU is DMA/dispatch-bound. So fewer bits do not buy prefill speed.
 - **When:** only to make a model fit that would not at F16, or for bf16's fp32 range.
-  Resident int8 in-model prefill is 0.60x fp16, and int4 is ~0.53x. The int32 partials
-  cannot be K-accumulated on-chip, so each K-tile reads back. The result is slower, but a
-  quarter to a half the footprint.
+  Resident int8 in-model prefill is 0.60x fp16, and int4 is ~0.53x. No on-chip
+  K-accumulation ships for the int32 partials, so each K-tile reads back. The result is
+  slower, but a quarter to a half the footprint.
 - **Disk cost:** the native int4/int8 paths quantize from a full-precision (F16) GGUF and
   require Hadamard rotation. They are not fed a pre-quantized `Q4` file. So you spend the
   disk of the larger F16 GGUF to save runtime RAM. If you only have a `Q4_K` GGUF, use the
@@ -658,14 +659,14 @@ DeepSeek, so no row threshold separates them.
 The datapath levers are default-on, so the stock-vs-tuned gap for a dense F16 model is
 small. The tuned config is mostly the default, and the F16 numbers in
 [perf/benchmarks.md](perf/benchmarks.md) are already at it. The large default-vs-tuned
-gaps are on the quantized and MoE paths, where the llama.cpp and stack defaults leave
-speed unclaimed:
+gaps are on the quantized path, where the llama.cpp and stack defaults leave speed
+unclaimed:
 
 | Lever | Default | Tuned | Gain | Measured on |
 |---|---|---|---|---|
 | Clock | 200 MHz | 600 MHz (`patches/rocket`) | 1.43x | Gemma-4-12B [HW sweep] |
 | Quant micro-batch | `-ub 512` | `-b 2048 -ub 2048` | 0.91-1.53x. Dense 1.18-1.53x above 8 B | eleven models 0.75-30.53 B [HW sweep 2026-08-29/30, rotated passes]. The 2026-06-28 figures are ~2.1x/2.25x. This sweep reads the 9B at 1.424x and the 27B at 1.532x, both lower by the same 0.68 factor. Total parameter count is the wrong axis for a MoE model |
-| Quant residency | streaming | `ROCKET_QUANT_RESIDENT=auto` | 1.35-1.75x at the default `-ub`, which is how to run it. Stacked on `-ub 2048` it reads 1.00-1.66x | nine quant models 0.75-11.91 B [HW sweep 2026-08-28..31, rotated passes]. Unstacked measured on six: smolvlm2 1.346x, llama32-3b 1.472x, ministral3-3b 1.445x, phi4mini 1.508x, ministral3-8b 1.651x, qwen35-9b 1.752x |
+| Quant residency | streaming | `ROCKET_QUANT_RESIDENT=auto` | 1.35-1.75x at the default `-ub`, which is how to run it. Stacked on `-ub 2048` it reads 1.00-1.66x | nine quant models 0.75-11.91 B [HW sweep 2026-08-28..31, rotated passes]. Unstacked measured on seven: smolvlm2 1.346x, llama32-3b 1.472x, ministral3-3b 1.445x, phi4mini 1.508x, ministral3-8b 1.651x, qwen35-9b 1.752x, gemma4-12b 1.368x (partial residency) |
 | F16 residency | re-pack per turn | `ROCKET_F16_RESIDENT=auto` | ~+6-9% | 3B F16 [HW sweep] |
 | MoE experts | (default-on) | n/a | 1.64x -> 2.08x over experts-on-CPU, pp512->pp2048 | gpt-oss-20b [HW sweep] |
 | Asymmetric tiling | (default-on) | `ROCKET_MM_ASYM=1` | +6-9% F16 | Qwen3.5-9B, Gemma-4-12B [HW sweep] |
@@ -686,7 +687,7 @@ largest ones:
 - `ROCKET_MM_ASYM`, `ROCKET_KACC` and DATA_REUSE isolation exists only on a few models, mostly
   Gemma-4-12B and Qwen3.5. Every other model inherits the default silently.
 - `ROCKET_QUANT_RESIDENT` is measured across the matrix, 0.75-11.91 B stacked and
-  unstacked on seven models from 2.2 to 11.9 B in size. The lever itself has no
+  unstacked on seven models from 1.8 to 11.9 B in size. The lever itself has no
   model-coverage gap left. What is open is the shape of the partial-residency case.
   `gemma4-12b` is the only partly-placed model on the board, at 83-87% unstacked against
   73-74% stacked. How the ratio falls with placed fraction is therefore a two-point

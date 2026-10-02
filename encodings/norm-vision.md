@@ -43,9 +43,10 @@ host-materialized broadcast tensors, the same shape as the LayerNorm affine fold
   GroupNorm and InstanceNorm reduce across the group's channels, so the matmul-reduce is the
   only path. GroupNorm stacks `[x ; x⊙x]` into `2·(N·G)` rows for one reduce job (the
   LayerNorm trick).
-- **fp16-square overflow prescale** ([rmsnorm-onnpu.md](rmsnorm-onnpu.md)). With `|x|>~223`,
-  `x²` overflows fp16 (max ~65504, 223²~49729). Prescale `x·2^-k` before squaring (exact,
-  power-of-2), and recover the variance as `·4^k` on the host. The mean(x) branch uses `x`
+- **fp16-square overflow prescale** ([rmsnorm-onnpu.md](rmsnorm-onnpu.md)). `x²` overflows
+  fp16 (max ~65504) once `|x|>256`. Past `|x|>~223` (223²~49729) the input is prescaled
+  `x·2^-k` before squaring (exact, power-of-2), and the variance is recovered as `·4^k` on the
+  host. The mean(x) branch uses `x`
   directly. Validated at amp=1000 (`maxv~2448`, the `var` stat still recovers).
 - **The O(rows) mean/var/rsqrt tail stays on the host**, exact fp32, on the same reasoning as the
   transformer norms. Sending the per-group scalars to the DPU rsqrt LUT would add a
@@ -58,14 +59,14 @@ The family is validated bit-faithful on hardware: `max_abs` is pure fp16 affine 
 (e.g. `0.002` on `O(1)` GroupNorm output, `0.0078` on `O(13)` BatchNorm output). `max_rel`
 is large only where the reference value is near zero. The gate uses a combined `rel AND abs`
 tolerance (the LayerNorm-gate discipline), so a near-zero ref does not false-fail. All 16
-shapes read `bad=0`:
+shapes read `bad=0` on the RK1 (2026-06-23):
 
 - BatchNorm (P>1 / P=1 / C%32≠0 / large-|x|)
 - GroupNorm (4-group 14², G=1, 32-group, P=1, large-|x|)
 - InstanceNorm (G=C)
 - L2-Normalize (row-tile boundary, H%32≠0, large-|x|)
 
-The full suite is 35/35 green, with no regressions.
+The full CTest suite on that date read 35/35 green, with no regressions.
 
 ## Cost and use
 

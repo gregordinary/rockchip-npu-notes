@@ -290,15 +290,15 @@ completeness of the matrix (int4/int8/int16/fp16 all working and correct), not a
 
 ### Dispatch-floor reducers
 
-Two levers cut the per-submit floor (not the per-tile compute), so they belong here for
-completeness. **Both are ~flat on the big tiled prefill matmul this note is about.**
-Prefill is a few large submits, where the per-submit overhead is negligible against ms-scale
-tile compute.
+Two levers, IRQ affinity and IOMMU keep-attached, cut the per-submit floor (not the per-tile
+compute), so they belong here for completeness. **Both are ~flat on the big tiled prefill
+matmul this note is about.** Prefill is a few large submits, where the per-submit overhead is
+negligible against ms-scale tile compute.
 
 They pay on many-small-submit paths (decode GEMV, multi-fd contention, the detection
 throughput pool *under contention*). They do not pay on prefill, or on single-stream
 detection, which is host-gather-bound (see below). Do not read them as prefill speedups. The
-levers are:
+two levers, and the CPU governor that the same floor depends on, are:
 
 - **IRQ affinity.** The default IRQ mask services the NPU completion IRQ on an A55 little
   core. Binding the 3 NPU IRQs to an A76 and co-locating the waiter cuts the submit floor
@@ -329,8 +329,8 @@ levers are:
   ([encodings/siglip-encoder.md](../encodings/siglip-encoder.md),
   `rocket-userspace/tools/npu_perf_governor.sh`).
 
-Both measure flat on `matmul_tiled_rocket 512 3840 4096` (one big job) and large on
-`submit_overhead_rocket` (tiny 1-task jobs). See
+IRQ affinity and IOMMU keep-attached both measure flat on `matmul_tiled_rocket 512 3840 4096`
+(320 tiles in 5 jobs of 64) and large on `submit_overhead_rocket` (tiny 1-task jobs). See
 [iova-and-multicore.md](iova-and-multicore.md) §IRQ affinity / §per-job IOMMU cost.
 
 #### Detection single-stream

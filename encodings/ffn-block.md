@@ -68,7 +68,7 @@ pieces:
 `rocket_ffn_fp16` [HW sweep]. The max_abs is ~1 fp16 ULP: the only numeric difference is the
 down-matmul K-tiling. The gate covers multi-M/N/K-tile shapes, including the SigLIP fc
 geometry. The encoder MLP is covered by `encoder_block_rocket` (cos 1.0) + `siglip_rocket`
-(mean-layer cos 0.999984, unchanged).
+(mean-layer cos 0.999984, against 0.999983 on the host-handoff path).
 
 ### Payoff by regime
 

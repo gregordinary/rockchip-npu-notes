@@ -440,14 +440,14 @@ Each sub-4B unit's qres512 sits above its own dqc512 control (pack removal on to
 dequant, the predicted ordering), and 21-34% above the stacked recipe the guide shipped.
 
 **Seven of seven models prefer the unstacked form, and that is what licenses a class rule.**
-The set spans 2.2-11.9 B, both signs of the non-dequant residue, and both full and partial
-residency, and no model measured both ways prefers stacking. So the recipe for a quantized
-GGUF is **`ROCKET_QUANT_RESIDENT=auto` at the DEFAULT `-ub` whenever the fp16 image fits
-resident, wholly or partly**, and `-b 2048 -ub 2048` is the lever only for a model that cannot
-go resident at all. **One model with a resident arm is still outside that statement**:
-`qwen35-08b` cannot resolve a ratio of this size at any affordable pass count in its class.
-The rule was deliberately not re-cut on the 9B alone, because one model's ratio does not read
-across: the same lesson the MoE work floor taught.
+The set spans 1.8-11.9 B (`llama-bench` parameter counts), both signs of the non-dequant
+residue, and both full and partial residency, and no model measured both ways prefers stacking.
+So the recipe for a quantized GGUF is **`ROCKET_QUANT_RESIDENT=auto` at the DEFAULT `-ub`
+whenever the fp16 image fits resident, wholly or partly**, and `-b 2048 -ub 2048` is the lever
+only for a model that cannot go resident at all. **One model with a resident arm is still
+outside that statement**: `qwen35-08b` cannot resolve a ratio of this size at any affordable
+pass count in its class. The rule was deliberately not re-cut on the 9B alone, because one
+model's ratio does not read across: the same lesson the MoE work floor taught.
 
 `gemma4-12b` is the only row here whose arms did NOT run at the same residency, and the reason
 is the finding below. Its +3.5% is the narrowest margin in the set.
@@ -567,7 +567,8 @@ three rotated passes]:
 **`ub2048` and `moe0` agree to three digits (0.908x against 0.908x), and that agreement is the
 finding**: on this model AUTO places nothing at all, on 3 of 3 passes, so the default arm and the
 experts-on-CPU control are the *same configuration reached two ways*. 30.53 B with 29 of them
-experts does not fit this board's budget, and the route declines rather than half-placing.
+experts, and every expert dispatch at `-ub` 2048 carries 201 MMAC, under the 340 MMAC work floor
+(`ROCKET_MOE_MIN_WORK`), so the route declines rather than half-placing.
 
 **So `-b 2048 -ub 2048` costs 9.2% here**, with experts on the CPU on both sides — the second model
 in the matrix where the flag is a resolved loss, after `smolvlm2`'s 0.941x.

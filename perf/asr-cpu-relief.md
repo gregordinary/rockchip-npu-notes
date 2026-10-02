@@ -53,7 +53,7 @@ CPU core-seconds freed, as clean speech / hard conversational speech [HW sweep]:
 The NPU removes roughly half of the encoder's CPU cost, not all of it, because the packing
 and the de-tile stay on the host. It never removes more than the encoder's share.
 
-The 3 s column is the largest relief for every model, and the padding causes it. A 3 s
+The 3 s column is the largest relief for `base.en` and `small.en`, and the padding causes it. A 3 s
 clip pays a full 30 s encode and decodes almost nothing, so the offloadable part is nearly
 the whole cost. A short-utterance workload sits at the favorable end of this axis, not the
 unfavorable one.
@@ -99,7 +99,7 @@ CPU arm, for Q8_0 CTC models on conversational audio, with three arms from one b
 At 30 s, `ROCKET_MM_PROFILE` prints nothing at all for SenseVoice under the shipped floor.
 That is not a small win, it is zero offloaded ops. At 60 s it prints 1395 job-batches.
 Lowering the floor costs nothing in any cell where it does not help (worst cell -0.6%).
-Above 60 s the two arms are equal, because the sequence is over 512 either way.
+From 60 s up the two arms are equal, because the sequence is over 512 either way.
 
 So the reading "NPU buys nothing on short audio for these models" is two effects, not one.
 The quantized knob accounts for everything down to about 10 s. Below that length the
@@ -107,7 +107,7 @@ sequence also sits under the F16 floor, and `ROCKET_MIN_M_QUANT` cannot go lower
 floor (§"The quantized floor's clamp"). At 3 s both arms are within 3%.
 
 That boundary is the floor's and not the NPU's. With `ROCKET_MIN_M` itself lowered, an F16
-Parakeet offloads and wins down to 1.3 s (see
+Parakeet offloads and frees CPU down to 1.3 s (see
 [Short utterances below the F16 floor](#short-utterances-below-the-f16-floor)). For these
 two Q8_0 models that outcome is unmeasured [expected], because they pay a per-call dequant
 that the F16 model does not.
@@ -118,7 +118,7 @@ A row floor is the right shape for the gate, and the weight size cancels out of 
 tempting alternative is a floor expressed against the weight it guards. The argument is
 that a quantized weight costs more to decode, so a bigger weight needs more rows. That
 argument is wrong, and the profile shows why. The dequant that a pass pays is fixed in the
-row count. SenseVoice offloads 279 GEMMs and spends 250-293 ms decoding their weights
+row count. SenseVoice offloads 279 GEMMs and spends 246-293 ms decoding their weights
 whether the clip is 10 s or 120 s [HW sweep].
 
 Offloading one GEMM wins under the criterion `M*K*N*Δ > K*N*d + F`. Here `d` is the
@@ -200,7 +200,7 @@ is not where the value is.
 A voice command is one to five seconds of audio. At 12.5 encoder frames a second, that is 16-75
 rows. That is under the default `ROCKET_MIN_M` of 128, so nothing offloads and the NPU arm is the
 CPU arm. With the floor lowered, every encoder GEMM goes to the NPU and re-packs its weight on
-each call. The offload loses at no length measured. It ties the CPU at 1.3-1.8 s while
+each call. The offload loses at no length measured. It ties the CPU arm's wall at 1.3-1.8 s while
 freeing a third of the CPU, and from 2 s up it is also faster.
 
 Measured on an RK3588 (Turing RK1) on the mainline driver (`rocket` 1.3.0, kernel 7.2.8,
@@ -275,9 +275,9 @@ to sleep. Both forced-arm windows are short, 8-10 utterances each, so their STT 
 ### Where the floor comes from
 
 The 128 default sits above an F16 crossover measured on LLM prefill. In that measurement,
-Llama-3.2-3B read 0.35x at 16 rows and reached parity near 64. The current build does not
-reproduce that table. The same model, NPU at floor 4 against the CPU, `llama-bench` at 4
-threads, two passes within 2% [HW sweep 2026-09-30]:
+Llama-3.2-3B read 0.35x at 16 rows and reached parity near 64. The current build, ggml-rocket
+`8b73e4c` on llama.cpp b11242, does not reproduce that table. The same model, NPU at floor 4
+against the CPU, `llama-bench` at 4 threads, two passes within 2% [HW sweep 2026-09-30]:
 
 | prompt tokens | 16 | 32 | 64 | 128 |
 |---|---:|---:|---:|---:|
@@ -387,7 +387,8 @@ transcript over its repetitions.
 A streaming caller loads the model once. The single-shot numbers in the earlier sections
 carry a model load, which a server does not pay per utterance. The model load is 129 ms
 for `tiny.en`, 173 ms for `base.en` and 333 ms for `small.en`. The table gives steady-state
-CPU core-seconds per utterance on conversational audio. The harnesses are `whisper-cli` with
+CPU core-seconds per utterance on conversational audio. Each cell is the CPU arm's cost, then
+the NPU arm's, then the share freed. The harnesses are `whisper-cli` with
 the clip repeated across `-f` arguments, and `transcribe-cli --batch`, which reuses one
 context [HW sweep]:
 
@@ -463,7 +464,7 @@ median of two interleaved reps with a warm-up discarded, A76-pinned, under the C
 | | 120 s | 136.07 | 72.11 | 47.0% | 578 ms | 582 ms | 217 | 1.6% |
 
 The term is fixed per forward pass, which is what the call column says. SenseVoice offloads
-279 GEMMs whether the clip is 10 s or 120 s, and its dequant stays within 250-293 ms across
+279 GEMMs whether the clip is 10 s or 120 s, and its dequant stays within 246-293 ms across
 a 12x range of audio. Parakeet is the same from 30 s up, at 217. So the share falls with
 clip length, from 12.2% down to 0.8%, and the lever is a short-utterance one.
 

@@ -5,7 +5,7 @@ It is a net win from ~2K tokens up. The op is `FLASH_ATTN_EXT`: per-head QK -> m
 -> P·V. The two backends scale differently with context length. This is the lever that moves
 long-context prefill on reasoning models (Gemma-4 and the like). The crossover is at ~2K with
 per-worker QK/AV submit chaining on, which is the default. Without chaining, the NPU per-head
-dispatch floor moves the crossover out to ~6K.
+dispatch floor moves the crossover out to between 4K and 8K.
 
 > **Scope.** The numbers are measured at the current operating point: fp16, 600 MHz, and the
 > multicore + host-softmax attention handler (`librocketnpu` `rocket_flash_attn_fp16_mt`).
@@ -71,10 +71,10 @@ attention op. The <=4K rows are `-r2` and the 8K row is `-r1` [HW sweep 2026-06-
 | 8192  | 8.68  | 12.54 | 1.45x | NPU |
 
 Submit chaining turns the short and mid context from a loss into a win. The same handler with
-chaining off loses everywhere below ~6K: 0.80x@512, 0.83x@2K, 0.92x@4K. It crosses only at
-~8K (1.32x). Chaining collapses each worker's per-head QK (and AV) matmuls into one NPU job,
-through a per-worker resident batched-matmul context prezeroed once. That roughly doubles the
-FA-op throughput and moves the crossover in to ~2K.
+chaining off loses at every measured point through 4K: 0.80x@512, 0.83x@2K, 0.92x@4K. It wins
+at 8K (1.32x), so it crosses between 4K and 8K. Chaining collapses each worker's per-head QK
+(and AV) matmuls into one NPU job, through a per-worker resident batched-matmul context
+prezeroed once. That roughly doubles the FA-op throughput and moves the crossover in to ~2K.
 
 The table is the offload-all ceiling (gate 0). The shipped gate is `n_kv >= 1024` (below),
 which is slightly more conservative. The early-micro-batch ops whose local-layer `n_kv` is
@@ -135,7 +135,7 @@ each [HW sweep, F16, 600 MHz, performance governor]:
 2. **Host softmax.** The additive mask already brings the scores host-side, so an on-NPU
    softmax is a pure round-trip. Dropping it adds +5% at pp512 and +10% at pp2048, to 13.73
    and 12.19 t/s.
-3. **Submit chaining.** This lever moves the crossover from ~6K to ~2K. Each worker's
+3. **Submit chaining.** This lever moves the crossover from between 4K and 8K to ~2K. Each worker's
    per-head QK matmuls share one `(Tp, dh, Kn)` shape, and its AV matmuls share one
    `(Tp, Kn, dh)` shape. So each set batches into a single NPU job: one submit + one fence
    for the whole head range instead of one per head.
@@ -195,18 +195,18 @@ window would avoid that 3% and forfeit the local-layer win, so it is not worth i
 
 ## Host split at depth
 
-The handler's outer gather (the strided ggml Q/K/V/mask views -> dense fp16 tiles) and the F32
-scatter are single-threaded host loops that the driver's `ROCKET_MM_PROFILE` does not see. A
-dedicated probe (`ROCKET_FA_TIMING`) splits the FA op into gather, on-NPU compute and scatter.
-At 16K (n_kv 1024..16384) the aggregate is gather 15%, compute 82% and scatter 3%. The gather
-share shrinks with depth (25% at 2K -> 15% at 16K), because the on-NPU per-head GEMMs grow
-faster than the O(n_kv) gather. So where the offload wins, attention is compute-bound, not
-gather-bound. Threading the outer gather touches ~6% of prefill wall, and that share falls
-with depth.
+The handler's outer gather (the strided ggml Q/K/V/mask views -> dense fp16 tiles, one walk
+per view) and the F32 scatter are single-threaded host loops that the driver's
+`ROCKET_MM_PROFILE` does not see. A dedicated probe (`ROCKET_FA_TIMING`) splits the FA op
+into gather, on-NPU compute and scatter. At 16K (n_kv 1024..16384) the aggregate is gather 15%,
+compute 82% and scatter 3%. The gather share shrinks with depth (25% at 2K -> 15% at 16K),
+because the on-NPU per-head GEMMs grow faster than the O(n_kv) gather. So where the offload
+wins, attention is compute-bound, not gather-bound. Threading the outer gather touches ~6% of
+prefill wall, and that share falls with depth.
 
-The knob `ROCKET_FA_THREADS=k` splits all five host walks over the process-wide pool, each on
-its own outer index. It is worth 1.0389x of the pinned prefill wall at `k`=4 on `gemma4-12b`
-F16 at pp2048 [HW sweep 2026-09-07].
+The knob `ROCKET_FA_THREADS=k` (default 1, the serial walks) splits all five host walks over
+the process-wide pool, each on its own outer index. It is worth 1.0389x of the pinned prefill
+wall at `k`=4 on `gemma4-12b` F16 at pp2048 [HW sweep 2026-09-07].
 
 The 6% above is also the right size. The walks are 6.01% of that wall, and four workers
 recover 3.75% of it. A fit of `G_k` = `A`/`k` + `B` puts the fixed residue at 0.57%, so more

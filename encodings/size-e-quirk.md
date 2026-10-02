@@ -17,8 +17,8 @@ floating-point outputs the field takes its natural value: the stride encodes `by
 | fp16×fp16 | fp32 | 4 | 3 | 3 *(natural)* |
 
 So the int8 and int4 datapaths write their output strided as if each element were 8 bytes,
-even though int32 is 4 and int16 is 2. The accompanying surface multiplier is 8
-(`SURF_MULT=8`) for both.
+even though int32 is 4 and int16 is 2. The generators program the accompanying surface
+multiplier as 8 (`SURF_MULT=8`) for both.
 
 int16×int16 does not share the quirk. Its int32 output takes the natural value, as fp16's
 fp32 does: `size_e` 3 with the surface add × 4. It is bit-exact at N from 48 to 256
@@ -38,9 +38,9 @@ integer widths confirm this independently [HW sweep]:
   so most of the output is never written. Only `size_e=7`/`surf×8` writes the full output.
 - **int4 (int16 output)**: at precision=6, `size_e=1` writes only the first 16 N-columns
   (17-64 stay at the `0xAAAA` sentinel). `size_e=3` writes 32 columns. `size_e=7` writes
-  all 64 columns, bit-exact. `SURF_MULT` is irrelevant once `size_e=7`. So the int16
-  (int4-path) output strides with the same `size_e=7` quirk as the int32 (int8-path)
-  output.
+  all 64 columns, bit-exact. `SURF_MULT` is irrelevant once `size_e=7` (4, 8 and 16 pass at
+  M=4). So the int16 (int4-path) output strides with the same `size_e=7` quirk as the int32
+  (int8-path) output.
 
 ## Mental model
 

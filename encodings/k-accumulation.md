@@ -5,8 +5,8 @@ When K is too large to contract in one CBUF-resident tile, the matmul splits int
 and sums on the host in fp32, which reads every output tile `nKt` times
 (`read ∝ M·N·nKt`). The other accumulates the K-partials on the NPU through the DPU
 eltwise (EW) add path, and reads each output tile once (`read ∝ M·N`). For fp16 the
-on-NPU EW path is the shipping default (+19%, the operating mode). The host fp32 sum is
-the byte-exact fallback and oracle (`ROCKET_KACC=0`).
+on-NPU EW path is the shipping default (+19% on Gemma-4-12B prefill, the operating mode).
+The host fp32 sum is the byte-exact fallback and oracle (`ROCKET_KACC=0`).
 
 There is no on-chip third option: the conv accumulator cannot span tiles. The conv's CACC
 reduces K only within one CBUF-resident tile. The CORE register block has no
@@ -64,13 +64,13 @@ one field at a time. With all three matching, `N=16…384` (2 to 48 surfaces) an
 ### Precision cost
 
 The EW running sum accumulates in fp16, and each add rounds. The host path sums fp16
-partials in fp32. At real activation magnitudes the difference is ~0.2-0.4% per matmul
-(max_abs ~8 on a 3840×4096, worst ~56 on the deepest FFN).
+partials in fp32. On a standalone matmul the difference is ~0.2-0.4%
+(max_abs ~8 on a 512×3840×4096 whose outputs reach ~4000, worst ~56 on the deepest FFN).
 
 In practice it does not flip greedy LLM tokens. Gemma-4-12B output stays coherent,
-and the per-op verify is `nonfinite=0`, worst `max_abs~0.38`. So the fp16 EW
-K-accumulation is good enough here, and it is not bit-exact. Measured: +19% Gemma prefill
-(pp2048, 600 MHz).
+and the in-model per-op verify at M=512 is `nonfinite=0`, worst `max_abs~0.38`. So the fp16
+EW K-accumulation is good enough here, and it is not bit-exact. Measured: +19% Gemma-4-12B
+prefill (pp2048, 600 MHz, 2026-06-15).
 
 ## Integer EW K-accumulation
 

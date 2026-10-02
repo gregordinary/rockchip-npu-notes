@@ -133,11 +133,12 @@ after a reload.
 
 ## The per-core park of a shared clock
 
-The three NPU cores share one clock, but the clock patch parks it per core
-[HW sweep, source-confirmed]. The clock `scmi_clk_npu` is a single SCMI clock (id 6) with
-`fdab0000.npu`, `fdac0000.npu` and `fdad0000.npu` all as consumers: one rate row, three
-consumers in `clk_summary`. But `rocket_device_runtime_suspend()` gates on
-`rocket_job_is_idle(&rdev->cores[core])`, which is this core alone. It then calls
+The three NPU cores share one clock, but the clock patch without its refcount
+(§"The refcounted park") parks it per core [HW sweep, source-confirmed]. The clock
+`scmi_clk_npu` is a single SCMI clock (id 6) with `fdab0000.npu`, `fdac0000.npu` and
+`fdad0000.npu` all as consumers: one rate row, three consumers in `clk_summary`. But
+`rocket_device_runtime_suspend()` gates on `rocket_job_is_idle(&rdev->cores[core])`, which
+is this core alone. It then calls
 `clk_set_rate(npu_clk, ROCKET_NPU_POWER_DOWN_HZ)` on the shared clock.
 
 Suppose one core goes idle for its 50 ms `autosuspend_delay_ms` while the other two are
@@ -175,13 +176,13 @@ Variance collapses from 4.8x to ±3%. The domain still parks, verified after the
 goes `runtime_status=suspended` with the clock back at 200 MHz. The suspend path still runs,
 so the clock is always parked before the domain powers down. The pin `power/control=on`
 destroys that invariant. That is why the pin hard-locks the box at 900 MHz (above) and a
-raised delay would not.
+raised delay would not [expected].
 
 | | idles at 200? | flaps mid-run? | parks before power-down? | safe >600 MHz? |
 |---|---|---|---|---|
-| `auto`, 50 ms (default) | yes | **yes, 4.8x** | yes | yes |
+| `auto`, 50 ms (default) | yes | **yes, 4.8x** | yes | not validated |
 | `control=on` (the pin) | **no** | no | **no** | **no, hard-locks** |
-| `auto`, raised delay | yes | no | yes | yes |
+| `auto`, raised delay | yes | no | yes | not validated |
 
 Prefer the raised delay. The pin still works at 600 MHz and remains a valid measurement
 crutch. It buys nothing the delay does not, and it is never safe above 600.
@@ -254,9 +255,11 @@ submits and inflates any submit-bound number. An external RKNN-path writeup meas
 single `rknn_run` swing of −41% (59 -> 35 ms) from the CPU governor alone, with the NPU
 clock fixed. Pinning the NPU governor alone did nothing [external, proprietary path].
 
-So for a dispatch-floor measurement, pin the CPU cores to `performance` as well. For a
-prefill throughput measurement (a few large jobs, dominated by NPU `wait`), the CPU governor
-matters far less. See [not-mac-bound.md](not-mac-bound.md) §Dispatch-floor reducers.
+So for a dispatch-floor measurement, pin the CPU cores to `performance` as well. A llama.cpp
+prefill needs the pin too. Its NPU arm reads 1.079-1.130x faster pinned than under
+`ondemand`, at pp2048 on two `Q4_K_M` models [HW sweep 2026-09-29]
+([cpu-governor-and-offload.md](cpu-governor-and-offload.md) §"LLM prefill"). See
+[not-mac-bound.md](not-mac-bound.md) §Dispatch-floor reducers.
 
 ## Firmware (BL31): rate setting and the OTP ceiling
 
@@ -346,9 +349,9 @@ below 0.80 V. A `rocket_npu_uv` µV override exists for >600 MHz bring-up.
 
 The patch compiles in-tree on mainline kernel 7.1.0-1-arm64. It was validated 2026-06-22,
 with all 4 gates passing at 600 MHz (per-core `vdd->0.80 V`/`clk->600 MHz` dmesg, rail
-pinned at 0.80 V, matmul bit-exact 80-87 GFLOP/s warm, idle parks clk->200 MHz at 0.80 V,
-clean `rmmod`/reload). Activate it with `sudo modprobe rocket rocket_npu_clk_hz=600000000`
-(no pin).
+pinned at 0.80 V, matmul bit-exact 80-87 GFLOP/s warm, idle parks clk->200 MHz at 0.80 V
+before a clean `rmmod`/reload). Activate it with
+`sudo modprobe rocket rocket_npu_clk_hz=600000000` (no pin).
 
 This is a fixed-rate coupling, not devfreq. It gives f/V safety, not a governor. If dynamic
 scaling is ever wanted, the remaining gap is only an OPP/devfreq table.
@@ -357,9 +360,9 @@ scaling is ever wanted, the remaining gap is only an OPP/devfreq table.
 
 900 MHz and 1 GHz are a config change plus a deliberate V/f-and-thermal test, not new code.
 The voltage coupling above supplies the prerequisite. They are worth revisiting only after
-confirming that the dispatch/readback floor, not the clock, is what is left. It currently
-is: at 900 MHz the speedup is zero. The vendor's `set_read_margin` GRF tuning is unapplied.
-Given [not-mac-bound.md](not-mac-bound.md), the bigger prefill lever is fewer/bigger NPU
+confirming that the clock, not the dispatch/readback floor, is what is left. The floor
+currently is: at 900 MHz the speedup is zero. The vendor's `set_read_margin` GRF tuning is
+unapplied. Given [not-mac-bound.md](not-mac-bound.md), the bigger prefill lever is fewer/bigger NPU
 jobs, not more MHz.
 
 Before any sweep, capture this chip's OTP PVTPLL `max` (debug BL31). Watch temps during it

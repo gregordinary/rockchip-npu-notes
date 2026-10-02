@@ -100,7 +100,7 @@ several correctness constraints invert outright.
 | Completion | maskable completion interrupt | `PC_DONE` read-only in `INTERRUPT_MASK`, so the driver polls it. The DPU's completion interrupt does reach the GIC |
 | HW byte counters | reading the `0x2xxx` page hard-locks the SoC | `dt_wr`/`dt_rd`/`wt_rd` are readable |
 | Matmul tile cap | `max_tile` 256, `ngroup` 16 | `max_tile` 2048, `ngroup` 32 |
-| Where the wall is | DMA/dispatch-bound at this operating point | the host cube scatter was most of every wall, not the submit |
+| Where the wall is | DMA/dispatch-bound at this operating point | a per-op call is host-bound: the int8 matmul entry's device `wait` is 13.7-25.6% of a call at M 512-2048 [HW sweep, 2026-08-11]. Four resident ImageNet graphs, each one kick, are 43-66% submit + wait [HW sweep, 2026-08-03] |
 
 One hazard has no RK3588 counterpart at all. On the RK3576, **a wide output written through a
 partial output stage leaves the next submit of any kind writing nothing**. That holds across

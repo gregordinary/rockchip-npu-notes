@@ -52,7 +52,7 @@ weight once.
 | 1024×3840×4096 | 16 | 127.19 ms | 42.90 | 33.7% | 55.42 ms | 42.91 | 77.4% |
 
 The host share belongs to the one-shot path, not to the datapath. At 1024×3840×4096 the
-device time is the same to two decimals in both arms (42.90 against 42.91 ms) while the wall
+device time is the same to within 0.01 ms in both arms (42.90 against 42.91 ms) while the wall
 falls from 127.2 to 55.4 ms. The whole 71.8 ms difference is the per-call weight scatter. With
 the weight resident the device holds 67-82% of the wall. That is the internal check on the
 instrument as much as it is the result. The instrument reports the same device work

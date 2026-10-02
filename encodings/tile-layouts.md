@@ -41,7 +41,7 @@ contiguous innermost. C2 grows as the element gets smaller (denser):
 | bf16 | 8 (== fp16, 2-byte) |
 | tf32 | 4 (the 16-byte CBUF atom / 4 bytes, the first 4-byte input) |
 
-The fp16 atomic K block in the weight path is 16, and the feature atom is 8: NVDLA's
+The fp16 weight K-group is 32, and the feature atom is 8: NVDLA's
 FEATURE_ATOMIC_SIZE and the weight grouping differ. The C2 atom is `16 bytes / element
 size`:
 
@@ -59,7 +59,7 @@ source of the N-alignment requirement:
 
 | datatype | weight layout | N-group | K-group | notes |
 |---|---|---:|---:|---|
-| fp16 | `(N/16, K/32, 16, 32)` | 16 | 32 | `weight_fp16` (code: `(k-1)%16)*32`, K-group 32) |
+| fp16 | `(N/16, K/32, 16, 32)` | 16 | 32 | `weight_fp16` (code: `((k-1)%16)*32`, K-group 32) |
 | int8 | `(N/32, K/32, 32, 32)` | 32 | 32 | `weight_int8` |
 | int4 | `(N/64, K/32, 64, 32)` | **64** | 32 | `weight_int4`, nibble-packed |
 | int16 | `(N/16, K/32, 16, 32)` | 16 | 32 | `weight_int16` (== `weight_fp16`: int16 and fp16 share the 16-kernel weight group) |

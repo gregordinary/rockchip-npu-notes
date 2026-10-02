@@ -25,7 +25,7 @@ has three stages. Each can read an operand from memory and combine it with the a
 or the result before write-back:
 
 - **BS / X1**: `DPU_BS_CFG` 0x4040 (`BS_ALU_ALGO`/`BS_ALU_SRC`/bypass bits), operand through
-  BRDMA (`RDMA_BRDMA_CFG` 0x501C `BRDMA_DATA_USE[1:4]`, `RDMA_BS_BASE_ADDR` 0x5020).
+  BRDMA (`RDMA_BRDMA_CFG` 0x501C `BRDMA_DATA_USE[4:1]`, `RDMA_BS_BASE_ADDR` 0x5020).
 - **BN / X2**: `DPU_BN_*` 0x4060.
 - **EW / Y**: `DPU_EW_CFG` 0x4070, operand through ERDMA (`RDMA_ERDMA_CFG` 0x5034,
   `EW_BASE_ADDR` 0x5038). This is the existing `ew_accumulate` path.
@@ -35,17 +35,17 @@ or the result before write-back:
 Each SDP stage has a separate RDMA-config register, and its fields decide the operand
 shape:
 
-- **BS/X1, `RDMA_BRDMA_CFG` (0x501C)** has only `BRDMA_DATA_USE[1:4]`: no `DATA_MODE`, no
+- **BS/X1, `RDMA_BRDMA_CFG` (0x501C)** has only `BRDMA_DATA_USE[4:1]`: no `DATA_MODE`, no
   `DATA_SIZE`, no `SURF_MODE`. Data use 1 reads a per-channel `[C]` int32 bias vector and
   broadcasts it over all pixels, the bit-exact native int8-out depthwise. Data use 7 reads a
   64-byte group per 8 channels [HW sweep, RK1]. The group holds the int32 bias, an int16
   per-channel CPEND operand and the int16 per-channel multiplier
   ([out-cvt-converter.md](out-cvt-converter.md) §"Per-channel (per-axis) requant on the BS
   multiplier"). The stage is per-channel only, with no per-element addressing.
-- **BN/X2, `RDMA_NRDMA_CFG` (0x5028)** has only `NRDMA_DATA_USE[1:4]`. Its shape is
+- **BN/X2, `RDMA_NRDMA_CFG` (0x5028)** has only `NRDMA_DATA_USE[4:1]`. Its shape is
   identical to BS: per-channel broadcast, with no per-element addressing.
 - **EW/Y, `RDMA_ERDMA_CFG` (0x5034)** is the only per-element stage
-  (`ERDMA_DATA_MODE[30:31]`, `ERDMA_SURF_MODE`, `ERDMA_DATA_SIZE[2:3]`). `DATA_SIZE` even
+  (`ERDMA_DATA_MODE[31:30]`, `ERDMA_SURF_MODE`, `ERDMA_DATA_SIZE[3:2]`). `DATA_SIZE` even
   reaches 3 = 32-bit (used as fp32 for the precision-safe fp16 K-accumulation variant), so
   the bit width is not the limit. Its ALU computes in integer once the whole precision
   bundle says integer (§"The EW stage in integer mode" below).
@@ -129,9 +129,9 @@ program that fails, each moved alone on this program [HW sweep, RK3588, vendor d
 
 The CNA DCOMP block exists on the RK3588. Mesa `registers.xml` shows it: `DCOMP_CTRL`
 0x1100, `DCOMP_REGNUM` 0x1104, `DCOMP_ADDR0` 0x1110, `DCOMP_AMOUNT0..15` 0x1140-0x117C. It
-is fully decoded: the compressed format is NVDLA CWT/WMB/WGS [source-confirmed], and
-Teflon's dense programming is `DECOMP_CONTROL=0` pass-through. It is deprioritized. It
+is decoded for the dense mode: the compressed format is NVDLA CWT/WMB/WGS [source-confirmed],
+and Teflon's dense programming is `DECOMP_CONTROL=0` pass-through. It is deprioritized. It
 reduces weight-DRAM bytes and zero MACs, neither of which binds the matmul
-([../perf/not-mac-bound.md](../perf/not-mac-bound.md)), and it applies only to pruned
-weights. The full decode and the reasoning are in
+([../perf/not-mac-bound.md](../perf/not-mac-bound.md)), and it applies only to pruned weights.
+The full decode and the reasoning are in
 [cna-dcomp-weight-decompression.md](cna-dcomp-weight-decompression.md).

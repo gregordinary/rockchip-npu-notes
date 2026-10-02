@@ -10,8 +10,8 @@ C[M, N] = A[M, K] · B[N, K]ᵀ      (each output channel n = dot(input row m, w
 as a 1×1 (pointwise) convolution:
 
 - The K contraction axis becomes the convolution's input channels.
-- The N output axis becomes the output channels (each weight row n is a 1×1xK filter).
-- The M rows become the spatial positions of a 1xK×1 "image".
+- The N output axis becomes the output channels (each weight row n is a K×1×1 filter).
+- The M rows become the spatial positions of a K×M×1 "image" (K channels, height M, width 1).
 
 This is the same CNA→CORE→DPU datapath Mesa drives for real convolutions. That is why
 `rocket` accepts the regcmd: to the hardware it is a convolution.
@@ -223,7 +223,7 @@ tile that the bank check then refuses.
 ### Native K-reduction
 
 The conv reduces over K in a single pass up to the CBUF limit. It is hardware-tested
-correct to K = 10240 in one pass (fp16) [HW sweep]. K tiles to a few hundred only because
+correct to K = 10240 through the tiler (fp16) [HW sweep]. K tiles to a few hundred only because
 the output tile (Mt×Nt) fixes how much CBUF is left for Kt. Shrinking Mt and Nt grows Kt
 and collapses nKt. int4 on Gemma's `K=3840` reaches `nKt=1` (single-pass, zero readback
 K-accumulation) at Mt=Nt=64.
