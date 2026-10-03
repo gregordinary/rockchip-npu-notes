@@ -171,7 +171,7 @@ double rounding: its fixed-point multiply rounds, then its shift rounds again, w
 
 Per op, no element of 23.8M is off by two. Along a chain of a
 detector's layers, 12-14% of elements end two or more counts off. TFLite's optimized kernels
-drift from its reference kernels by the same amount [host model over two uint8 detectors,
+drift from its reference kernels by the same amount [host-computed, model over two uint8 detectors,
 2026-09-27, `tflite-rocket/tools/requant_chain.py`].
 
 Against a host model of TFLite's int32

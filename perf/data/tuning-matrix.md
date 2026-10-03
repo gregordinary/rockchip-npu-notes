@@ -901,8 +901,8 @@ has both a spin budget and a sleep fallback.
 ### The same histogram on a plain transformer, and the runtime term it exposes
 
 `gemma4-12b` F16 unpinned at pp2048, the published 1.046x `pin76` arm, 153932 samples and none
-lost, 95.44% in `llama-bench`, the arm reading 19.85 t/s against a published 19.94 mean [HW
-readout 2026-09-02, RK1; raw in `ro-session/trackd22-a55-symbols-12b.md`].
+lost, 95.44% in `llama-bench`, the arm reading 19.85 t/s against a published 19.94 mean
+[HW readout 2026-09-02, RK1; raw in `ro-session/trackd22-a55-symbols-12b.md`].
 
 | share | symbol |
 |---:|---|

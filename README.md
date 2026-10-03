@@ -38,6 +38,8 @@ Claims carry a tag that says how each was established:
 | `[TRM]` | Stated in Rockchip's Technical Reference Manual. |
 | `[expected]` | An outcome not yet measured: a prediction, a derived bound, or an estimate. |
 | `[hypothesis]` | A proposed cause for a measured effect, not yet isolated. The effect is established, and the explanation is not. |
+| `[live]` | Read once from a running board: a clock rate, a regulator state, a device-tree property, a module version. It carries the date and the kernel, because a reflash can change it. |
+| `[host-computed]` | Computed on the host with no device run: arithmetic on recorded numbers, a planner's output, a census of a model file. The computation is exact, and its inputs carry their own tags. An estimate is `[expected]` instead. |
 
 Where a fact is measured and a source agrees, both tags appear. A performance number carries its
 operating point: the part, the clock, and the shape. Negative results are recorded as carefully

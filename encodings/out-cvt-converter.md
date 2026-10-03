@@ -115,8 +115,8 @@ forces bit 14 afterwards. The two agree except where mantissa bits [22:9] are al
 Both rows are measured on both parts [HW sweep, RK3588 and RK3576, two scales per row,
 `tests/requant_edge_probe.c`, 2026-09-27]. The arm is a per-tensor int8-out entry with zero
 operands, every element scored against `rint(acc * scale)`. One scale in 16384 is on an edge.
-No per-tensor scale in nine detector and classifier `.tflite` models sits on one [host census,
-2026-09-27].
+No per-tensor scale in nine detector and classifier `.tflite` models sits on one [host-computed,
+census, 2026-09-27].
 
 A host model built on the same derivation agrees with the part at the wrong gain. Only a
 comparison against the float scale sees the defect. rocket-userspace derives every pair
