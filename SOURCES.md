@@ -1363,58 +1363,58 @@ and the FOSS Mesa driver (see the [README](README.md) evidence tags).
 - **SHARD** (Mohan et al., *"SHARD: A Compatibility Framework for Deploying Transformer
   Models on Edge NPUs"*, EuroMLSys '26, doi:10.1145/3805621.3807618, also the
   amohan.dev blog). It deploys the SigLIP-B/16 vision encoder (93 M params, the
-  SmolVLM-256M front-end) on the RK3588 through rknn-toolkit2. So it is a vendor-toolchain
-  workaround (graph sharding, GELU-approx / LayerNorm-decompose legalization, fusion
-  barriers, all RKNN-steering a regcmd path doesn't need). Three things transfer.
+  SmolVLM-256M front-end) on the RK3588 through rknn-toolkit2. It is a vendor-toolchain
+  workaround: graph sharding, GELU-approx and LayerNorm-decompose legalization, fusion
+  barriers. A regcmd path needs none of it. One finding transfers.
 
-  The first is the `0xe010 "REGTASK Overflow"`. It is an undocumented 13-bit
-  instruction-register width limit, operand indices > 8191 fail [source-confirmed]. That is
-  the same 13-bit register class as the `DPU_DATA_CUBE_WIDTH` 8191 corruption here
-  [HW sweep]. It is independent cross-validation, and a general operand-index ceiling, not
-  LUT-only, see [encodings/dpu-lut-activation.md](encodings/dpu-lut-activation.md).
+  The `0xe010 "REGTASK Overflow"` is an undocumented 13-bit instruction-register width limit:
+  operand indices > 8191 fail [source-confirmed]. That is the same 13-bit register class as the
+  `DPU_DATA_CUBE_WIDTH` 8191 corruption here [HW sweep]. It is independent cross-validation,
+  and a general operand-index ceiling, not LUT-only, see
+  [encodings/dpu-lut-activation.md](encodings/dpu-lut-activation.md).
 
-  The second is a 32 KB per-op scratchpad, which gives <= 16384 fp16 elems/op (their attention
-  tile 256×64). It is the tiling discipline this project already follows.
+  Its other limits are the toolkit's. The 32 KB figure comes from synthetic ONNX graphs run
+  through RKNN: a 32 KB tensor passes and a 32.1 KB one fails. That bounds what the vendor
+  toolchain accepts, and does not isolate a hardware buffer.
 
-  The third is Sandwich λ-scaling (host pre×0.1 / post×10.0), which keeps fp16 off a
-  "saturation cliff" (cosine 0.98->0.11 by layer 5 without it). The paper's finding that AWQ
-  fails "because the error stems from activation outliers, not weight sensitivity" validates
-  the Hadamard activation-rotation choice.
+  RKNN's Transpose limit is 16 KiB.
+  Its fallback warning names 8192 elements in an fp16 build and 16384 in an int8 one
+  [source-confirmed: rknn-toolkit2 2.3.2 build log]. The blog reads `0xe010` as a memory
+  overflow. The compiler's own message is a per-field width check.
 
-  Its numbers, on an Orange Pi 5 Max:
+  Its Table 1 does not reproduce as labeled. On a Turing RK1 (`rknpu` 0.9.8, rknn-toolkit2
+  2.3.2), each row maps to a run in SHARD's repository [HW sweep 2026-10-03]:
 
-  | Configuration | Time | Cosine | Note |
-  |---|---|---|---|
-  | SHARD | 2.24 s | 0.95 | |
-  | RKNN-FP16 | 19.63 s | 0.64 | CPU-fallback transpose |
-  | RKNN-INT8 | 1.40 s | 0.02 | Collapsed |
-  | CPU-FP32 | 30 s | | |
+  | Row | Paper | Same silicon |
+  |---|---|---|
+  | SHARD | 2.24 s, 0.95 | 3.600 s. Encoder-output cosine 0.956-0.975, post-LN 0.805-0.878 |
+  | RKNN-FP16 | 19.63 s, 0.64 | A whole caption `generate()`, 19.51-19.88 s. The fp16 encoder build alone takes 1.195 s, post-LN 0.992-0.998 |
+  | RKNN-INT8 | 1.40 s, 0.02 | 1.028 s, post-LN 0.03-0.08. The 1.40 s is SHARD's own fp16 baseline |
+  | CPU-FP32 | 30 s | Not measured |
 
-  That is a vendor baseline for the ViT-encoder primitives (MHA / LayerNorm / GELU / FFN) the
-  rocket stack runs on-NPU.
+  The pack's fidelity loss is its sigmoid-GELU substitution, and the toolkit lowers the tanh
+  GELU natively. The sandwich λ-scaling is exact algebra: a shard computes the unscaled
+  function, and only the tensors between shards are scaled. The paper's finding that AWQ fails
+  "because the error stems from activation outliers, not weight sensitivity" agrees with the
+  Hadamard activation-rotation choice. The method and the attribution are in
+  [perf/data/siglip-encoder.md](perf/data/siglip-encoder.md).
 
-  The 32 KB figure comes from synthetic ONNX graphs run through RKNN: a 32 KB tensor passes
-  and a 32.1 KB one fails. That bounds what the vendor toolchain accepts, and does not isolate
-  a hardware buffer. RKNN's Transpose limit on height × width, which the RKNN-Toolkit2 issue
-  #163 entry records, is also 16384 fp16 elements, and is the likely source [hypothesis]. The
-  blog reads `0xe010` as a memory overflow. The compiler's own message is a per-field width
-  check.
+- **poad42/smolvlm_rk3588_full_npu_native** (read at `fe3eefc`): SHARD's own code, by the same
+  author, so it does not corroborate SHARD independently. It carries the conversion and
+  runtime pipeline on the proprietary `rknn-toolkit2` and RKLLM bindings (no stated OSS license
+  on the main code), and the board logs behind the paper. None of the code transfers to the
+  rocket path.
 
-- **poad42/smolvlm_rk3588_full_npu_native**: a concrete deployment of the same SmolVLM-256M
-  front-end on the RK3588 NPU via the proprietary `rknn-toolkit2` + RKLLM bindings (no stated
-  OSS license on the main code). It is SHARD's model on the vendor toolchain, and the code
-  does not transfer to the rocket path. It corroborates SHARD independently. It splits the
-  vision encoder into 24 shards (12 layers × 2 blocks) across NPU cores 0-2, FP16/INT8 hybrid.
-  It wraps each NPU block in input/output scalers ("Sandwich Quantization" / InputScaler) to
-  keep fp16 off the saturation cliff. That is the same sandwich-scaling lever SHARD formalizes
-  as λ-scaling, and independent confirmation that this exact front-end needs activation
-  rescaling to survive NPU quant.
+  Its files say what each Table 1 row measured. The 19.63 s is
+  `sbc_results_runs/ablation_tiling_run.txt`, a 50-token `generate()` with the language model on
+  the CPU. The 1.40 s is `BASELINE_RESULTS`'s `monolithic_encoder_offload.rknn`, an fp16 build
+  that file scores at 0.99. `export_broken_int8.py` reaches the int8 0.02 by calibrating on
+  uniform noise with one planted 1000.0 element.
 
-  It also tiles attention into 32×32 blocks with small-chunk transposes, purely to dodge the
-  RKNN compiler's transpose handling. The regcmd path does not share that constraint. It
-  publishes no accuracy or perf numbers. It is a parallel effort to benchmark against, given
-  the SigLIP-B/16 encoder here runs the full block on the FOSS path at cosine 0.999998
-  ([encodings/siglip-encoder.md](encodings/siglip-encoder.md)).
+  SHARD's `disable_rules` turn off the toolkit's SDPA fusion, the rule that keeps the score
+  transpose out of the graph. Its per-layer "vanilla" sweep adds a score transpose (the
+  `score_transpose` probe) to force the CPU fallback. Two of its scripts do not parse at that
+  commit, and the reproduction is in [perf/data/siglip-rknn/](perf/data/siglip-rknn/).
 
 - **r/RockchipNPU thread**: field reports
   that int8/int4 LLMs on RK3588 need INT8_HADAMARD / INT4_HADAMARD for coherence
@@ -1536,10 +1536,11 @@ and the FOSS Mesa driver (see the [README](README.md) evidence tags).
 
 ## Related RK3588 NPU work
 
-- **SHARD** (EuroMLSys'26, doi:10.1145/3805621.3807618): RK3588 VLM via constraint-driven
-  graph rewrite, 8.7x over RKNN. It is a design precedent for per-shard precision selection
-  and for a per-layer FP16 hybrid. Its primitives (native GELU/LayerNorm, CBUF tiling, hybrid
-  CPU/NPU) are ones the rocket stack also implements.
+- **SHARD** (EuroMLSys'26, doi:10.1145/3805621.3807618): RK3588 VLM deployment through
+  constraint-driven graph rewrites on rknn-toolkit2. Its 8.7x over RKNN divides a whole caption
+  generate by its own encoder. On the same silicon its pack takes 3.0x the wall of the
+  toolkit's own fp16 encoder build (the SHARD entry in §"Quantization and coherence
+  references").
 - **clehaxze gemlog (2023)**: RK3588 NPU per-cycle MACs (2048 int4 / 1024 int8 / 512 fp16).
   It notes that RKNN matmul lacks multi-core (the rocket path runs 3-core via per-fd).
 - **widgetii/orangepi5plus-npu**: an independent FOSS RE of the RK3588 NPU on the same `rocket`

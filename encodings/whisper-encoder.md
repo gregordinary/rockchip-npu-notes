@@ -188,8 +188,7 @@ results:
 - **Per-block, fed the golden input: cos 1.000000** (isolated, so the block computation is
   faithful).
 - **Chained through all 6 blocks: cos >= 0.99997.** The final post-LN encoder output is
-  cos 0.99981 vs whisper's `embd_enc`, far past the >=0.99 bar (SHARD, a SOTA RK3588 VLM,
-  runs at 0.95).
+  cos 0.99981 vs whisper's `embd_enc`, far past the >=0.99 bar.
 - **The erf-vs-tanh GELU gap is a non-issue.** Raw |tanh-GELU − erf-GELU| peaks at 4.7e-4
   (x~2.7). At the block level the two are cos 1.0 / max_abs ~1.7e-4 (within fp16 noise).
   The block's erf GELU needs no tanh-approx variant to match whisper.

@@ -1,0 +1,23 @@
+# rknn-toolkit2 2.3.2, SHARD export_vanilla_baseline.py --layer 1 (escapes restored), three configs per graph
+## --attn-probe none
+CONFIG: FP16 vanilla (no quantization, no surgery)
+  SUCCESS: ./v_none/vanilla_L1_fp16.rknn (14984 KB)
+CONFIG: INT8 vanilla (standard PTQ, no surgery)
+  SUCCESS: ./v_none/vanilla_L1_int8.rknn (7902 KB)
+CONFIG: FP16 vanilla + disable_rules (no surgery, fusion-safe)
+  SUCCESS: ./v_none/vanilla_L1_fp16_safe.rknn (14994 KB)
+## --attn-probe score_transpose
+CONFIG: FP16 vanilla (no quantization, no surgery)
+Transpose will fallback to CPU, because input shape has exceeded the max limit, height(1024) * width(1024) = 1048576, required product no larger than 8192!
+Transpose will fallback to CPU, because input shape has exceeded the max limit, height(1024) * width(1024) = 1048576, required product no larger than 8192!
+  SUCCESS: ./v_score_transpose/vanilla_attntr_L1_fp16.rknn (15199 KB)
+CONFIG: INT8 vanilla (standard PTQ, no surgery)
+Transpose will fallback to CPU, because input shape has exceeded the max limit, height(1024) * width(1024) = 1048576, required product no larger than 16384!
+Transpose will fallback to CPU, because input shape has exceeded the max limit, height(1024) * width(1024) = 1048576, required product no larger than 16384!
+Transpose will fallback to CPU, because input shape has exceeded the max limit, height(1024) * width(1024) = 1048576, required product no larger than 16384!
+Transpose will fallback to CPU, because input shape has exceeded the max limit, height(1024) * width(1024) = 1048576, required product no larger than 16384!
+  SUCCESS: ./v_score_transpose/vanilla_attntr_L1_int8.rknn (8113 KB)
+CONFIG: FP16 vanilla + disable_rules (no surgery, fusion-safe)
+Transpose will fallback to CPU, because input shape has exceeded the max limit, height(1024) * width(1024) = 1048576, required product no larger than 8192!
+Transpose will fallback to CPU, because input shape has exceeded the max limit, height(1024) * width(1024) = 1048576, required product no larger than 8192!
+  SUCCESS: ./v_score_transpose/vanilla_attntr_L1_fp16_safe.rknn (15201 KB)

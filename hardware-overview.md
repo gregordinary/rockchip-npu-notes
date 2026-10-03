@@ -92,8 +92,8 @@ a conv or matmul task the CBUF must hold both the input-feature tile and the wei
 That constraint sets the K-tile size. With the input and weight both resident, the banks
 bound the contraction depth `Kt` that fits at a given output tile (Mt × Nt).
 
-The SHARD ViT effort corroborates this on-chip working-set pressure [source-confirmed].
-Its `0xe010 "REGTASK Overflow"` is a separate limit: a 13-bit operand-index ceiling
+The size limits SHARD reports for its ViT encoder are rknn-toolkit2's, not the CBUF's. Its
+`0xe010 "REGTASK Overflow"` is a separate limit: a 13-bit operand-index ceiling
 (operand indices > 8191), not a CBUF-capacity error. See
 [encodings/dpu-lut-activation.md](encodings/dpu-lut-activation.md).
 

@@ -246,10 +246,11 @@ The documentation in this repository (the prose notes, tables, and encoding writ
 licensed under [Creative Commons Attribution 4.0 International](LICENSE) (CC-BY-4.0): reuse it
 freely with attribution.
 
-The helper scripts under `ppu-rknn-capture/` and the harness under `perf/data/rknn-encoder/`
-carry their own `SPDX-License-Identifier: GPL-3.0-or-later` headers. They are licensed
-accordingly. The two C programs in `perf/data/rknn-encoder/` link Rockchip's proprietary
-`librknnrt`. Each also grants the GPL version 3 section 7 permission to convey it combined with
-that library. Third-party captures retain their upstream copyright and license terms, notably
+The helper scripts under `ppu-rknn-capture/` and the harnesses under `perf/data/rknn-encoder/`
+and `perf/data/siglip-rknn/` carry their own `SPDX-License-Identifier: GPL-3.0-or-later`
+headers. They are licensed accordingly. The two C programs in `perf/data/rknn-encoder/` link
+Rockchip's proprietary `librknnrt`. Three scripts in `perf/data/siglip-rknn/` import Rockchip's
+proprietary rknn-toolkit2 or rknn-toolkit-lite2. Each of these grants the GPL version 3
+section 7 permission to convey it combined with that library. Third-party captures retain their upstream copyright and license terms, notably
 `ppu-rknn-capture/registers.xml` (from the Mesa `rocket`/Teflon driver), credited in
 [SOURCES.md](SOURCES.md).

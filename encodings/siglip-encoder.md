@@ -37,6 +37,16 @@ The Idefics3/SigLIP position embedding uses a fractional-coordinate bucketize. F
 `siglip_extract.py` bakes the gathered table into the blob, so the C driver just adds
 `pos[p]` per patch.
 
+**transformers 4.55.0-4.57.3 do not reduce to raster order.** They compute each coordinate as
+`k / nb * (1 - 1e-6)`, which falls just below its bucket boundary on a full grid. Every position
+id then shifts down one: row and column 0 are used twice, and 31 never. Releases 4.46-4.53 and
+5.0 map a full grid to raster order [source-confirmed: `modeling_idefics3.py` at each release
+tag].
+
+On four real images the shifted model's post-LN features score cosine 0.399 against the
+raster-order model [host-computed]. An oracle built on one of those releases fails this encoder
+by that much. SHARD's board environment pins 4.57.1.
+
 ## Graph and the host/NPU split
 
 ```
@@ -57,19 +67,33 @@ are O(L·d) host glue (the same class as the irreducible host packing, see
 ## Fidelity
 
 The table gives the per-layer cosine of the on-NPU hidden states vs the fp32 HF oracle,
-averaged over the 12 layers (SHARD's metric) [HW sweep]. It also gives the post-LayerNorm
-output. Both are on one 512×512 image:
+averaged over the 12 layers [HW sweep]. It also gives the post-LayerNorm output. The input is
+the gate's own 512×512 synthetic image, smooth gradients plus mild noise (`siglip_reference.py`,
+seed 1234):
 
 | path | mean-layer cos | post-LN cos | embeddings cos |
 |---|---:|---:|---:|
 | simple (`rocket_siglip_encode`, host-handoff MLP) | 0.999983 | 0.999894 | 1.000000 |
 | resident (`rocket_siglip_encode_ctx`) | 0.999998 | 0.999987 | 1.000000 |
 
-The comparison points are SHARD 0.95, RKNN-FP16 0.64 and RKNN-INT8 0.02. The fidelity target
-(>=0.99) is cleared by four nines. Embeddings at cos=1.0 confirm that the im2col ordering
-and the patch projection are exact. The resident path is more accurate than the simple one
-because its LayerNorm runs in host fp32 and its GELU is the exact `gelu_pytorch_tanh`
-formula.
+The fidelity target (>=0.99) is cleared by four nines. Embeddings at cos=1.0 confirm that the
+im2col ordering and the patch projection are exact. The resident path is more accurate than
+the simple one because its LayerNorm runs in host fp32 and its GELU is the exact
+`gelu_pytorch_tanh` formula.
+
+Four real images (one from SHARD, three from COCO), each resized to 512×512, score the same as
+the synthetic image to within 0.0001 [HW sweep 2026-10-03, `7.2.8-1-arm64`, `rocket` 1.3.0]. Both inputs
+drive the residual stream to about 100 by layer 6, and to 520-700 at the encoder output:
+
+| path | mean-layer cos | encoder output cos | post-LN cos |
+|---|---:|---:|---:|
+| simple | 0.999984-0.999988 | 0.99997-0.99998 | 0.99981-0.99991 |
+| resident | 0.999997-0.999999 | Not reported | 0.99998-0.99999 |
+
+On the same silicon through the vendor stack, the same four images score post-LN cosine
+0.992-0.998 for rknn-toolkit2's fp16 whole-encoder build. SHARD's pack scores 0.80-0.88, and an
+int8 build 0.03-0.08 whatever its calibration [HW sweep 2026-10-03]. The method and the
+attribution are in [perf/data/siglip-encoder.md](../perf/data/siglip-encoder.md).
 
 GELU is a non-issue. The simple path uses the block's exact-erf 2-pass GELU (`x·Φ(x)`). The
 ~1e-3 erf-vs-tanh difference never drops cosine below five nines, so a tanh-gate LUT is
@@ -88,11 +112,16 @@ The operating point is the RK1 on mainline 7.1 with the NPU @ 600 MHz and `ROCKE
 | resident (prepacked weights + multicore + host softmax/GELU) | ~2.71 s |
 
 The resident figure is measured without the head fan-out and the GELU LUT, both on by
-default (§"Latency levers").
+default (§"Latency levers"). With both on, the resident warm median is 1.394-1.412 s over four
+real images, 20 calls each [HW sweep 2026-10-03, `7.2.8-1-arm64`, `rocket` 1.3.0, 600 MHz,
+`performance`, `taskset 0xf0`].
 
-SHARD reports 2.24 s on an Orange Pi 5 Max (RKNN, unknown NPU clock). The board, kernel,
-driver and clock all differ, so the latency comparison is indicative only. Cosine is the
-like-for-like comparison.
+On the same silicon through the vendor stack at 1000 MHz, rknn-toolkit2's fp16 whole-encoder
+build takes 1.195 s and SHARD's pack 3.600 s [HW sweep 2026-10-03, `6.1.172-vendor-rk35xx`].
+Those walls start at the embeddings and stop before the post-LayerNorm, and rocket's include
+both. The NPU clocks also differ, so the comparison is not iso-clock. The RKNN build spends 60%
+of its frame in one attention op on one core
+([perf/data/siglip-encoder.md](../perf/data/siglip-encoder.md)).
 
 ### Host runtime policy and the CPU governor
 
@@ -112,8 +141,7 @@ Pinning `performance` alone is −50 % and collapses the jitter. A76 placement i
 ~0.85 s. The "discard cold run" rule is itself a governor artifact: under `performance`,
 cold~warm. **Use `rocket-userspace/tools/npu_perf_governor.sh performance` before benching.**
 The table is this workload's measurement of the CPU-governor floor that
-[not-mac-bound.md](../perf/not-mac-bound.md) flags. Beating SHARD's 2.24 s from here is a
-structural problem (the levers below), not a tuning one.
+[not-mac-bound.md](../perf/not-mac-bound.md) flags.
 
 ### Clock-readback trap
 

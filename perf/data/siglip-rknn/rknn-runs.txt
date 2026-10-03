@@ -1,0 +1,64 @@
+=== mono models/fp16mono.rknn data2 out2/fp16mono_012 012
+{"mean_s": 1.1950663208961487, "median_s": 1.1950774192810059, "min_s": 1.1948578357696533, "max_s": 1.1952722072601318, "reps": 20, "warmups": 5} 
+rc=0 temp=42538
+=== mono models/int8broken.rknn data2 out2/int8broken_012 012
+{"mean_s": 1.0284100413322448, "median_s": 1.0284123420715332, "min_s": 1.0282666683197021, "max_s": 1.028534173965454, "reps": 20, "warmups": 5} 
+rc=0 temp=42538
+=== mono models/int8calib.rknn data2 out2/int8calib_012 012
+{"mean_s": 1.028726327419281, "median_s": 1.0287237167358398, "min_s": 1.0285224914550781, "max_s": 1.0289394855499268, "reps": 20, "warmups": 5} 
+rc=0 temp=42538
+=== shard models/shard_pack data2 out2/shard_pack
+{"mean_s": 3.6005885004997253, "median_s": 3.5988473892211914, "min_s": 3.5956273078918457, "max_s": 3.6231749057769775, "reps": 20, "warmups": 5} [0.22188353538513184, 0.08061933517456055, 0.2320406436920166, 0.08338212966918945]
+rc=0 temp=44384
+=== shard models/shard_notile data2 out2/shard_notile
+{"mean_s": 2.1246524333953856, "median_s": 2.1228675842285156, "min_s": 2.120861768722534, "max_s": 2.1409060955047607, "reps": 20, "warmups": 5} [0.10087275505065918, 0.08059215545654297, 0.10772538185119629, 0.08382296562194824]
+rc=0 temp=45307
+== out2/fp16mono_012  time {'mean_s': 1.1950663208961487, 'median_s': 1.1950774192810059, 'min_s': 1.1948578357696533, 'max_s': 1.1952722072601318, 'reps': 20, 'warmups': 5}
+  000000000139     e2e cos 0.998526  post-LN cos 0.992287  maxabs err 88.3  finite True
+  000000000285     e2e cos 0.999245  post-LN cos 0.997530  maxabs err 264  finite True
+  000000000632     e2e cos 0.999119  post-LN cos 0.996785  maxabs err 79.2  finite True
+  vlm_example      e2e cos 0.998949  post-LN cos 0.996021  maxabs err 151  finite True
+== out2/int8broken_012  time {'mean_s': 1.0284100413322448, 'median_s': 1.0284123420715332, 'min_s': 1.0282666683197021, 'max_s': 1.028534173965454, 'reps': 20, 'warmups': 5}
+  000000000139     e2e cos 0.528408  post-LN cos 0.049430  maxabs err 649  finite True
+  000000000285     e2e cos 0.549684  post-LN cos 0.079888  maxabs err 681  finite True
+  000000000632     e2e cos 0.527473  post-LN cos 0.057765  maxabs err 699  finite True
+  vlm_example      e2e cos 0.520871  post-LN cos 0.030166  maxabs err 694  finite True
+== out2/int8calib_012  time {'mean_s': 1.028726327419281, 'median_s': 1.0287237167358398, 'min_s': 1.0285224914550781, 'max_s': 1.0289394855499268, 'reps': 20, 'warmups': 5}
+  000000000139     e2e cos 0.587244  post-LN cos 0.056098  maxabs err 611  finite True
+  000000000285     e2e cos 0.607754  post-LN cos 0.053186  maxabs err 673  finite True
+  000000000632     e2e cos 0.625436  post-LN cos 0.063675  maxabs err 682  finite True
+  vlm_example      e2e cos 0.644591  post-LN cos 0.070968  maxabs err 644  finite True
+== out2/shard_pack  time {'mean_s': 3.6005885004997253, 'median_s': 3.5988473892211914, 'min_s': 3.5956273078918457, 'max_s': 3.6231749057769775, 'reps': 20, 'warmups': 5}
+  000000000139     e2e cos 0.956188  post-LN cos 0.804618  maxabs err 510  finite True
+    teacher-forced per block: mean 0.9992 min 0.9889 (#<0.99: 1)
+    identity floor per block: mean 0.7998 min 0.1133
+    blocks: 1.0000 0.9889 0.9998 0.9989 0.9999 0.9991 0.9999 0.9987 1.0000 0.9976 1.0000 0.9994 1.0000 0.9994 1.0000 0.9995 1.0000 0.9994 1.0000 0.9997 1.0000 1.0000 1.0000 1.0000
+  000000000285     e2e cos 0.974544  post-LN cos 0.872754  maxabs err 617  finite True
+    teacher-forced per block: mean 0.9992 min 0.9896 (#<0.99: 1)
+    identity floor per block: mean 0.8082 min 0.2886
+    blocks: 1.0000 0.9896 0.9998 0.9991 0.9999 0.9993 0.9999 0.9987 1.0000 0.9977 1.0000 0.9993 1.0000 0.9994 1.0000 0.9994 1.0000 0.9993 1.0000 0.9997 1.0000 1.0000 1.0000 1.0000
+  000000000632     e2e cos 0.960764  post-LN cos 0.877614  maxabs err 401  finite True
+    teacher-forced per block: mean 0.9992 min 0.9893 (#<0.99: 1)
+    identity floor per block: mean 0.8000 min 0.1504
+    blocks: 1.0000 0.9893 0.9998 0.9991 0.9999 0.9992 0.9999 0.9988 1.0000 0.9979 1.0000 0.9994 1.0000 0.9993 1.0000 0.9994 1.0000 0.9993 1.0000 0.9997 1.0000 1.0000 1.0000 1.0000
+  vlm_example      e2e cos 0.963031  post-LN cos 0.810862  maxabs err 525  finite True
+    teacher-forced per block: mean 0.9991 min 0.9883 (#<0.99: 1)
+    identity floor per block: mean 0.8068 min 0.2227
+    blocks: 0.9999 0.9883 0.9998 0.9988 0.9999 0.9991 0.9999 0.9986 1.0000 0.9977 1.0000 0.9994 1.0000 0.9995 1.0000 0.9996 1.0000 0.9994 1.0000 0.9997 1.0000 1.0000 1.0000 1.0000
+== out2/shard_notile  time {'mean_s': 2.1246524333953856, 'median_s': 2.1228675842285156, 'min_s': 2.120861768722534, 'max_s': 2.1409060955047607, 'reps': 20, 'warmups': 5}
+  000000000139     e2e cos 0.956174  post-LN cos 0.804235  maxabs err 510  finite True
+    teacher-forced per block: mean 0.9992 min 0.9889 (#<0.99: 1)
+    identity floor per block: mean 0.7998 min 0.1133
+    blocks: 1.0000 0.9889 0.9998 0.9989 0.9999 0.9991 0.9999 0.9987 1.0000 0.9976 1.0000 0.9994 1.0000 0.9994 1.0000 0.9995 1.0000 0.9994 1.0000 0.9997 1.0000 1.0000 1.0000 1.0000
+  000000000285     e2e cos 0.974660  post-LN cos 0.872753  maxabs err 617  finite True
+    teacher-forced per block: mean 0.9992 min 0.9896 (#<0.99: 1)
+    identity floor per block: mean 0.8082 min 0.2886
+    blocks: 1.0000 0.9896 0.9998 0.9991 0.9999 0.9993 0.9999 0.9987 1.0000 0.9977 1.0000 0.9993 1.0000 0.9994 1.0000 0.9994 1.0000 0.9993 1.0000 0.9997 1.0000 1.0000 1.0000 1.0000
+  000000000632     e2e cos 0.960750  post-LN cos 0.877505  maxabs err 400  finite True
+    teacher-forced per block: mean 0.9992 min 0.9893 (#<0.99: 1)
+    identity floor per block: mean 0.8000 min 0.1504
+    blocks: 1.0000 0.9893 0.9998 0.9991 0.9999 0.9992 0.9999 0.9988 1.0000 0.9979 1.0000 0.9994 1.0000 0.9993 1.0000 0.9994 1.0000 0.9993 1.0000 0.9997 1.0000 1.0000 1.0000 1.0000
+  vlm_example      e2e cos 0.963057  post-LN cos 0.810665  maxabs err 525  finite True
+    teacher-forced per block: mean 0.9991 min 0.9883 (#<0.99: 1)
+    identity floor per block: mean 0.8068 min 0.2227
+    blocks: 0.9999 0.9883 0.9998 0.9988 0.9999 0.9991 0.9999 0.9986 1.0000 0.9977 1.0000 0.9994 1.0000 0.9995 1.0000 0.9996 1.0000 0.9994 1.0000 0.9997 1.0000 1.0000 1.0000 1.0000

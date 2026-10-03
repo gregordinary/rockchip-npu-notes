@@ -1,0 +1,33 @@
+kernel, module loaded 2026-09-29: [drm] Initialized rocket 1.3.0 for rknn on minor 0
+=== vlm_example
+  layer  0 (embeddings)  cos=1.000000
+  layer 12              cos=0.999976
+  post_layernorm        cos=0.999864
+  MEAN over 12 layers    cos=0.999984   (worst layer 0.999955)
+  resident path: mean-layer cos=0.999998  post-LN cos=0.999986  OK
+  bench (resident): cold=1392.1 ms | warm median=1393.9 ms (min 1390.3, max 1398.9, n=20) = 0.717 img/s
+==== PASS ====
+=== 000000000139
+  layer  0 (embeddings)  cos=1.000000
+  layer 12              cos=0.999967
+  post_layernorm        cos=0.999811
+  MEAN over 12 layers    cos=0.999984   (worst layer 0.999955)
+  resident path: mean-layer cos=0.999998  post-LN cos=0.999982  OK
+  bench (resident): cold=1412.6 ms | warm median=1410.9 ms (min 1408.2, max 1417.4, n=20) = 0.709 img/s
+==== PASS ====
+=== 000000000285
+  layer  0 (embeddings)  cos=1.000000
+  layer 12              cos=0.999984
+  post_layernorm        cos=0.999903
+  MEAN over 12 layers    cos=0.999985   (worst layer 0.999953)
+  resident path: mean-layer cos=0.999997  post-LN cos=0.999991  OK
+  bench (resident): cold=1406.4 ms | warm median=1412.1 ms (min 1406.1, max 1417.1, n=20) = 0.708 img/s
+==== PASS ====
+=== 000000000632
+  layer  0 (embeddings)  cos=1.000000
+  layer 12              cos=0.999979
+  post_layernorm        cos=0.999910
+  MEAN over 12 layers    cos=0.999988   (worst layer 0.999968)
+  resident path: mean-layer cos=0.999999  post-LN cos=0.999990  OK
+  bench (resident): cold=1397.3 ms | warm median=1406.2 ms (min 1402.5, max 1413.9, n=20) = 0.711 img/s
+==== PASS ====
