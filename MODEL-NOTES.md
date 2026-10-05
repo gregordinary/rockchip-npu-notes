@@ -124,12 +124,13 @@ below the routing floor runs prefill on the CPU regardless, and proves nothing.
 
 ### ggml op ordinals
 
-The op enum in ggml shifts between versions, while `GGML_BACKEND_API_VERSION` stays at 2.
+The op enum in ggml shifts between versions without moving `GGML_BACKEND_API_VERSION`.
 Version 0.15 of ggml inserted an op at ordinal 55, so `FLASH_ATTN_EXT` moved from 73 to 74
 while `MUL_MAT` (29) held. A backend built on whisper.cpp 1.8.6 (ggml 0.14.0) and loaded
 into 1.8.7 or later passes the version check and still offloads matmuls. **It silently
 drops attention** [source-confirmed, ggml header diff, 2026-09-28]. The llama.cpp builds
-b10558 (ggml 0.20.2) and b11242 (0.25.3) share ordinals. Current `ggml-rocket` checks each
+b10558 (ggml 0.20.2), b11242 (0.25.3) and b11401 share ordinals [host-computed, header diff
+of all 102 ops, 2026-10-04]. Current `ggml-rocket` checks each
 ordinal it uses against the host's op names at load, and refuses a mismatch.
 
 ## Per-model notes
