@@ -277,3 +277,82 @@ resident and streaming paths instead require `M%4==0` and reject M==1, because t
 cheaply pad pre-packed weights. So the caller must pad a single-vector matmul on those
 paths to 4 rows. `M%4==0` is the hardware constraint. `M==1` works only because software
 pads it.
+
+## A convolution on the resident matmul
+
+A KxK convolution is one matmul over its unfolded input. The unfold writes `IC·KH·KW` planes of
+the `OH·OW` output pixels, each plane one tap's shifted copy with zeros past the edge. The weight
+as stored, `[OC][IC·KH·KW]`, is then B. The matmul's channel-planes output is the convolution's
+`[OC][OH][OW]`, so neither side needs a transpose. A 1x1 convolution at stride 1 with no pad is its
+own unfolded input.
+
+rocket-userspace's `rocket_conv2d_fp16_prepacked` runs the matmul resident, with its weight packed
+once, and the unfold on the host across the worker threads. The direct fp16 conv entry scatters its
+weight on every call. At pix2pix's eight encoder layers it summed 148.5 ms against ONNX Runtime's
+47.5 [HW sweep, RK1, 2026-09-28].
+
+The table compares the resident route with ONNX Runtime 1.27.0's per-node time for the same layer.
+The CPU ran 4 threads on the A76 cores with spinning off. The route used a three-worker context, two passes
+of nine warm calls each [HW sweep, RK1 at 600 MHz, `rocket` 1.3.0, governor `ondemand`,
+`tests/conv_model_bench.c`, 2026-10-08]:
+
+| pix2pix encoder layer | Resident im2col | CPU, 4 threads | Resident / CPU |
+|---|---:|---:|---:|
+| c1, 3×256×256 -> 64 | 2.29 ms | 1.98 ms | 1.16 |
+| c2, 64×128×128 -> 128 | 5.78 | 11.81 | 0.49 |
+| c3, 128×64×64 -> 256 | 4.27 | 10.48 | 0.41 |
+| c4, 256×32×32 -> 512 | 3.00 | 14.43 | 0.21 |
+| c5, 512×16×16 -> 512 | 2.71 | 6.94 | 0.39 |
+| c6, 512×8×8 -> 512 | 1.55 | 2.52 | 0.62 |
+| c7, 512×4×4 -> 512 | 1.27 | 2.15 | 0.59 |
+| c8, 512×2×2 -> 512 | 1.10 | 2.08 | 0.53 |
+
+The first layer loses because three input channels make a poor matmul. Each output pixel moves
+112 halves for 3072 MACs (K 48, N 64) [host-computed]. On Depth Anything v2-small's DPT head at
+518×518 the ratio runs 0.12-1.43. Its 3x3 convolutions at 19×19 and 37×37 lose, and its stride-2
+3x3 at 37×37 wins 8.2x [HW sweep, same operating point].
+
+### Splitting the matmul across the cores
+
+The resident matmul fans one call across its workers in one of two ways. Under the N split each
+worker takes a column slice and reads the whole input. Under the M split each worker takes a row
+slice and holds the whole weight. So the N split re-reads the input once per worker, and the M
+split re-reads the weight.
+
+Per call, the M split against the N split [HW sweep, same operating point]:
+
+| Entry and shapes | M split / N split |
+|---|---:|
+| Forward conv, M 256-1372, N 64-512 (pix2pix c3 and c4, Depth Anything's 19×19 and 37×37 neck) | 0.42-0.65 |
+| Forward conv, M 196, N 768 (a ViT patch embedding) | 0.88-0.94 |
+| Forward conv, M <= 64, N 512 (pix2pix c5-c8) | 1.3-1.9 |
+| ConvTranspose, M >= 1024 (pix2pix up6-up8, SAM's upscalers) | 0.51-0.92 |
+| ConvTranspose, M <= 256, B 16x A or more (pix2pix up1-up5) | 1.2-2.5 |
+
+Both resident entries take the M split once every worker gets 64 rows and N is at most 4M. That
+rule reproduces every row of the table.
+
+### Inside a session
+
+These prices are back-to-back calls. Inside ONNX Runtime the same entries run 1.01-1.04x them on
+Depth Anything's neck and 0.95-1.20x on pix2pix's encoder. That is with the CPU governor at
+`performance` [HW sweep, RK1, 2026-10-09 UTC]. On Depth Anything they ran 1.27-1.29x while each
+call's workers started on one core, the one its encoder pins the calling thread to. The governor
+note covers that and what the governor and the idle state add:
+[perf/cpu-governor-and-offload.md](perf/cpu-governor-and-offload.md).
+
+### Accuracy
+
+Integer data whose partials stay below 2048 comes back bit-exact against the direct reference.
+The sweep covered 18 shapes along stride, pad, dilation, an explicit extent, 1x1, a patch
+embedding, 1xK, IC 3 and unaligned OC and `OH·OW`. Every shape ran with one and three unfold
+threads. pix2pix's and Depth Anything's layers also ran under both splits and `ROCKET_KACC=0`.
+With real data and a bias, the worst error is 2^-14.8 to 2^-11.0 of each output's magnitude sum.
+The gate is 2^-9 [HW sweep, RK1, `tests/conv_resident.c`, 2026-10-08].
+
+### Scope
+
+Every time above is on the `ondemand` governor. Pinned at `performance`, the same back-to-back calls
+take 0.58-0.97x those times [HW sweep, 22 shapes]. The CPU arm ran at 4 threads only. The route refuses depthwise, the RK3576, and an unfold buffer past 64 MiB. That
+bound refuses Depth Anything's two largest head convs, 94 ms of the CPU's 272 ms of convolutions
+there.

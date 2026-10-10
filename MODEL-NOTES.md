@@ -380,8 +380,9 @@ reads 22.0 t/s at pp512 and 28.1 at pp2048, with the experts held resident on th
 native int8. That is 1.81x and 2.38x the CPU, and 1.64x -> 2.08x over the experts-on-CPU
 arm across pp512-pp2048. The fp16 expert route is a net loss (4.59 / 10.18). It
 re-dequantizes every expert every micro-batch, ~75 ms each, independent of the row count.
-The native route ingests each expert once and deletes that tax, at a one-time ~36 s
-ingest inside the first prefill, per `llama_context`.
+
+The native route ingests each expert once and deletes that tax. The one-time ingest is
+~21 s inside the first prefill, per `llama_context` [HW sweep 2026-10-09, 600 MHz].
 
 A residency pre-flight keeps the sign of the offload independent of the host's RAM. A
 stack it cannot reserve stays on the CPU whole. The alternative is a half-ingested stack

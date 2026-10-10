@@ -101,6 +101,63 @@ passes, each within 0.01 of the mean, on the mainline RK1 with `rocket` 1.3.0 [H
 2026-09-29]. The CPU arm of the same models keeps every core busy and reproduced a campaign that
 recorded no governor within 2%. See [cpu-repack-baseline.md](cpu-repack-baseline.md).
 
+## A per-node offload inside a model
+
+A frontend that offloads single layers pays the host's costs once per layer. Three were measured on
+the resident im2col convolution, alone and inside ONNX Runtime. They are the governor, the deep idle
+state, and the core each call's workers start on.
+
+### The governor and the idle state
+
+An idle gap was slept before each timed call, outside the timing [HW sweep, RK1 at 600 MHz,
+`rocket` 1.3.0, two passes, 2026-10-09 UTC]:
+
+| Layer | `ondemand`, no gap / 100 ms gap | `performance` | `performance`, `cpu-sleep` off |
+|---|---|---|---|
+| 3x3 stride 2, 384×37×37 -> 384 | 3.53 / 5.83 ms | 2.96 / 3.93 | 2.85 / 2.88 |
+| 3x3, 96×74×74 -> 64 | 5.86 / 7.39 | 5.41 / 5.83 | 4.81 / 4.89 |
+| 3x3, 64×148×148 -> 64 | 11.94 / 13.14 | 10.92 / 11.01 | 10.08 / 9.98 |
+
+The NPU cannot be the cause at these gaps, because each core's runtime PM waits 1000 ms before it
+suspends [live, kernel 7.2.9]. `ondemand` slows even the back-to-back call, since its
+`up_threshold` is 95. A call whose workers block on the fence reads as below that. The A76s spent
+26-66% of such a run at their 1 200 MHz floor.
+
+Pinned, a 100 ms gap still costs up to 0.96 ms on the smallest layer. Turning `cpu-sleep` off
+removes that and 1-11% of the back-to-back call. A completion waiter that spins
+(`ROCKET_BUSY_POLL=20000`) recovers none of it, a median of -4% of what `cpu-sleep` off buys over
+16 shapes [HW sweep]. The state's cost therefore lies in the threads each call starts and wakes,
+not in the waiter [hypothesis].
+
+### Worker threads started from a pinned caller
+
+A thread inherits its creator's CPU mask. Depth Anything's encoder pins its calling thread to one
+A76. Every per-node call made from that thread then started all of its workers on that core. Each
+queued there until it could pin itself to its own. The claimed convs ran 1.27-1.29x their
+back-to-back time, and created on their own cores they run 1.01-1.04x. The model's wall moves
+0.969-0.981x, and that of pix2pix, whose caller is not pinned, 0.926-0.958x [HW sweep, RK1,
+`performance`, one binary, three passes].
+
+A benchmark whose own caller is unpinned cannot show this cost, however its gaps and governor are
+set. `librocketnpu` creates every per-call worker on its target core.
+
+### Whole models
+
+These ran pix2pix through ort-rocket at 4 threads with spinning off, before the placement change.
+Each ratio pairs two arms inside one of five rotated passes, with memory reset before each arm
+[HW sweep, RK1, 2026-10-09 UTC]:
+
+| Arm | `performance` over `ondemand` | `cpu-sleep` off over `performance` |
+|---|---:|---:|
+| CPU EP | 0.928 | 0.993 |
+| ConvTranspose claim only | 0.892 | 0.985 |
+| ConvTranspose and Conv claims | 0.884 | 0.951 |
+
+The CPU-only arm moves here, where the busy XNNPACK arm above did not. With ONNX Runtime's spinning
+off, its threads block between operators and `ondemand` clocks them down as well. So a spin-off CPU
+arm carries the same bias as the NPU arm, smaller. See [../matmul-as-conv.md](../matmul-as-conv.md)
+§"A convolution on the resident matmul" for the entry these numbers ran on.
+
 ## Governor, idle-state and DDR settings
 
 For an NPU-against-CPU comparison and for a deployment:
@@ -110,7 +167,8 @@ For an NPU-against-CPU comparison and for a deployment:
   that is what sets the cost.
 - **Disable `cpu-sleep` for the same comparison**, with `echo 1` into every core's
   `cpuidle/state1/disable`, and put it back afterwards. It is worth ~3% to the NPU arm at
-  `pp512` and nothing to the CPU arm. Larger models and quantized ones are untested. In a
+  `pp512` and nothing to the CPU arm. A per-node offload gains 5% (pix2pix through ort-rocket),
+  and its spin-off CPU arm 0.7%. Larger models and quantized ones are untested. In a
   deployment, a service holding a `/dev/cpu_dma_latency` request under 220 µs keeps the state
   off at an idle-power cost [expected].
 - **On a vendor kernel, pin DDR as well**, with `performance` in `/sys/class/devfreq/dmc/governor`,

@@ -148,7 +148,7 @@ the file holds the claims and their evidence.
 | [hardware-overview.md](hardware-overview.md) | What the NPU is: its NVDLA lineage, the block pipeline, the cores and CBUF, and rated against measured throughput |
 | [nvdla-lineage.md](nvdla-lineage.md) | What the NVDLA's open documentation carries for this part, where it is wrong for this silicon, and the Rockchip additions it does not describe |
 | [datatypes.md](datatypes.md) | The datatype capability matrix: precision field, output type, MAC rate and use, per datatype |
-| [matmul-as-conv.md](matmul-as-conv.md) | How a matmul runs as a 1×1 convolution: the data flow, the layouts, tiling, and the alignment rules |
+| [matmul-as-conv.md](matmul-as-conv.md) | How a matmul runs as a 1×1 convolution: the data flow, the layouts, tiling, the alignment rules, and a KxK convolution run as an im2col matmul |
 | [depthwise-conv.md](depthwise-conv.md) | How a depthwise convolution differs from a direct one |
 
 ### Per-SoC sheets
@@ -211,7 +211,7 @@ the file holds the claims and their evidence.
 | [perf/bo-sync-cost.md](perf/bo-sync-cost.md) | The `PREP_BO`/`FINI_BO` cache-sync cost, which scales with BO size |
 | [perf/pool-completion.md](perf/pool-completion.md) | Why a pool submit on mainline `rocket` waits ~507 ms and resets a core |
 | [perf/clock.md](perf/clock.md) | The 200 MHz boot clock, raising it safely to 600 MHz, and the limits past it |
-| [perf/cpu-governor-and-offload.md](perf/cpu-governor-and-offload.md) | How the CPU governor biases an NPU-against-CPU comparison, and how to pin it |
+| [perf/cpu-governor-and-offload.md](perf/cpu-governor-and-offload.md) | How the CPU governor biases an NPU-against-CPU comparison, what it costs a per-layer offload inside a model, and how to pin it |
 | [perf/cpu-repack-baseline.md](perf/cpu-repack-baseline.md) | Why a quantized CPU baseline needs llama.cpp's weight repack, and the NPU's lead over a repacked CPU |
 | [perf/hw-byte-counters.md](perf/hw-byte-counters.md) | The NPU's missing DMA byte counters, and the DDR controller PMU that measures board traffic instead |
 | [perf/ppu-pooling-not-detile.md](perf/ppu-pooling-not-detile.md) | The PPU as a pooling engine that cannot de-tile |

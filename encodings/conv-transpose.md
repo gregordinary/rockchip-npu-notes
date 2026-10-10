@@ -284,9 +284,15 @@ at 600 MHz, `rocket` 1.3.0, governor `performance`, `tests/ct_model_bench.c`, 20
 | SAM upscaler 2, 64×128×128 -> 32 | 4.87 | 10.3 | 0.47 | 16.1 |
 
 The table is two rotated passes with ratios paired inside each pass. Five passes read 0.11-0.58.
-The matmul is 69-87% of a call from up4 on, and the single-threaded scatter-add is the rest. The
-CPU times are each node's share of a whole-model profile. Every weight is packed outside the
+The matmul is 69-87% of a call from up4 on, and the scatter-add, here on one thread, is the rest.
+The CPU times are each node's share of a whole-model profile. Every weight is packed outside the
 timing.
+
+The scatter splits by output channel, since each channel accumulates its own phase planes. On
+three threads it takes 0.45-0.47x its one-thread time at up6 and up7, and 0.56-0.57x at SAM's
+upscalers. The output pass is memory-bound, so three threads do not give 3x [hypothesis]. Inside
+ONNX Runtime it moves pix2pix's wall 0.946-0.972x over six rotated passes [HW sweep, RK1 at 600
+MHz, governor `ondemand`, `ROCKET_CONV_PROFILE`, 2026-10-08].
 
 ### Accuracy
 

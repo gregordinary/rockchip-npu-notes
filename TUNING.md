@@ -149,7 +149,7 @@ on the critical path at all:
 
 | Profile | Prefill per turn | What runs |
 |---|---|---|
-| Short | A chatty turn, tens of tokens | Prefill is below the offload floor (`ROCKET_MIN_M=128` for F16, `ROCKET_MIN_M_QUANT=512` for quant), so it runs on the CPU regardless of backend. The NPU does nothing for you here, and the turn is decode-bound |
+| Short | A chatty turn, tens of tokens | An F16 prefill of 32 tokens or more offloads (`ROCKET_MIN_M`), and a quantized one stays on the CPU below 512 (`ROCKET_MIN_M_QUANT`). Either way the turn is decode-bound, so the NPU does little for it |
 | Medium | 512-2048: a RAG chunk, a document paragraph, an agentic tool result | NPU prefill engages and wins |
 | Long or batched | >2048, or a large system pre-prompt re-processed every turn | The NPU's best case, and where residency and attention offload pay the most |
 
@@ -229,7 +229,9 @@ the CPU. The win grows with the model, from tiny.en at 1.18x to large-v3 at 2.14
 
 - **Keep `ROCKET_MIN_M` at 8 or above.** The default beam-5 search in whisper.cpp presents
   M=5 per decode step. A floor of 4 offloads that tiny GEMV, at a net 1.40x loss
-  end-to-end. The default 128 keeps beam decode on the CPU, and so does 16.
+  end-to-end. The default 32 keeps beam decode on the CPU, and so does 16. Against the old
+  default of 128 it changes nothing for whisper-small F16: 0.995-1.006x over three passes,
+  transcript byte-identical [HW sweep, 2026-10-09].
 - **Short utterances on a CTC or transducer encoder want `ROCKET_MIN_M=16`.** Parakeet
   runs 12.5 encoder rows a second of audio, so a 1-5 s voice command sits under the
   default floor and nothing offloads. At 16, Parakeet TDT 0.6B through whisper.cpp's
@@ -436,8 +438,10 @@ in the set, and its per-pass spread is the widest at 6.3%. Read its sign, not it
   its 72 expert stacks. The remaining 9 stay on the CPU, which is a partial offload and
   not a loss.
 - **Time:** a one-time expert ingest inside the first prefill, per `llama_context`. It
-  takes ~36 s on gpt-oss-20b and ~32 s on DeepSeek-V2-Lite. An NPU-BO pack dominates it,
-  and that pack is bytes-bound at ~500-545 MB/s rather than per-expert.
+  takes ~21 s on gpt-oss-20b and ~18 s on DeepSeek-V2-Lite [HW sweep 2026-10-09, 600 MHz].
+  Its NPU-BO pack runs ~1.3 GB/s, so it grows with the bytes held resident rather than
+  with the expert count. An expert that `llama-bench`'s warm-up never routed to ingests
+  inside a timed rep, so a MoE prefill figure from it carries part of the ingest.
 - **Delta:** gpt-oss-20b MXFP4 at `-b 2048 -ub 2048` reads 1.81x the CPU at pp512 and
   2.38x at pp2048. It reads 1.64x -> 2.08x over the experts-on-CPU arm across pp512-pp2048
   [HW sweep 2026-08-27, 600 MHz pinned]. At the llama.cpp default `-ub 512` it is
@@ -705,10 +709,7 @@ largest ones:
 - The SmolVLM2 resident `rocket_siglip_encoder` vision path is described but has no
   end-to-end benchmark. The generic clip drop-in is the only measured multimodal-vision
   number (1.19x).
-- Prompt-size crossover is characterized on a few models (`ROCKET_MIN_M` sweep on
-  0.8B/3B/8B). The exact short/medium/long boundary per model is not swept.
-- The 3B crossover sits near 24 rows on the current build, at 0.70x for pp16, 1.25x for
-  pp32 and 3.58x for pp128. The `ROCKET_MIN_M` sweep in the previous item read parity
-  near 64. So the default 128 forgoes wins from about 32 rows up on that model. The 0.8B
-  and 8B rows are not re-measured
-  ([perf/asr-cpu-relief.md](perf/asr-cpu-relief.md#where-the-floor-comes-from)).
+- The F16 prompt-size crossover sits at 21-25 rows on the 0.8B, 3B and 8B models measured. The
+  default `ROCKET_MIN_M` of 32 takes every win above it: 1.20-1.46x at pp32 and 1.96-3.90x at
+  pp128 against the faster CPU arm. That is on the governor `performance` [HW sweep, 2026-10-09]. A model
+  smaller than 0.8B, or one with much narrower matmuls, is not measured.

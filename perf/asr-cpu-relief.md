@@ -68,7 +68,7 @@ the short clips, where the fixed 30 s encode and the model load dominate. The mo
 An op reaches the NPU only above a row floor. There are two floors, and one of them is set
 for a different workload:
 
-- **`ROCKET_MIN_M` (default 128)** applies to F16/F32 weights. Whisper's models are F16 and
+- **`ROCKET_MIN_M` (default 32)** applies to F16/F32 weights. Whisper's models are F16 and
   its encoder runs 1500 rows, so this floor never binds on the encoder. It binds on
   whisper's decoder, which is its purpose. `whisper-cli` beam search batches 5 decoders
   into one call, so every decode step is M=5. A floor of 4 sends the whole decoder to the
@@ -138,10 +138,11 @@ needs measured.
 
 ### The quantized floor's clamp
 
-The knob cannot reach below 128, and that clamp sets the boundary. The function
-`rocket_min_m_quant()` never returns less than `rocket_min_m()`, whose default is 128
-[source-confirmed: `ggml-rocket.cpp`]. So `ROCKET_MIN_M_QUANT` values of 8, 32, 64, 96 and 128 are the same value, not
-merely similar in effect. The admitted-GEMM count is identical at all of them, for every
+The knob cannot reach below `ROCKET_MIN_M`, and that clamp set the boundary of this sweep. The
+function `rocket_min_m_quant()` never returns less than `rocket_min_m()`
+[source-confirmed: `ggml-rocket.cpp`], and the sweep ran with that floor at 128. So its
+`ROCKET_MIN_M_QUANT` values of 8, 32, 64, 96 and 128 were the same value, not merely similar in
+effect. The admitted-GEMM count is identical at all of them, for every
 model and clip length tested. It is 279 for SenseVoice and 24 or 217 for Parakeet, never
 anything between [HW sweep]. A sweep that looks for the edge below 128 sweeps one point.
 
@@ -198,9 +199,9 @@ is not where the value is.
 ## Short utterances below the F16 floor
 
 A voice command is one to five seconds of audio. At 12.5 encoder frames a second, that is 16-75
-rows. That is under the default `ROCKET_MIN_M` of 128, so nothing offloads and the NPU arm is the
-CPU arm. With the floor lowered, every encoder GEMM goes to the NPU and re-packs its weight on
-each call. The offload loses at no length measured. It ties the CPU arm's wall at 1.3-1.8 s while
+rows. The default `ROCKET_MIN_M` of 32 offloads a command from 2.6 s up, and below that the NPU
+arm is the CPU arm. With the floor lowered, every encoder GEMM goes to the NPU and re-packs its
+weight on each call. The offload loses at no length measured. It ties the CPU arm's wall at 1.3-1.8 s while
 freeing a third of the CPU, and from 2 s up it is also faster.
 
 Measured on an RK3588 (Turing RK1) on the mainline driver (`rocket` 1.3.0, kernel 7.2.8,
@@ -274,18 +275,22 @@ to sleep. Both forced-arm windows are short, 8-10 utterances each, so their STT 
 
 ### Where the floor comes from
 
-The 128 default sits above an F16 crossover measured on LLM prefill. In that measurement,
-Llama-3.2-3B read 0.35x at 16 rows and reached parity near 64. The current build, ggml-rocket
-`8b73e4c` on llama.cpp b11242, does not reproduce that table. The same model, NPU at floor 4
-against the CPU, `llama-bench` at 4 threads, two passes within 2% [HW sweep 2026-09-30]:
+The default of 32 sits above the F16 crossover measured on LLM prefill. The NPU at floor 4 ran
+against the faster of 4 and 8 CPU threads, through `llama-bench` on llama.cpp a7fb71f. The
+governor was `performance`, and two passes agreed within 0.04 [HW sweep 2026-10-09]:
 
 | prompt tokens | 16 | 32 | 64 | 128 |
 |---|---:|---:|---:|---:|
-| NPU / CPU | 0.70x | 1.25x | 2.34x | 3.58x |
+| Qwen3.5-0.8B F16 | 0.75x | 1.20x | 1.71x | 1.96x |
+| Llama-3.2-3B F16 | 0.78x | 1.40x | 2.51x | 3.68x |
+| Ministral-3-8B F16 | 0.77x | 1.46x | 2.75x | 3.90x |
 
-So on the current build the 3B crosses near 24 rows and Parakeet below 16. The 0.8B and 8B
-rows of that prefill table are not re-measured on the current build, and a smaller model
-crosses later.
+So the LLMs cross at 21-25 rows and Parakeet below 16. On a 176 s clip, whisper-small F16 runs
+0.995-1.006x its old-floor wall at 32 over three passes, with the transcript byte-identical. Its
+decoder's prompt passes of 64-127 rows offload at 32 and tie. The narrower models tie as well.
+Under `ondemand`, tiny runs 1.000-1.007x and base 1.005-1.014x at 32 against 128 [HW sweep
+2026-10-09]. The same work at 32 and 64 spreads 0.998-1.011x on this harness, and every
+transcript is byte-identical.
 
 ### The per-call weight pack
 
