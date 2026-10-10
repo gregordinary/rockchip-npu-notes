@@ -1,6 +1,6 @@
 #!/bin/bash
 # Why do the NPU arms read above the historical campaign? Three NPU arms, same ggml-rocket source
-# (8b73e4c; gr2-* are built from a tree byte-identical to it), 3 passes rotated, memory reset and a
+# (ggml-rocket as of 2026-09-28; gr2-* are built from a tree byte-identical to it), 3 passes rotated, memory reset and a
 # discarded warm-up before every arm. Runs as ROOT, queues on the board lock behind the campaign.
 #   old-pin : llama.cpp b10558 (REPACK=OFF build), governor performance
 #   new-pin : llama.cpp b11242, --repack 0,          governor performance

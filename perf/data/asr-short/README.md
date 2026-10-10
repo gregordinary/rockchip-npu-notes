@@ -5,7 +5,7 @@ The record behind [perf/asr-cpu-relief.md](../../asr-cpu-relief.md#short-utteran
 
 RK3588 (Turing RK1), mainline `rocket` 1.3.0 on kernel 7.2.8, NPU 600 MHz, CPU governor
 `ondemand` (not pinned), `taskset -c 4-7`, 4 threads. whisper.cpp v1.9.4 `parakeet-cli` with
-ggml-rocket `8b73e4c` built against its ggml, and Parakeet TDT 0.6B v3 F16 in whisper.cpp's own
+ggml-rocket as of 2026-09-28 built against its ggml, and Parakeet TDT 0.6B v3 F16 in whisper.cpp's own
 `.bin` format. llama.cpp b11242 for the LLM runs. Measured 2026-09-30 UTC.
 
 ## Files

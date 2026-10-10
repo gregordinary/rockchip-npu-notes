@@ -169,7 +169,7 @@ ROCKET MoE native-quant cosine vs CPU fp64 reference (real weights, real activat
 
 <!-- One board, one session, clock pinned at 600 MHz (power/control=on for all three NPU
      domains), CPU governor `performance` on all three clusters. RK1 (RK3588), 31 GiB,
-     kernel 7.2.0-1, llama.cpp 171974745 (b10558), rocket 1.3.0, rocket-userspace b6e364a.
+     kernel 7.2.0-1, llama.cpp 171974745 (b10558), rocket 1.3.0, rocket-userspace fc300d0.
 
      Three binaries, and the boundary matters -- do not read rows across it:
        [A] the pre-flight as first written. MoE budget from the shared auto reserve

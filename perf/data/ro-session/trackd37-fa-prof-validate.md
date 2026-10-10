@@ -2,7 +2,7 @@
      three policies, power/control=on, /dev/accel/accel0 otherwise free. The subject is the
      driver's own gate `tests/flash_attn_rocket`, run through both FA paths (ROCKET_FA_CHAIN=1
      and =0), knob ON and OFF, three passes with the knob order rotated between them so a board
-     drift cannot sit on one arm. Measured 2026-09-07 on rocket-userspace 8d17646 plus the
+     drift cannot sit on one arm. Measured 2026-09-07 on that day's rocket-userspace plus the
      max-range line, built on the board; librocketnpu.a 1fd95700abdad3143afdd04c6458b5f1.
      Raw: trackd37-fa-prof-validate.log (e9897f13be485e2d593bbe72c1281972). -->
 

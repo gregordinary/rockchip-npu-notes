@@ -2170,7 +2170,7 @@ and single ConvTranspose nodes, and leaves the rest of a graph on the CPU EP. It
 full per-model table. The vision rows here are warm medians on the RK1 at 600 MHz, governor
 `performance`, four passes with the arm order rotated. Both arms run under `taskset -c 4-7` at 4
 intra-op threads. The CPU EP runs at `ORT_ENABLE_ALL`, and the EP session with spinning off
-[HW sweep 2026-10-09, rocket-userspace `0cb5506`, ort-rocket `5e92ce5`].
+[HW sweep 2026-10-09, rocket-userspace `a1571b4`, ort-rocket `8667395`].
 
 | Model | Offloaded | Single stream, x the CPU EP | Faithfulness against the CPU EP |
 |---|---|---:|---|

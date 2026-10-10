@@ -17,7 +17,7 @@ smaller than the published ratios [HW sweep 2026-09-29]:
 The table is prefill t/s at pp2048, with `-b 2048 -ub 2048` on every arm. The ratios are paired
 within a pass, and they spread under 1% pass to pass. The board is an RK1 (RK3588) at 600 MHz on
 `rocket` 1.3.0 and kernel 7.2.8, with the governor at `performance`. The host is llama.cpp b11242
-built with `GGML_CPU_REPACK=ON`, and the backend is ggml-rocket `8b73e4c`. Each model ran three
+built with `GGML_CPU_REPACK=ON`, and the backend is ggml-rocket as of 2026-09-28. Each model ran three
 rotated passes (two for Qwen3.6-27B) with a memory reset before every arm.
 
 The NPU arm runs the MoE experts through the native-quant route, with all 4746 of DeepSeek's

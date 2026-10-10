@@ -2,7 +2,7 @@
      performance on all three policies, PIN_MASK=0xf0 with -t 4, llama-bench -p 2048 -n 0 -r 2 -v,
      two arms x three passes rotated, ratios paired within a pass, memory reset before every arm.
      Measured 2026-09-07. libggml-rocket.so 138de09d05f235f8c50c7d9d7df3eaa5 against
-     librocketnpu.a 1fd95700abdad3143afdd04c6458b5f1 (rocket-userspace 8d17646 plus the
+     librocketnpu.a 1fd95700abdad3143afdd04c6458b5f1 (rocket-userspace as of 2026-09-07 plus the
      max-range line). Raw: trackd36-faprofile-12b.md, trackd36-faprofile-12b.log.
      Every arm streamed, every arm 432 FA ops, n_kv [1024..2048]. -->
 

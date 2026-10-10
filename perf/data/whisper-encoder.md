@@ -73,7 +73,7 @@ build: whisper.cpp v1.8.6-56-g84bd03a4; ggml-rocket DL against whisper's bundled
 Turing RK1, mainline `rocket` 1.3.0, 600 MHz, CPU governor `performance` on every policy,
 `taskset -c 4-7`, `-t 4`, flash attention on (whisper.cpp's default; the unmasked encoder
 attention stays on the CPU). whisper.cpp `eacbd82`, shared and DL-capable; ggml-rocket
-`143f848` and rocket-userspace `333fc67`, built against it; `ROCKET_KACC=1`. Five
+`cfcc0f5` and rocket-userspace `c7e7c47`, built against it; `ROCKET_KACC=1`. Five
 interleaved reps per arm, the arm order alternating, page cache dropped and memory compacted
 before every arm. The 30 s window is `whisper-bench` (1500 positions). The 20 s window is
 `whisper-cli -ac 1000` on `jfk.wav`, whose encoder time is fixed by the window, not the clip.
