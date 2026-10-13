@@ -37,7 +37,7 @@ Every score is a cosine over all 1024×768 values, in fp64:
 - **Encoder output** compares the last residual stream, before the post-LayerNorm.
 - **Post-LN** passes both sides through the vision model's `post_layernorm`, the features the
   language model reads.
-- **Teacher-forced per block** feeds each of the 24 attention and MLP blocks the reference's
+- **Teacher-forced per block** feeds each of the 24 attention and FFN blocks the reference's
   own input. It is SHARD's validation metric.
 
 The encoder output carries outliers near 700 against a standard deviation near 18. Its cosine
@@ -112,7 +112,7 @@ the tensors between shards are scaled.
 
 SHARD's attention tiling (64 chunks of 16 query rows) is exact math, so the untiled pack scores
 identically. Tiling doubles each attention shard, 222-237 ms tiled against 101-112 ms untiled.
-The MLP shards stay at 80-84 ms either way [HW sweep]. Over twelve layers that is 1.5 s of wall.
+The FFN shards stay at 80-84 ms either way [HW sweep]. Over twelve layers that is 1.5 s of wall.
 
 ### The vendor fp16 graph
 

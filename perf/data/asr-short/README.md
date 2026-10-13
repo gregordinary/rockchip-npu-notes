@@ -1,4 +1,4 @@
-# Raw data for short-utterance STT
+# Raw data for short-utterance ASR
 
 The record behind [perf/asr-cpu-relief.md](../../asr-cpu-relief.md#short-utterances-below-the-f16-floor),
 "Short utterances below the F16 floor".

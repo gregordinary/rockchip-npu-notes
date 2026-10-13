@@ -1,8 +1,8 @@
 # Running your own compute on the RK3588 NPU
 
-This is a start-to-finish guide to driving the Rockchip RK3588 NPU through the mainline
-FOSS `rocket` DRM-accel driver. It ties together the components of this stack. Each step
-links to the repository that owns the detail.
+These steps drive the Rockchip RK3588 NPU through the mainline FOSS `rocket` DRM-accel
+driver, start to finish, and tie together the components of the stack. Each step links to the
+repository that documents the detail.
 
 This guide assumes the component repositories are checked out alongside these notes:
 
@@ -31,8 +31,8 @@ The component repositories live under `github.com/gregordinary/`, each by the na
 ```
 
 `rocket` is a generic register-command submitter: the kernel runs whatever CNA→CORE→DPU
-register program you hand it. The library expresses a matmul as a 1×1 convolution over
-those blocks, and emits those programs. The frontends map a model's operators onto the
+register program you hand it. The library runs a matmul as a 1×1 convolution over those
+blocks, and emits those programs. The frontends map a model's operators onto the
 library. The optional patches tune the kernel side. For the hardware reasoning, start with
 [../hardware-overview.md](../hardware-overview.md) and
 [../matmul-as-conv.md](../matmul-as-conv.md).
@@ -46,10 +46,10 @@ library. The optional patches tune the kernel side. For the hardware reasoning, 
 ## 1. Build the driver library
 
 Build librocketnpu (the `rocket-userspace` repository) and run one of its matmul
-tests against your device. This confirms the whole path works (the device shim, the
-register-command generation, and the NPU itself) before any model is involved. The
-library has no ML-framework dependencies and is usable on its own. See its README for
-the exact build and test commands.
+tests against your device. Its README gives the exact build and test commands. A passing
+matmul test confirms the whole path (the device shim, the register-command generation, and
+the NPU itself) before any model is involved. The library has no ML-framework dependencies
+and is usable on its own.
 
 ## 2. (Optional) Raise the NPU clock
 
@@ -91,13 +91,14 @@ not `/dev/accel/accel0`. `rknpu-submit` is a submit provider for that driver. Bu
 
 ## 4. (Optional) Probe DMA registers
 
-> **The RK3588 has no usable HW DMA byte counters.** The `0x2000` "amount"
-> page hard-locks the SoC on read, and the legacy `0x8000` offsets are config-only. See
+> [!CAUTION]
+> Reading the `0x2000` "amount" page hard-locks the SoC. The RK3588 has no usable hardware
+> DMA byte counters, and the legacy `0x8000` offsets are configuration only. See
 > [../perf/hw-byte-counters.md](../perf/hw-byte-counters.md).
 
-So the perf-counter patch in `patches/rocket` ships only a safe, read-only DDMA register
-probe (`0x8000`, disarmed unless loaded with `rocket_ddma_probe=1`). The probe
-characterizes those registers and is not a bytes-moved counter. Infer DMA traffic from
+The perf-counter patch in `patches/rocket` therefore provides only a safe, read-only DDMA
+register probe (`0x8000`, disarmed unless loaded with `rocket_ddma_probe=1`). The probe
+characterizes those registers, and does not count the bytes moved. Infer DMA traffic from
 wall-clock time, or measure it externally with a DDR/NOC PMU.
 
 ## Further reading

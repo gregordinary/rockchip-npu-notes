@@ -8,8 +8,9 @@ and §"In-model fused integration". Two things are reproduced here:
    (result: per-block cos 1.000000, final post-LN cos **0.99981** vs whisper's `embd_enc` on real
    audio; a double-precision golden of whisper's exact math is cross-checked == whisper at 0.99983).
 2. **In-model integration**: the whole encoder running on the NPU in stock whisper.cpp, producing a
-   **byte-identical transcript** at base.en / small.en / medium.en (but 3.4-4.4x slower: the fused
-   path is transfer-bound; see the note for why this is a correctness milestone, not a perf win).
+   **byte-identical transcript** at base.en / small.en / medium.en. It is 3.4-4.4x slower than the
+   CPU encoder. The note's §"In-model fused integration" attributes the cost per phase (the fused
+   path is transfer-bound) and compares it with the matmul-only offload.
 
 ## Files
 

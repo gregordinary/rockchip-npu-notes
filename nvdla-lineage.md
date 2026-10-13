@@ -1,15 +1,9 @@
 # The NVDLA ancestor and its documentation
 
-The Rockchip NPU is an NVDLA derivative, and NVDLA is documented in the open
+The RKNPU is derived from NVIDIA's NVDLA, which is documented in the open
 ([nvdla.org](http://nvdla.org/), hardware manual v1). That documentation is the only
-authoritative prose about this datapath. Rockchip publishes a register list in the TRM and
-nothing about semantics. So it is worth knowing which questions it answers, which it
-answers wrongly for this silicon, and which it cannot reach at all.
-
-The short version: **NVDLA is a floor, not a ceiling.** The structure (blocks, buffers,
-pipeline stages, register-file organization) transfers. The arithmetic details do not
-always. And several of the fields that matter most here are Rockchip additions NVDLA never
-had, so its silence about them means nothing.
+authoritative prose about this datapath: Rockchip publishes a register list in the TRM and
+nothing about semantics. The block map below pairs each RKNPU block with its NVDLA counterpart.
 
 ## Block map
 
@@ -23,17 +17,21 @@ had, so its silence about them means nothing.
 | PDP + PDP_RDMA | PPU + PPU_RDMA | `0x6000` / `0x7000` | planar pooling |
 | MCIF (memory interface) | DDMA | `0x8000` | arbitration / QoS / outstanding, see §"DMA arbiters" |
 | SRAMIF (second memory bus) | SDMA | `0x9000` | the on-chip-SRAM port |
-| GLB | global | `0xF008` | one `OPERATION_ENABLE` per block |
+| GLB | global | `0xF008` | `OPERATION_ENABLE`, one enable bit per block (bit 0 CNA). The regcmd trailer's enable word uses the same bits ([encodings/regcmd-task-model.md](encodings/regcmd-task-model.md)) |
 | CDP (cross-channel LRN) | **absent** | n/a | no channel-axis datapath. Feature-axis reduction is a ones-matmul |
 | BDMA (bridge DMA) | **absent** | n/a | no memory-to-memory copy engine |
 | RUBIK (reshape engine) | **absent** | n/a | the reason host de-tiling is irreducible |
 | n/a | PC | `0x0000` | Rockchip's own: a register-program fetcher, so a "hardware layer" is a memory buffer instead of a CPU write sequence |
 
-The three absences are load-bearing negatives elsewhere in these notes. No RUBIK is why
-[the host packing cannot be moved on-chip](perf/ppu-pooling-not-detile.md). No CDP is why
-[reduction over the feature axis is a matmul](encodings/feature-reduce.md).
+The structure transfers from NVDLA: the blocks, the buffers, the pipeline stages and the
+register-file organization (§"Mechanisms shared with NVDLA"). Some arithmetic details differ
+(§"Differences from NVDLA"). Several fields are Rockchip additions that NVDLA never had, and
+its documentation says nothing about them (§"Rockchip additions").
 
-## What transfers
+The absent RUBIK is why [the host packing cannot be moved on-chip](perf/ppu-pooling-not-detile.md).
+The absent CDP is why [reduction over the feature axis is a matmul](encodings/feature-reduce.md).
+
+## Mechanisms shared with NVDLA
 
 ### Ping-pong register file
 
@@ -42,10 +40,13 @@ per-hardware-layer groups sharing one address range, and one non-shadowed group 
 status and pointers. `PRODUCER` selects the group the CPU writes.
 `CONSUMER` is read-only, and says which group the datapath is sourcing. Hardware
 clears the running group's enable bit at layer end, advances `CONSUMER`, and starts
-immediately if the other group's enable is already set. **Writes to a group whose enable
-bit is set are dropped silently**: there is no error, and software cannot clear the bit.
+immediately if the other group's enable is already set.
 
-That maps onto the RK registers exactly:
+> [!CAUTION]
+> Writes to a group whose enable bit is set are dropped silently [source-confirmed]. No error
+> is reported, and software cannot clear the bit.
+
+The mechanism maps onto the RK registers exactly:
 
 | NVDLA | RK |
 |---|---|
@@ -55,15 +56,15 @@ That maps onto the RK registers exactly:
 | `D_OP_ENABLE` | `OPERATION_ENABLE[0]` `OP_EN` |
 
 `S_POINTER` sits at `0x1004`, `0x3004`, `0x4004`, `0x5004`, `0x6004` and `0x7004`. It also
-carries `POINTER_PP_EN`, `EXECUTER_PP_EN`, `POINTER_PP_MODE` and the two `PP_CLEAR` bits, which
-are Rockchip's automation of the advance. Every emitter in this project and in Mesa writes
-`0xE` (`PP_MODE | EXECUTER_PP_EN | POINTER_PP_EN`) and lets the hardware flip the pointers. It
-is also why the PC interrupt bits come in pairs (`CNA_FEATURE_0/1`, `CNA_WEIGHT_0/1`,
-`CNA_CSC_0/1`, `CORE_0/1`, `DPU_0/1`, `PPU_0/1`): the suffix is the register group, not
-a core.
+contains `POINTER_PP_EN`, `EXECUTER_PP_EN`, `POINTER_PP_MODE` and the two `PP_CLEAR` bits, which
+are Rockchip's automation of the advance. Every emitter in `librocketnpu` and in Mesa writes
+`0xE` (`PP_MODE | EXECUTER_PP_EN | POINTER_PP_EN`) and lets the hardware flip the pointers. The
+register groups are also why the PC interrupt bits come in pairs (`CNA_FEATURE_0/1`,
+`CNA_WEIGHT_0/1`, `CNA_CSC_0/1`, `CORE_0/1`, `DPU_0/1`, `PPU_0/1`): the suffix is the register
+group, not a core.
 
-NVDLA also states plainly what a task model must respect: **the hardware does no
-dependency tracking between layers**. Two pending layers cannot block each other. If one
+NVDLA's documentation states a rule that a task model must respect: the hardware does no
+dependency tracking between layers. Two pending layers cannot block each other. If one layer
 consumes the other's output, software must not schedule it until the producer has finished.
 
 ### Convolution buffer
@@ -76,16 +77,16 @@ The architectural spec requires four ports. Those are a "read port for feature d
 port for weight data, **write port for feature data, write port for weight data**". When
 weights are compressed, bank 15 is reserved for WMB. Otherwise data and weight share all 16.
 
-Two things follow for this silicon. First, the allocation is by bank count from the bottom.
-NVDLA has no CBUF base register at all, and a layer stages implicitly from zero. The RK's
-`CNA_CBUF_CON0` is that count, plus a granule allowance on the RK3576. Neither is an address
-partition, which is the architectural reason
+Two properties follow for this silicon. First, the allocation is by bank count from the
+bottom. NVDLA has no CBUF base register at all, and a layer stages implicitly from zero. The
+RK's `CNA_CBUF_CON0` is that count, plus a granule allowance on the RK3576. Neither is an
+address partition, which is the architectural reason
 [no partition was found on the RK3576](chips/rk3576.md).
 
-Second, the feature-write path is a separate, single port. That is what the surviving RK3576
-hypothesis rests on. Contention there predicts extent proportional to the aggressor's feature
-plane, indifference to weight bytes and to occupancy, and immunity to placement. All three are
-measured.
+Second, the feature-write path is a separate, single port. The open RK3576 hypothesis for its
+two-core corruption rests on that port [hypothesis]. Contention there predicts extent
+proportional to the aggressor's feature plane, indifference to weight bytes and to occupancy,
+and immunity to placement. All three are measured.
 
 ### Accumulator
 
@@ -93,8 +94,8 @@ CACC accumulates partial sums across the stripe loop within one hardware layer, 
 SRAM at INT34, INT48 or FP44 [source-confirmed]. It explicitly zeroes
 at the first stripe. It rounds and saturates to INT32/FP32 before the
 SDP, under a register NVDLA calls `D_CLIP_CFG.CLIP_TRUNCATE`, the RK's `CORE_CLIP_TRUNCATE`
-(`0x301C`). There is no cross-layer accumulate, which is the independent confirmation of
-[the K-accumulation ceiling](encodings/sdp-stage-precision.md).
+(`0x301C`). There is no cross-layer accumulate, which independently confirms
+[the accumulator's lifetime limit across convolution ops](encodings/sdp-stage-precision.md).
 
 ### DMA arbiters
 
@@ -102,39 +103,41 @@ The DMA arbiters are NVDLA's MCIF and SRAMIF, which are the RK's DDMA and SDMA. 
 five read clients with per-client arbitration weights and 2-bit QoS (`FEATURE`, `KERNEL`,
 `DPU`, `PDP`, `PC`). They also have outstanding-transaction limits, a round-robin/fixed
 arbiter select, and the AXI attributes.
-Nothing in this stack or in Mesa ever writes them. Read on an idle RK3588 core 0 they are
+
+Neither `librocketnpu` nor Mesa writes them. Read on an idle RK3588 core 0 they are
 `CFG_OUTSTANDING = 0x00000fff` (read outstanding already at the 8-bit maximum 255, write at
 15), `RD_WEIGHT_0 = 0x01010101` and `RD_WEIGHT_1 = 0x00000101`, with every client weighted
-equally [HW sweep, see [perf/hw-byte-counters.md](perf/hw-byte-counters.md)]. So the read path is
-not outstanding-limited at the default, and the only untried knobs are the relative weights
-and the write outstanding count.
+equally [HW sweep, see [perf/hw-byte-counters.md](perf/hw-byte-counters.md)]. The read path is
+therefore not limited by outstanding transactions at the default.
 
-## What does not transfer
+**Not characterized:** the relative weights and the write outstanding count.
+
+## Differences from NVDLA
+
+> [!NOTE]
+> An NVDLA arithmetic semantic is a prediction for this silicon until it is measured. The
+> rounding rule below is one that differs.
 
 ### Rounding rule
 
 NVDLA specifies that both the convertor and the truncate stage round half away from zero. The
-RK parts add a select, `OUT_CVT_SHIFT[30]`. **Every program here and in the vendor's corpus
-clears it, which rounds half to even** (0.5 -> 0, 1.5 -> 2, −0.5 -> 0, −1.5 -> −2). Setting it
-gives NVDLA's rule. Both settings are
-measured on the RK3576 and the RK3588, and the RK3576's BS-stage shift also rounds half to even
-[HW sweep, `tests/requant_round_probe.c`, `tests/rk3576_coeff_c.c`]. See
+RK parts add a select, `OUT_CVT_SHIFT[30]`. Every `librocketnpu` program and every program in
+the vendor's corpus clears it, which rounds half to even (0.5 -> 0, 1.5 -> 2, −0.5 -> 0,
+−1.5 -> −2). Setting it gives NVDLA's rule. Both settings are measured on the RK3576 and the
+RK3588, and the RK3576's BS-stage shift also rounds half to even [HW sweep]. See
 [encodings/out-cvt-converter.md](encodings/out-cvt-converter.md) for what that costs and why
-the other gates do not exercise it.
-
-Inherited datapath semantics are worth a prediction rather than a conclusion. This one was
-worth running because it was cheap to check and the documentation was confident.
+other tests do not exercise it.
 
 ### Rockchip additions
 
-The register map carries fields with no NVDLA counterpart, so the
-ancestor's silence about them is not evidence:
+The register map contains fields with no NVDLA counterpart, and NVDLA's documentation does not
+describe them:
 
 - `PC` (`0x0000`): the register-program fetcher. NVDLA is programmed by a CPU over its CSB. The
   RK streams a regcmd list from memory, which is the whole basis of `rocket`'s uAPI.
 - `CNA_CONV_CON1[16]` `DECONV` plus `CONV_CON3[13:11]/[10:8]` `DECONV_Y/X_STRIDE`: a
-  transposed-convolution mode. NVDLA has no deconvolution engine at any revision. The mode is
-  live on the RK3588 (see [encodings/conv-transpose.md](encodings/conv-transpose.md)).
+  transposed-convolution mode. NVDLA has no deconvolution engine at any revision. The mode
+  works on the RK3588 (see [encodings/conv-transpose.md](encodings/conv-transpose.md)).
 - `DPU_RDMA` `0x5024` (`BS_BASE_ADDR1`): an address the DPU reads a per-sign shift word through,
   `[5:0]` for non-negative results and `[13:8]` for negative. It is decoded on the RK3576, absent
   from Mesa's register map, and never written by the RK3588 emitters.
@@ -142,12 +145,12 @@ ancestor's silence about them is not evidence:
 
 ### Chip-to-chip differences
 
-Where the two chips disagree with each other, NVDLA cannot arbitrate. The RK3576's
-poisoning by a partial wide-output stage, its int32 writers' missing DPU completion, and its
-two-core corruption are all integration behavior. None has a counterpart in a single-core reference
-design.
+Where the two chips disagree with each other, the NVDLA documentation cannot decide between
+them. Three RK3576 behaviors are integration behavior: the next-submit corruption after a
+partial wide-output stage, the int32 writers' missing DPU completion, and the two-core
+corruption. None has a counterpart in a single-core reference design.
 
-## NVDLA features not pursued
+## NVDLA features not characterized
 
 ### Winograd (`CDMA_WG`)
 
@@ -158,10 +161,9 @@ extension, and an extra `pra_trunc` precision stage.
 The RK's `CNA_CONV_CON1.CONV_MODE` is a 4-bit field of which only `0`, direct, is known, so there
 is room for it.
 
-Winograd is not worth pursuing here. [The matmul is DMA/dispatch-bound rather than
-MAC-bound](perf/not-mac-bound.md) at this operating point, so fewer MACs buy nothing. The cost is
-an entirely new host cube layout and more CBUF pressure. If the dispatch floor falls far enough
-to make MACs the constraint, revisit it.
+At this operating point [the matmul is DMA/dispatch-bound rather than
+MAC-bound](perf/not-mac-bound.md), so fewer MACs do not raise throughput. The cost of Winograd
+is an entirely new host cube layout and more CBUF pressure.
 
 ### Multi-batch
 
@@ -169,17 +171,17 @@ Multi-batch is `CDMA_DC` only, with up to 32 cubes per layer and `BATCH_STRIDE`.
 is fully-connected layers: load the weights once, stream many activation sets, for "overall
 performance close to [batch] × [single-layer performance]".
 
-That is the shape of the LLM decode problem. In the matmul-as-conv formulation a matmul's M is
-already the batch axis, because M is the conv's spatial height. `librocketnpu` already reuses
-the weight across M, and
+NVDLA's multi-batch matches the shape of LLM decode. In the matmul-as-conv formulation a
+matmul's M is already the batch axis, because M is the conv's spatial height. `librocketnpu`
+already reuses the weight across M, and
 [decode is slow for a different reason](perf/decode-gemv.md). The one part that would be new
 is `BATCH_STRIDE`: NVDLA's batch cubes live at a fixed stride in memory rather than
 contiguously. No such field is identified in the RK map.
 
 ## Reading list
 
-Fetch the pages and read them as text rather than skimming the site. The pages are large, and
-the useful parts are deep in them.
+Fetch the pages and read them as text. The pages are large, and the relevant parts are deep in
+them.
 
 | page | what is in it |
 |---|---|
@@ -190,7 +192,13 @@ the useful parts are deep in them.
 | `nvdla.org/hw/format.html` | feature/weight cube formats and the compression tag layout |
 | `nvdla.org/hw/v1/ias/lut-programming.html` | the LE/LO hybrid LUT this stack's activations use |
 
-One rule from the precision page is worth quoting, because it is easy to get wrong. With an
-input zero point, convolution padding must be **valued** rather than zero:
-`PADDING_VALUE = −offset·SF`. `librocketnpu`'s encoders fold the input zero point into
-`CNA_PAD_CON1` for this reason.
+> [!CAUTION]
+> With an input zero point, convolution padding must be valued rather than zero:
+> `PADDING_VALUE = −offset·SF`, from the NVDLA precision page. On the RKNPU, `librocketnpu`'s
+> regcmd encoders fold the input zero point into `CNA_PAD_CON1` for this reason.
+
+## Evidence
+
+### Rounding rule
+
+The rounding measurement is `tests/requant_round_probe.c` and `tests/rk3576_coeff_c.c`.

@@ -1,54 +1,77 @@
-# The MRDMA trap (DPU-RDMA)
+# The MRDMA trap (DPU_RDMA)
 
-**Symptom:** a regcmd configures CNA, CORE and DPU correctly, and the submitted job times
-out with the output BO untouched. The `PREP_BO` deadline expires (`WAIT TIMEOUT -110`).
-There is no IOMMU fault and no kernel panic. The device never finishes.
+The DPU's read DMA, [DPU_RDMA](../GLOSSARY.md), has two sources: MRDMA, the main feed, and
+ERDMA, the eltwise operand feed. `DPU_RDMA_FEATURE_MODE_CFG` (`0x5044`) selects them through
+two bits, `flying_mode` and `mrdma_disable`. A plain convolution or matmul takes the DPU's main
+data from the convolution output, and its MRDMA must be disabled. An enabled MRDMA with nothing
+to read hangs the job (Erratum E1).
 
-**Cause:** the DPU's read DMA has two sources, MRDMA (the main feed) and ERDMA (the
-eltwise operand feed). `DPU_RDMA_FEATURE_MODE_CFG` (`0x5044`) governs them through two
-bits. Bit0 `flying_mode` selects the DPU main data (0 = DPU main data comes from the conv
-output, 1 = from MRDMA). Bit4 is `mrdma_disable` (1 = disable MRDMA).
+## Registers
 
-For a plain convolution or matmul with no eltwise add, the conv output is the DPU's main
-data, so **MRDMA must be disabled**. If `DPU_RDMA_FEATURE_MODE_CFG` stays at its default 0,
-`mrdma_disable` is unset, and MRDMA is enabled but unfed. The DPU read DMA then waits
-forever for data that never arrives, and the job times out.
+| Offset | Field | Bits | Reset | Function |
+|---|---|---|---|---|
+| `0x5044` `DPU_RDMA_FEATURE_MODE_CFG` | `flying_mode` | 0 | 0 | Selects the DPU main data: 0 = from the convolution output, 1 = from MRDMA |
+| `0x5044` `DPU_RDMA_FEATURE_MODE_CFG` | `mrdma_disable` | 4 | 0 | 1 = MRDMA disabled |
 
-The hardware symptom above and Mesa's `rkt_regcmd.c` both confirm the cause
-[HW sweep, source-confirmed]. Mesa always emits the DPU-RDMA block, with
-`mrdma_disable=1` on the no-eltwise path.
+## Programming requirements
 
-## The fix
+The DPU_RDMA block must match the operation the task runs:
 
-For a no-eltwise matmul, emit the DPU-RDMA block (`0x5xxx`) with `mrdma_disable=1`, which
-is Mesa's no-eltwise path. Include the DPU-RDMA bit in the enable mask. Mesa uses `0x1D` =
-bits 0,2,3,4, one more block than a config that forgets DPU-RDMA. A generator that
-configures CNA, CORE and DPU but never writes the `0x5xxx` domain produces the hang.
-Emitting the `0x5xxx` block with `mrdma_disable=1` is what makes a correct fp16 matmul on
-`rocket`.
+| Operation | DPU_RDMA programming |
+|---|---|
+| Plain convolution or matmul | `mrdma_disable` = 1, ERDMA disabled |
+| Eltwise op or fp16 K-accumulation | MRDMA enabled and fed (`COMB_USE(5)`), ERDMA armed ([k-accumulation.md](k-accumulation.md)) |
+| Two-buffer EW op, no convolution | `flying_mode` = 1, MRDMA fed from memory, ERDMA armed, `COMB_USE` bit 0 clear ([sdp-stage-precision.md](sdp-stage-precision.md)) |
 
-## The corollary trap (eltwise path)
+For a plain convolution or matmul, software must emit the DPU_RDMA block (`0x5xxx`) with
+`mrdma_disable=1`. Software must also include the DPU_RDMA bit in the enable mask,
+`PC_OPERATION_ENABLE` ([regcmd-task-model.md](regcmd-task-model.md)). Mesa uses `0x1D`, bits
+0, 2, 3 and 4, which is one more block than a mask without DPU_RDMA.
 
-The mirror-image hang hits the eltwise path. When you reuse a generator with an
-`ew_accumulate` field, you must set it explicitly to 0 for the plain path. A descriptor
-that leaves `ew_accumulate` uninitialized reads stack garbage. A nonzero value routes to
-the ERDMA-armed eltwise path and reproduces the same "timed out, output untouched" hang.
-The fix is one line: `dpu_desc.ew_accumulate = 0;`.
+> [!CAUTION]
+> A plain convolution or matmul programmed with the eltwise path's DPU_RDMA block hangs the
+> same way as Erratum E1. With the ERDMA armed in `DPU_RDMA_ERDMA_CFG` and the MRDMA enabled
+> with `COMB_USE(5)` in `DPU_RDMA_FEATURE_MODE_CFG`, the job times out with the output
+> untouched.
 
-So the DPU-RDMA block must match the op in both directions:
+## Software support
 
-- **Plain matmul**: `mrdma_disable = 1`, `ew_accumulate = 0`
-- **Eltwise or fp16 K-accumulation**: MRDMA enabled and fed (`COMB_USE(5)`), ERDMA armed
-  (see [k-accumulation.md](k-accumulation.md))
-- **Two-buffer EW op, no conv**: `flying_mode` 1, MRDMA fed from memory, ERDMA armed,
-  `COMB_USE` bit 0 clear (see [sdp-stage-precision.md](sdp-stage-precision.md))
+A register generator whose DPU descriptor has an `ew_accumulate` field must set it to 0
+explicitly for the plain path. A descriptor that leaves `ew_accumulate` uninitialized reads
+stack garbage. A nonzero value selects the ERDMA-armed eltwise path and produces the same
+"timed out, output untouched" hang. The fix is one line: `dpu_desc.ew_accumulate = 0;`.
 
-With the DPU-RDMA block wrong in either direction, the job times out silently and raises
-no useful error. That silence is what makes this a trap rather than a bug.
+## Known issues
 
-## Recovery note
+### Erratum E1: job timeout with the output untouched
 
-A wrong eltwise or K-accumulation config can **wedge the NPU**: the timeout carries over to
-the next submit even after you fix the config. When sweeping risky DPU-RDMA geometries,
-reload the `rocket` module (`rmmod`, then `insmod`) between failing attempts to clear the
-wedge.
+- **Description:** With `mrdma_disable` clear, MRDMA is enabled and has no data to read. The
+  DPU read DMA waits for data that never arrives, and the task never finishes [HW sweep,
+  source-confirmed].
+- **Conditions:** RK3588 under the `rocket` driver. A task that runs a plain convolution or
+  matmul with no eltwise operand, and leaves `mrdma_disable` clear. A register program that
+  configures CNA, CORE and DPU and never writes the `0x5xxx` block leaves
+  `DPU_RDMA_FEATURE_MODE_CFG` at its default 0, and meets this condition.
+- **Symptom:** The job times out, and the output BO is untouched. The `PREP_BO` deadline
+  expires (`WAIT TIMEOUT -110`). There is no IOMMU fault and no kernel panic [HW sweep].
+- **Workaround:** Software must program `mrdma_disable=1` in `DPU_RDMA_FEATURE_MODE_CFG`, and
+  must include the DPU_RDMA bit in `PC_OPERATION_ENABLE`. Mesa's no-eltwise path does both
+  [source-confirmed: Mesa `rkt_regcmd.c`]. With the `0x5xxx` block emitted this way, an fp16
+  matmul on `rocket` produces correct output.
+- **Status:** Open.
+
+### Recovery from a hang
+
+> [!CAUTION]
+> A wrong eltwise or K-accumulation configuration can leave the NPU hung. The next submit
+> also times out, even after the configuration is fixed. When you sweep DPU_RDMA geometries
+> that can hang, reload the `rocket` module (`rmmod`, then `insmod`) after each failing
+> attempt.
+
+## Evidence
+
+### Known issues
+
+The hardware symptom and Mesa's `rkt_regcmd.c` both confirm the cause [HW sweep,
+source-confirmed]. Mesa always emits the DPU_RDMA block, with `mrdma_disable=1` on the
+no-eltwise path.

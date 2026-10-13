@@ -1,219 +1,142 @@
-# RK3576 int8 conv register encoding, as an emitter
+# RK3576 register encoding
 
-The RK3576 NPU runs the same IP family as the RK3588 through the same mainline
-`rocket` driver. Its CNA/CORE/DPU blocks use a different geometry-register encoding at
-the same block bases. This sheet writes that encoding out as something you can emit,
-and records what running it on real silicon settles and what it does not. It is the
-register layer. The SoC-level parameter sheet (identity, integration, clocks, power) is
-[rk3576.md](rk3576.md).
-
-Provenance: RKNN-Toolkit2 register programs for known conv geometries, from two
-capture sets under
-[rocket-userspace `tests/data/rk3576-vendor-capture/`](https://github.com/gregordinary/rocket-userspace/blob/main/tests/data/rk3576-vendor-capture/).
-
-Found captures, from Ga Hing Woo's bring-up repo, real convolutions, including a
-MobileNet-shaped stem:
-
-| Capture | Geometry | What only it can show |
-|---|---|---|
-| `conv2d_rk3576.rknn` | ic 16, oc 128, k5 s2, 80×80 -> 40×40 | the normal `in_ch>4` path at k != 3, and a single task over the whole plane |
-| `dw_rk3576.rknn` | depthwise c32, k3 s1, 112×112 | the depthwise words, and a task windowed to 91 input rows |
-| `conv64_rk3576.rknn` / `conv0_rk3576.rknn` | ic 3, oc 32, k3 s2 | the first-conv ARGB sub-encoding, at two image sizes |
-| `iso_bias` / `iso_scale` / `iso_sum` | the `conv2d` geometry plus one appended op | what a DPU epilogue stage moves |
-
-Manufactured captures, in `dw/` and `dw/named/`. **A vendor capture can be built to
-order**, and that is the single most useful thing to know about this part. An ONNX
-compiled for `rk3576` emits the register program for whatever geometry it asks for. A
-diff then answers a question that a bit sweep answers slowly and ambiguously. Setting
-`group=C` gives the depthwise path at any channel count, kernel, stride and plane, and
-`do_quantization=False` on a float ONNX gives the float datapath. The scripts
-`dw/mkdw.py` and `dw/named/mknamed.py` rebuild both sets and carry the dependency pins.
-
-The found depthwise captures confound almost everything. In them, every C=32 program
-is stride 1 and every C=64 one is stride 2. Every one is k=3, every one is a multiple
-of 32 channels, and every one is a square plane. Manufactured captures separate all of
-it, at 22 channel counts from 8 to 256, both strides, kernels 1/3/5/7 and rectangular
-planes. The "Depthwise" section below transcribes four register formulas from them.
-
-The emitter built from them is
+This sheet describes the register encoding of the RK3576 NPU, as programmed through the
+mainline `rocket` driver. The RK3576 NPU is an [RKNPU](../GLOSSARY.md) of the same family as
+the RK3588's, with its blocks at the same bases. Its CNA, CORE and DPU use a different
+geometry-register encoding. The SoC parameter sheet, [rk3576.md](rk3576.md), covers identity,
+integration, clocks and power. The validation record,
+[rk3576-validation.md](rk3576-validation.md), lists the captures and tests behind each section
+here. The regcmd encoder in `librocketnpu` is
 [npu_regcmd_rk3576.c](https://github.com/gregordinary/rocket-userspace/blob/main/src/npu_regcmd_rk3576.c).
-The gate that diffs it against the captures register-for-register is
-[regcmd_rk3576_gate.c](https://github.com/gregordinary/rocket-userspace/blob/main/tests/regcmd_rk3576_gate.c).
-The emitter reproduces every checked register of every captured program, 110 conv
-programs, 88 of them depthwise, with no open field left.
 
-Register fidelity is not correctness, and depthwise is where the two part company. An
-emitter matching the vendor register for register across 88 depthwise programs still
-computed nothing. What it had wrong were the buffers the registers point at. A capture
-carries a register program and says nothing about the memory it addresses. Both of
-that path's buffer layouts are read off the part (see "Depthwise" below), and that
-lesson is general rather than a depthwise one.
+The sheet covers:
 
-The correctness gate is
-[rk3576_conv_gate.c](https://github.com/gregordinary/rocket-userspace/blob/main/tests/rk3576_conv_gate.c),
-a shape table swept in one process. It compares each entry against a CPU model
-bit-exactly over the whole surface. The table covers the envelope, the row window, the
-channel-group jump and the weight-slice boundary, with the depthwise envelope beside
-them. The gate runs gap-free on a `rocket` carrying the per-SoC `PC_TASK_CON` width. It
-reports every cold-start-wall retry it takes, so a run that prints none is a run the
-wall did not touch. All 102 shapes pass in 4.6 s.
+- The int8 convolution, with its CBUF budget, weight slice and coefficient buffer
+- The row window and the widths of the geometry fields
+- The first-conv ARGB sub-encoding
+- CBUF row reuse, and the stages a DPU epilogue appends
+- Depthwise convolution
+- The fp16 datapath
+- The DPU shift word and the `PC_TASK_CON` task-number width
+- Task completion, the IOMMU and BO lifetime under `rocket`
+- The matmul as a 1×1 convolution, and its int32 output
+- The DPU LUT, PPU pooling and the DPU's elementwise stage
+
+The register formulas are transcribed from RKNN-Toolkit2 register programs for known conv
+geometries.
+
+> [!NOTE]
+> A vendor capture can be built to order. RKNN-Toolkit2 emits the register program for
+> whatever geometry an ONNX model compiled for `rk3576` contains. Setting `group=C` gives the
+> depthwise path at any channel count, kernel, stride and plane. Setting
+> `do_quantization=False` on a float ONNX gives the float datapath. A diff between two such
+> captures identifies a field faster, and less ambiguously, than a bit sweep.
+
+> [!NOTE]
+> A capture contains a register program and nothing about the memory it addresses. A program
+> that matches a capture register for register can still produce incorrect output, because
+> the buffer layouts are not in the capture. The depthwise path's two buffer layouts are
+> measured on the SoC, in "Depthwise convolution". A program decoded from a `.rknn` file is
+> also the *stored* register set. A value the vendor runtime patches in at load time does not
+> appear in it.
 
 ## Corrections to the published map
 
-The published map is wrong in four places. Each correction is load-bearing: an emitter
-that takes the published reading silently mis-programs the part.
+The published map is Ga Hing Woo's `RK3576_CNA_MAP.md` (github.com/gahingwoo/linux-rk3576-npu).
+It differs from the hardware in four places. A regcmd encoder that takes the published reading of
+any of them programs the SoC incorrectly, and no error is reported:
 
-**The output-height field is not halved.** It is the number of output rows *this
-task* writes, minus one. The published halving comes from a capture whose task covers
-half its plane. The same conv captured as a single task writes the full `oh-1`.
+| Offset | Field | Published | Correct | Evidence |
+|---|---|---|---|---|
+| CORE `0x301c` hi | Output height | Halved | `oh_task-1`, the output rows the task writes, minus one | The `conv2d` capture: `0x27` = 39 for a 40-row output |
+| `0x1088`, `0x1070` | Feature-data address | `0x1070` on the ARGB path | `0x1088` on both datapaths | The `conv0` capture's fourth task: `0x1088` is `0x12360`, and `0x1070` is zero |
+| `0x1080` | Pad word | Open. A lookup keyed on stride and depthwise | The closed form below | The `conv2d` capture: `0x02020101` |
+| `0x103c` hi, `0x1044` lo | CBUF entries | `max(iw/4, ic/2)` | `ceil(iw*ic/64)` | The depthwise capture: 56 at `iw`=112, `ic`=32 |
 
-In `conv2d`, CORE `0x301c` hi is `0x27` = 39 for a 40-row output. The ARGB `conv0`
-full-plane task writes `0x6f` = 111 for 112 rows, and only its half-height slices
-write 55. Emit `(oh_task-1)<<16 | (ow-1)`, and the same `oh_task-1` at DPU `0x4024` /
-`0x4034` and RDMA `0x5010`.
+The output-height field is the number of output rows *this task* writes, minus one. Software
+must program CORE `0x301c` as `(oh_task-1)<<16 | (ow-1)`, and the same `oh_task-1` at DPU
+`0x4024` / `0x4034` and RDMA `0x5010`.
 
-**The feature-data address is `0x1088` on both datapaths**, not `0x1070` on the
-ARGB path. Register `0x1070` reads zero in every capture, including the one program
-that provably needs a non-zero feature address. The `conv0` capture's fourth task reads
-input rows 111.. of a 224-wide 3-channel image, and `0x1088` carries exactly
-`111 * 224 * 3 = 0x12360`. Register `0x1070` is zero in that same program. The only
-address register that coincides with the RK3588 is the weight base (`0x1110`).
+The feature-data address is `0x1088` on both datapaths, the ARGB first-conv path included.
+Register `0x1070` is zero in every capture. The only address register at the same offset as
+on the RK3588 is the weight base (`0x1110`).
 
-**The pad word `0x1080` is closed form**, not open. It carries four byte fields:
+The pad word `0x1080` has a closed form, four byte fields:
 
 ```
 0x1080 = pad_right<<24 | pad_bottom<<16 | pad_left<<8 | pad_top
 ```
 
-where the leading pads are the configured padding and the trailing two are the
-pad *actually consumed* by this task's last window,
-`max(0, (out-1)*stride + k - (pad_lead + in_extent))`. The formula reproduces all four
-captures exactly, including the two that make it unambiguous. One is `conv2d`'s
-asymmetric SAME padding (l1 r2 t1 b2 -> `0x02020101`). The other is the depthwise task
-whose row window stops short of the image bottom. Its bottom pad is 0 while its right
-pad is 1 (`0x01000101`). The published rule, a lookup keyed on stride and depthwise,
-predicts `0x00000101` for `conv2d` and is wrong.
+The leading pads are the configured padding. The trailing two are the pad consumed by this
+task's last window, `max(0, (out-1)*stride + k - (pad_lead + in_extent))`.
 
-So there is no configured trailing pad, and that is how an asymmetric pad is
-expressed. The trailing fields are a function of the output extent and the leading
-pad. A caller who wants TFLite's SAME at an even plane and stride two
-(`pad_before = 0`, `pad_after = 1`) asks for a leading pad of zero. It also asks for
-an output extent one larger than the symmetric formula gives, and nothing has to be
-materialized in the feature buffer. The fields `rocket_conv2d_desc.oh/.ow` name that
-extent, with zero meaning the symmetric derivation.
+The pad word has no configured trailing pad, and an asymmetric pad is programmed through the
+output extent. The trailing fields are a function of the output extent and the leading pad.
+For TFLite's SAME at an even plane and stride two (`pad_before = 0`, `pad_after = 1`), software
+programs a leading pad of zero. It also programs an output extent one larger than the
+symmetric formula gives, and nothing has to be materialized in the feature buffer. In
+`librocketnpu`, the fields `rocket_conv2d_desc.oh/.ow` name that extent, with zero meaning the
+symmetric derivation.
 
-The bound is the kernel: a trailing pad of `k` or more is an output row whose whole
-window is pad. Six shapes of the int8 correctness envelope carry a zero leading pad
-against a consumed trailing one, direct and depthwise, and all are bit-exact. The float
-path has never been run through that geometry and refuses it. [HW sweep, H96 MAX M9]
+The kernel bounds the trailing pad: a trailing pad of `k` or more is an output row whose
+whole window is pad. A zero leading pad against a consumed trailing one is bit-exact on the
+int8 direct and depthwise paths [HW sweep, H96 MAX M9]. The float path is not characterized
+at that geometry, and `librocketnpu` refuses it there.
 
-**The CBUF entries word is `ceil(iw*ic/64)`, not `max(iw/4, ic/2)`.** It is the count
-of 64-byte CBUF granules in one feature row. The two forms agree on every capture the
-published map was fitted to, which is why the map carries the second one. They part
-company as soon as `ic/2` exceeds `iw/4`, and the depthwise capture is exactly that
-case.
+The CBUF entries word is `ceil(iw*ic/64)`, the count of 64-byte CBUF granules in one feature
+row. The published `max(iw/4, ic/2)` agrees with it only where `ic` is 16 or `iw` is 32
+[host-computed]. That covers the captures the published map was fitted to. The depthwise
+capture separates the two. At `iw` 112 and `ic` 32 the granule count is 56, and the max form
+gives 28. A narrow, deep tile, such as a 1×1 pointwise convolution over a small plane, is in the
+region where the two differ.
 
-At `iw`=112 and `ic`=32, the granule count gives 56 and the max form gives 28. The
-capture holds 56 at both `0x103c` hi and `0x1044` lo. The distinction is invisible at
-the shapes the map was derived from and load-bearing for any narrow-and-deep tile (a
-1×1 pointwise over a small plane sits squarely in the diverging region).
+## Unnamed registers and their RK3588 equivalents
 
-## Registers the map left unnamed, and their RK3588 equivalents
-
-Four of the offsets recorded as "RK3576-only, no RK3588 counterpart" are the same
-registers the RK3588 has, moved:
+The offsets below are RK3588 registers at a new offset. The published map records several of
+them as RK3576-only, with no RK3588 counterpart:
 
 | RK3576 | Function | RK3588 |
 |---|---|---|
 | `0x1048` | CVT control word, `data_sign<<3 \| cvt_type<<1 \| cvt_bypass`, identical packing | `CNA_CVT_CON0` `0x104C` |
 | `0x104C` / `0x1050` | the four CVT scales, two per register (`scale1<<16 \| scale0`, `scale3<<16 \| scale2`) | `CNA_CVT_CON1..4`, one each |
-| `0x1054`-`0x105C` | the CVT offsets (non-zero only on the ARGB path, where they carry the per-channel -128) | folded into the same CON1..4 |
+| `0x1054`-`0x105C` | the CVT offsets (non-zero only on the int8 ARGB path, where the captures set them to -128 per channel, and inert there: §"The int8 ARGB input domain") | folded into the same CON1..4 |
 | `0x108C` | burst lengths, `weight_burst<<16 \| data_burst`, `0x000F000F` | `CNA_DMA_CON0` `0x1078` |
 | `0x103C` hi, `0x1044` lo | CBUF data entries, `ceil(iw*ic/64)`, written twice | `CNA_CBUF_CON1` `0x1044` |
 | `0x1084` | the CNA border pad constant | `CNA_PAD_CON1` `0x1184` |
-| `0x5024` | base of the DPU shift word, a per-task operand, not a spare (see below) | the register fields `BS_MUL_CFG.BS_MUL_SHIFT_VALUE` `0x4048` and `DATA_FORMAT.BS_MUL_SHIFT_VALUE_NEG` `0x4010` |
-
-The identification is by value, not by analogy. The int8 conv's CVT word is `0x0b` in
-both encodings, and the burst word is `0x000F000F` in both, for the same reason.
+| `0x5024` | base of the DPU shift word, a per-task operand rather than a spare (see below) | the register fields `BS_MUL_CFG.BS_MUL_SHIFT_VALUE` `0x4048` and `DATA_FORMAT.BS_MUL_SHIFT_VALUE_NEG` `0x4010` |
 
 The kernel word has a closed form. Register `0x1024` hi is `((kw-1)<<8) | (kh-1)`, the
 width in bits [31:24] and the height in [23:16]: `0x0202` at k=3, `0x0404` at k=5 and
-`0x0000` at k=1. The `conv2d` capture is the only one that shows a second k. The published
-map carries it as a two-entry lookup, and it is one expression.
+`0x0000` at k=1. The published map gives it as a two-entry lookup.
 
-Every capture is square, so the captures cannot tell the two halves apart. Inception V3's non-square kernels can. Its 34
-layers at 1×7, 7×1, 1×3 and 3×1 are bit-exact with the width in the high byte. With the
-halves swapped they are wrong in every element region
-[HW sweep, H96 MAX M9, `tests/rk3576_net_gate.c --net iv3`].
+> [!CAUTION]
+> Every vendor capture has a square kernel, so no capture shows which byte of `0x1024`
+> contains the width. With the two bytes swapped, the non-square kernels 1×7, 7×1, 1×3 and 3×1
+> produce incorrect output in every element region [HW sweep, H96 MAX M9]. Software must
+> program the kernel width in bits [31:24] and the height in [23:16].
 
 The OUT_CVT triple is `0x40AC` / `0x40B0` / `0x40B4`: offset, scale and shift, in three
-consecutive registers. It is the same requant the RK3588 puts at `0x4080`-`0x4088`. The
-reading comes from position (a small signed value ahead of a scale and a shift), and a
-register sweep on hardware confirms it. Forcing the offset to 16 adds exactly 16 to
-every output channel, and forcing the scale to 0 zeroes the surface. Raising the shift
-attenuates a saturated result into range. [HW sweep, H96 MAX M9]
+consecutive registers. It is the same requant the RK3588 programs at `0x4080`-`0x4088`
+[HW sweep, H96 MAX M9].
 
-## Open questions
+## int8 convolution
 
-- **On-chip accumulation across the fp16 `ic` split.** The DPU eltwise stage does this
-  job on the RK3588 (`ROCKET_KACC`) and would remove `ic/16` readbacks here. At the
-  16-channel contraction, the partial it would read back is a plain, dense, complete
-  fp16 cube, so nothing blocks it, the output writer included.
-- **The ARGB first conv's int8 weight cube.** The float cube is decoded, and the fp16
-  first conv computes on it. The int8 cube is not decoded, and it is a different
-  object: the depthwise path shows that this part's int8 and float cubes differ. A
-  quantized ARGB capture does take the path, but its weights do not survive
-  quantization as a findable value set. This cube likely has to be read off the part,
-  the way the depthwise int8 cube was. The entry `rocket_conv2d_int8_rk3576()` owns
-  `ic <= 4` through its own packed-image path.
-- **The vendor's float BS arrangement.** Registers `0x501C` and `0x4044` together
-  select a BS operand arrangement that this library's coefficient group is not packed
-  for. The library's arrangement is bit-exact and the vendor's is not, so the emitter
-  programs the library's. Decoding the vendor's would say what its epilogue buys. See
-  the section above for the leave-one-out result.
-- **What the vendor's other two BS arrangements buy.** Register `0x501C` is decoded as
-  the BS operand-source register (see the epilogue section). This library packs for
-  the arrangement that is bit-exact. What the epilogue and float arrangements read
-  instead is not decoded. The one-in-four survival rate under the epilogue arrangement
-  is the lead.
-- **`0x1060` is probably `CVT_OFFSET3`.** Registers `0x1054`-`0x105C` are the first
-  three CVT offsets and there are four CVT scales, so the fourth offset almost
-  certainly sits here. Every capture leaves it zero, including the ARGB ones, which use
-  only three channels. Nothing pins it, so it stays in the address-placement shotgun
-  list rather than being claimed.
-- **`0x1064`.** The one live vendor dump (an `rknpu` kernel capture taken at submit,
-  not one of the ten programs decoded out of `.rknn` files) carries `0x777` here. Every
-  stored program carries 0, so the vendor runtime patches this register at load time,
-  the way it patches the addresses. It is the offset the RK3588 calls `CNA_FC_CON1`.
-  Forcing it to `0x777` on this library's path changes nothing (nor does forcing
-  `0x1060` or `0x1074`). The RK3588 runs its own matmul with this register at 0, so it
-  is not required for the direct-conv datapath.
+**Conditions:** H96 MAX M9 (RK3576), mainline 7.1.3, the regcmd encoder driven through
+`librocketnpu`, symmetric quantization [HW sweep, H96].
 
-  If a fully-connected mode is ever driven, re-test this register there. The wider
-  point is methodological: a `.rknn`-derived program is the *stored* register set, and
-  any value the runtime patches in is invisible in it.
-
-## Results on silicon
-
-Measured on an H96 MAX M9 (RK3576, mainline 7.1.3), driving the emitter above
-through `librocketnpu` with an int8 1×1 conv, IC=OC=32, 8×8, symmetric
-quantization. [HW sweep, H96]
-
-The encoder is the difference between no output and an output surface. With the
-RK3588 register program this part writes nothing at all, and the output BO comes back
-untouched. With the RK3576 program the DPU writes the full, correctly-sized surface:
-2048 bytes for a 32-channel 8×8 int8 output. It is the same NC1HWC2 cube the RK3588
-uses (C2=16, surface stride `ow*oh` in 16-byte atoms, which is why `0x401c` holds
+With the RK3576 program, an int8 1×1 convolution, IC=OC=32, 8×8, writes the whole,
+correctly sized output: 2048 bytes for a 32-channel 8×8 int8 output. It is the same NC1HWC2
+cube the RK3588 uses (C2=16, surface stride `ow*oh` in 16-byte atoms, which is why `0x401c` is
 `ow*oh` and not `ow*oh*16`).
 
-The part computes convolutions, and the emitter is what makes it do so. The test
-drives a k=3 SAME 32×32 int8 conv, IC=OC=32, with a dense random weight set (all 9216
-weights non-zero). Its feature tensor spans the full signed int8 range. The conv
-reproduces the CPU model bit-exactly across the whole surface, 32768/32768, max |diff|
-0, and the same conv unpadded is 28800/28800.
+> [!CAUTION]
+> With the RK3588 register program, the RK3576 writes nothing at all, and the output BO comes
+> back untouched. Software must program the RK3576 with the RK3576 encoding.
 
-That single result carries most of the encoding. It shows that each of these is
-programmed correctly:
+A k=3 SAME 32×32 int8 convolution, IC=OC=32, is bit-exact against a CPU model across the whole
+output, and so is the same convolution unpadded. Its weights are a dense random set, all 9216
+non-zero, and its feature tensor spans the full signed int8 range. This result confirms that
+each of these is programmed correctly:
 
 - The CNA feature and weight DMA
 - The CBUF staging
@@ -224,15 +147,13 @@ programmed correctly:
 - The output geometry
 - The writer
 
-The same result also settles the weight cube independently. A dense random set of 9216
-weights cannot match bit-exactly under a permuted layout. So at IC=OC=32 the RK3576
-takes the same weight cube as the RK3588 (`weight_conv_int8`, oc-group 32 / ic-group
-32).
+At IC=OC=32 the RK3576 takes the same weight cube as the RK3588 (`weight_conv_int8`,
+oc-group 32 / ic-group 32).
 
-The envelope is every geometry whose channel counts are programmed as multiples of 32
-and whose plane fits the CBUF budget. Across the sweep below, the emitter reproduces
-the CPU model bit-exactly over the whole surface, every time, repeatably across
-separate power sessions. The sweep covers these axes:
+The int8 convolution is bit-exact at every geometry whose channel counts are programmed as
+multiples of 32 and whose plane fits the CBUF budget. Over the measured range, the regcmd encoder
+reproduces the CPU model bit-exactly over the whole output on every run. The range covers
+these axes:
 
 - IC and OC from 8 to 128
 - Planes from 8×8 to 128×64
@@ -241,73 +162,78 @@ separate power sessions. The sweep covers these axes:
 - VALID and SAME padding
 - Feature tensors that vary on all three axes
 
-Both boundaries below are properties of how the operands are described, not of the
-datapath. Both are closed by construction: the channel counts come from
-`rocket_rk3576_pad_ic()` / `_pad_oc()`, and the CBUF budget is the `rocket_hw_rk3576`
-machine-parameter profile.
+Both limits below concern how the operands are described. `librocketnpu` meets both by
+construction: the channel counts come from `rocket_rk3576_pad_ic()` / `_pad_oc()`, and the CBUF
+budget is the `rocket_hw_rk3576` machine-parameter profile.
 
 ## Channel counts as multiples of 32
 
-The register `ic` and `oc` must each be a multiple of 32, the group that
-`weight_conv_int8` pads its two channel axes to. Size the feature cube, the output BO
-and the coefficient buffer to the padded counts. Without that padding, a convolution
-whose channel counts are not multiples of 32 computes wrong, at every geometry. No
-capture shows this, because every captured geometry already satisfies it.
-[HW sweep, H96 MAX M9]
+Software must program the register `ic` and `oc` each as a multiple of 32, the group that
+`weight_conv_int8` pads its two channel axes to.
 
-On the input axis, ic of 8, 16, 17 and 48 is wrong at every kernel and plane size.
-Values of 32, 64 and 96 are exact. An ic=17 conv fails despite spanning two whole C2=16
-surfaces, so the unit is the 32-channel MAC group and not the surface. Padding the
-feature cube alone does not help, because every read past `ic` already lands in mapped
-zeros. The register value is what matters, and passing the padded count with the cube
-zero-filled to match is bit-exact.
+> [!CAUTION]
+> A convolution whose programmed channel counts are not multiples of 32 produces incorrect
+> output at every geometry [HW sweep, H96 MAX M9]. No capture shows this, because every
+> captured geometry already satisfies it. Software must size the feature cube, the output BO
+> and the coefficient buffer to the padded counts.
 
-On the output axis, a partial group trips two different mechanisms. That is why it
-presents two ways, and why a sweep at one kernel size reads as "oc is unconstrained":
+On the input axis, ic of 8, 16, 17 and 48 is incorrect at every kernel and plane size.
+Values of 32, 64 and 96 are exact. An ic=17 conv fails although it spans two whole C2=16
+surfaces, so the unit is the 32-channel MAC group and not the surface. Padding the feature
+cube alone does not help, because every read past `ic` already reads mapped zeros. The
+register value is what matters: the padded count, with the cube zero-filled to match, is
+bit-exact.
 
-- At k=1, the DPU writes only output row 0 of the trailing group and leaves the rest
-  of the surface untouched. The oc values 8, 16, 40 and 48 fail this way, while 24, 32
-  and 64 are exact. The rule that fits k=1 alone is surface parity (`ceil(oc/16)` must
-  be even), which is why oc=24 passes there.
-- At k>1, the weights come out wrong instead, and oc=24 and oc=56 fail even though
-  their surface count is even. The register `WEIGHT_BYTES` (`0x101C`) is
-  `ic*oc*kh*kw`, which describes a cube tighter than the padded one the caller
-  supplies. In the `[kh][kw][oc2=32][ic2=32]` cube, that truncation drops whole
-  `(kh,kw)` planes rather than trimming `oc` inside each. At k=1 there is only one such
-  plane, so the same shortfall lands harmlessly on the unused `oc2` slots. That is
-  exactly why k=1 is the tolerant case.
+On the output axis, a partial group fails by a different mechanism at k=1 and at k>1:
 
-Rounding `oc` up to 32 satisfies both. The trap to recognize is the first mechanism: a
-partially-written surface reads as an output-geometry defect, not a channel one.
+- At k=1, the DPU writes only output row 0 of the trailing group and leaves the rest of the
+  output untouched. The oc values 8, 16, 40 and 48 fail this way, while 24, 32 and 64 are
+  exact. The rule that fits k=1 alone is surface parity (`ceil(oc/16)` must be even), which is
+  why oc=24 passes there.
+- At k>1, the weights are read incorrectly instead, and oc=24 and oc=56 fail although their
+  surface count is even. The register `WEIGHT_BYTES` (`0x101C`) is `ic*oc*kh*kw`, which
+  describes a smaller cube than the padded one software supplies. In the
+  `[kh][kw][oc2=32][ic2=32]` cube, that truncation drops whole `(kh,kw)` planes rather than
+  trimming `oc` inside each. At k=1 there is only one such plane, so the shortfall falls on
+  the unused `oc2` slots, which is why k=1 is the tolerant case.
 
-The vendor does not pad. Its `conv2d` capture is ic=16 with weight bytes
-`ic*oc*kh*kw`, the tight size. So the vendor packs a 16-channel weight group where
-`weight_conv_int8` pads to 32. This project's emitter matches that program 131/131, so
-the difference is in the cube, not the registers. Padding is how the RK3588 cube
-expresses the same conv. A partial-group weight packing would be the other way, at half
-the weight bytes for such a layer.
+Rounding `oc` up to 32 satisfies both.
+
+> [!NOTE]
+> At k=1, a partial output-channel group writes row 0 of the trailing group and leaves the
+> rest unwritten. The result looks like an output-geometry defect rather than a channel-count
+> one. A sweep at one kernel size sees only one of the two mechanisms.
+
+The vendor compiler does not pad. Its `conv2d` capture is ic=16 with weight bytes
+`ic*oc*kh*kw`, the unpadded size, so the vendor packs a 16-channel weight group where
+`weight_conv_int8` pads to 32. The regcmd encoder matches that program register for register, so the
+difference is in the weight cube and not in the registers. Padding is the RK3588 cube's form of
+the same conv. The vendor's partial-group packing is the other form, at half the weight bytes
+for such a layer.
 
 ## The CBUF budget and `0x1040`
 
-The CBUF budget is programmable, and `0x1040` is the register that programs it.
+The CBUF budget is programmable, through `0x1040`.
 
-A conv whose feature plane does not fit computes wrong, with the DPU still writing a
-full surface, no IOMMU fault and nothing in dmesg. The corruption is graded. One row
-past the budget, about half the surface is still bit-exact. It degrades with the depth
-of the overflow until almost nothing is (at ic=32, iw=16: 4096 granules is exact, 4104
-gives 132001/262656, 4160 gives 1090/266240). Nothing else on this part presents that
-way, which makes it the instrument: grow a known-good conv until it breaks.
+> [!CAUTION]
+> A conv whose feature plane does not fit the budget produces incorrect output. The DPU still
+> writes the whole output, with no IOMMU fault and nothing in dmesg. Software must keep each
+> task's feature plane within the budget below.
 
-The budget is one scalar in the CNA's granule unit. The register that the published
-map carries as the constant `0x10000000` sets it:
+The corruption is graded. One row past the budget, about half the output is still
+bit-exact. The exact share falls with the depth of the overflow until almost none is. No other
+RK3576 failure presents this way, so a graded corruption identifies a CBUF overflow.
+
+The budget is one scalar in the CNA's granule unit. The register that the published map
+records as the constant `0x10000000` sets it:
 
 ```
 ceil(iw * ic / 64) granules per feature row  x  the task's input rows  <=  4096 + F
       where F = bits[16:27] of CNA_CBUF_CON0 (0x1040)
 ```
 
-Every boundary is exact. Measured ceilings, each the last granule count that computes
-bit-exactly over the whole surface:
+Every boundary is exact. Each ceiling below is the last granule count that is bit-exact over
+the whole output:
 
 | F | ceiling | = 4096 + F? |
 |---|---|---|
@@ -320,46 +246,54 @@ bit-exactly over the whole surface:
 | 1280 (256\|1024) | 5152 | **no**, 5376 expected |
 | 1536 (512\|1024) | 5152 | **no**, 5632 expected |
 
-Widths of 16, 32 and 64 all break at the same granule totals: 4096 at F=0 and 6144 at
-F=2048. So the limit is the granule count, not rows, width or channels individually.
-The data budget does not exceed 6144 granules (384 KiB): F=3056 still measures 6144.
+The limit is the granule count, independent of rows, width or channels. Widths of 16, 32 and
+64 all break at the same granule totals, 4096 at F=0 and 6144 at F=2048. The data budget does
+not exceed 6144 granules (384 KiB): F=3056 still measures 6144. [HW sweep, H96 MAX M9]
+
+### Single-bit F values and conditional delivery
+
+Only single-bit F values give their face value. Each power of two measures exactly 4096+F, but
+a combination gives less than the sum of its bits. The two combinations tested both measure
+5152, whichever second bit is set, so the field is not an integer the CNA adds.
 [HW sweep, H96 MAX M9]
 
-### Single-bit rungs and conditional delivery
+> [!CAUTION]
+> An F with more than one bit set programs a budget the hardware does not provide. A plane over
+> the provided allowance still writes the whole output, with incorrect values and no error.
+> Software must use the measured single-bit settings (0, 256, 512, 1024, 2048), rounding a
+> deficit up to one of them.
 
-**Only single-bit F values deliver their face value.** Each power of two measures
-exactly 4096+F, but a combination delivers less than the sum of its bits. The two
-combinations tested both land on 5152, whichever second bit is set, so the field is
-not simply an integer the CNA adds. An emitter that computes an arbitrary F programs a
-budget the hardware does not honor. That corrupts silently, since a plane over its
-allowance still writes a full surface. [HW sweep, H96 MAX M9]
+Rounding up costs a little weight headroom the plane did not need.
 
-Use the measured rungs (0, 256, 512, 1024, 2048) and round a deficit up to one. The
-cost is a little weight headroom the plane did not need.
+F=256 and F=512 give their budget only under a condition, and otherwise each gives 4096
+granules, the F=0 budget. F=0, 1024 and 2048 are unaffected at every footprint tried on either
+path. The vendor's windowed depthwise capture is a k=3 program at F=1024.
 
-**The 256 and 512 rungs deliver conditionally.** Where they do not, each delivers 4096
-granules, the F=0 budget. A task the planner puts on one of them then overruns its
-allowance. It writes a full, correctly sized surface with a wrong tail: every output
-row past `4096 / entries`. The rungs 0, 1024 and 2048 are unaffected at every
-footprint tried on either path. The vendor's own windowed depthwise capture is a k=3
-program at F=1024.
+> [!CAUTION]
+> Where F=256 or F=512 falls back to 4096 granules, a task planned for the larger budget
+> overruns its allowance. Its output has the correct size and an incorrect tail: every output
+> row past `4096 / entries`. Software must use F=256 and F=512 only where the condition below
+> holds.
 
-**The failure is a band, not a ceiling, and that is what makes it hard to see.** The
-allowance is a ladder, and the planner takes the smallest rung that covers the window.
-As the window grows, the surface is exact while F=0 still covers it. It is then wrong
-across the band of windows that select an unhonored rung, and exact again where the
-next rung up delivers. A walk of one task per height at 160×160 ic = oc = 32 k3
-depthwise, 80 granules a row, shows the band. It reads exact at 45-51, wrong at 52-57
-and exact at 58-76.
+The failure is a band of window heights, not a ceiling. A planner takes the smallest F that
+covers the window. As the window grows, the output is exact while F=0 still covers it. It is
+then incorrect across the band of windows that select a fallen-back F=256 or F=512. It is exact
+again where the next setting up gives its budget.
 
-**A probe that bisects the window reports whichever edge it walks into.** A bisection
-rests on "a smaller window is never worse", which is what a capacity bound means, and
-this is not one. Read the map.
+One task per height at 160×160 ic = oc = 32 k3 depthwise, 80 granules a row, shows the band.
+It is exact at 45-51, incorrect at 52-57 and exact at 58-76.
 
-The condition differs by path, and on the depthwise path no footprint threshold fits.
-The table forces each rung under one fixed window that F=0 does not buy:
+> [!NOTE]
+> A bisection over the window height reports whichever edge of the band it reaches. A
+> bisection assumes that a smaller window is never worse, which holds for a capacity bound and
+> not for this band. Measure every height.
 
-| path | kernel | oc | resident footprint | F=256 / F=512 |
+The condition differs by path. On the depthwise path, no footprint threshold fits, and the
+condition is the tap count. A single-tap kernel gets F=256 and F=512 at three channel counts
+spanning 32x. A multi-tap kernel never does [HW sweep, H96 MAX M9]. Each row below forces
+F=256 and F=512 under one fixed window that F=0 does not cover:
+
+| path | kernel | oc | weight footprint held in the CBUF | F=256 / F=512 |
 |---|---|---|---|---|
 | direct | 1×1 | 32 | 1024 B = 16 granules | deliver |
 | direct | 1×1 | 64 | 2048 B = 32 granules | fall back |
@@ -370,117 +304,72 @@ The table forces each rung under one fixed window that F=0 does not buy:
 | depthwise | 3×3 | 32 | 576 B = 9 granules | fall back |
 | depthwise | 5×5 | 32 | 1600 B = 25 granules | fall back |
 
-On the depthwise path, 4 granules is dead where 32 is live, which refutes a threshold
-in both directions. What survives the eight cells is the tap count: single-tap
-delivers at three channel counts spanning 32x, and multi-tap never does. A
-64-channel-group footprint (`R76_DW_W_GROUP_INT8`) against the direct path's
-16-granule threshold fits k1, k3 and k5. The 2×2 cell refutes it, which is why that
-cell is in the probe. [HW sweep, H96 MAX M9, `tests/rk3576_conv_lib_gate.c rowmap`]
-
-So the emitter declines the low rungs on the depthwise path rather than gating them on
-a fitted quantity. That costs nothing, since the fallback rung is strictly larger and
-always live.
+`librocketnpu`'s regcmd encoder does not use F=256 or F=512 on the depthwise path. The fallback
+setting is strictly larger and always gives its budget, so declining them costs nothing.
 
 ### The direct path's weight-footprint condition
 
-The direct path's own condition is the resident weight footprint, under 1 KiB, and the
-rest of this subsection is that measurement.
+On the direct path, the condition is the weight footprint held in the CBUF, at most 1 KiB
+(16 granules). The footprint is the weight slice the CBUF holds for one output-channel group,
+`32*ic*kh*kw` bytes, whichever of `ic` and the kernel sets it.
+F=256 and F=512 give their budget at 16 granules (`ic` 32, k=1). They fall back at 32
+granules (`ic` 64), 64 (`ic` 128), 144 (`ic` 32, k=3) and 400 (`ic` 32, k=5).
+[HW sweep, H96 MAX M9]
 
-**The kernel is not the axis, and a square-kernel sweep cannot say so.** A
-characterization that holds `ic` at 32 and moves the kernel uses one granule total of
-4352 and holds it constant across five plane widths. It reads k=1 exact everywhere and
-k=3 and k=5 wrong everywhere:
+Where they fall back, the last correct output row is, in every case, the one fed by input row
+`4096 / entries`. The fallback budget is therefore 4096 granules.
 
-| plane | entries/row | rows | k=1 | k=3 | k=5 |
-|---|---|---|---|---|---|
-| 16×544 | 8 | 544 | exact | wrong | n/a |
-| 32×272 | 16 | 272 | exact | wrong | n/a |
-| 64×136 | 32 | 136 | exact | wrong | wrong |
-| 128×68 | 64 | 68 | exact | wrong | n/a |
-| 272×32 | 136 | 32 | exact | wrong | n/a |
+The quantity is one output-channel group's slice, not the whole resident cube. With the slice
+held at the measured 16 granules, F=256 and F=512 both still give their budget at `oc` 64
+and 96. The cubes there are 32 and 48 granules. [HW sweep, H96 MAX M9]
 
-That table reads as "the rung needs `kh == 1`". Crossing the axes refutes that
-reading. At the same 4352-granule total and the same 1×1 kernel, the same (row size,
-row count) is bit-exact at `ic` 32 and wrong at `ic` 64 and 128. Both wrong cells are
-68 rows of 64 granules, and both are wrong from output row 64. The F=0 control at 64
-rows is exact, and so is the same plane forced under the boundary.
+`librocketnpu`'s regcmd encoder charges the whole cube, the smaller limit, so its rule is
+conservative. Where it declines F=256 or F=512, the next setting up also gives its budget, at
+the same CBUF and with no extra submit. Relaxing the rule therefore gives nothing.
 
-| 4352 granules, 1×1 kernel | entries/row | rows | result |
-|---|---|---|---|
-| iw 16, ic 32 | 8 | 544 | exact |
-| iw 32, ic 32 | 16 | 272 | exact |
-| iw 64, ic 32 | 32 | 136 | exact |
-| iw 128, ic 32 | 64 | 68 | exact |
-| iw 64, **ic 64** | 64 | 68 | **wrong from row 64** |
-| iw 32, **ic 128** | 64 | 68 | **wrong from row 64** |
+Past the threshold, the regcmd encoder rounds up to F=1024, at the same CBUF and with no extra
+submits. Where the weight path leaves no room for 1024, it plans a shorter row window: one
+more task, with correct output. The regcmd encoder programs a direct F=256 or F=512 only where the
+plane is 4097-4608 granules and the weights are at most 1 KiB. The matmul's own row planner is
+past that at every K it runs.
 
-So `ic` at a fixed kernel and the kernel at a fixed `ic` move the same quantity,
-`32*ic*kh*kw`, the resident weight slice. That is the quantity
-`r76_weight_slice_cap()` is already stated over. The rung is live at 16 granules
-(`ic` 32, k=1). It is dead at 32 granules (`ic` 64), 64 (`ic` 128), 144 (`ic` 32, k=3)
-and 400 (`ic` 32, k=5).
+**Not characterized:** the threshold between 16 and 32 granules, and F=256 and F=512 on the
+packed-image path.
 
-What the rung delivers backs out to the row from the surviving prefix. In every case,
-the last correct output row is the one fed by input row `4096 / entries`. That makes
-4096 a measurement rather than a reading of a graded corruption.
-
-The quantity is one output-channel group's slice, not the whole resident cube. Every
-cell above that reaches a rung carries `oc` 32, one group, where the two are the same
-number. So the emitter charges the cube, the smaller envelope.
-[HW sweep, H96 MAX M9, `rk3576_conv_lib_gate rowmap`]
-
-Holding the slice at the measured-live 16 granules and raising the group count
-separates the two. At `oc` 64 and 96, cubes of 32 and 48 granules, F=256 and F=512
-both still deliver. So the shipped rule is conservative rather than wrong. It stays
-that way because relaxing it buys nothing. The rung it declines to use is replaced by a
-strictly larger one that also delivers, at the same CBUF and with no extra submit.
-[HW sweep, H96 MAX M9, `rk3576_conv_lib_gate rowmap`]
-
-The threshold between 16 and 32 granules is still bracketed, not measured, and the
-harness cannot narrow it. On the direct path, `ic` is padded to a multiple of 32. So
-`32*ic*kh*kw` moves in 1024-byte steps at every shape that a square kernel and a whole
-`ic` can build. A non-square kernel is what would land between them.
-
-Everything past the threshold rounds up to 1024. The cost is the next rung, at the
-same CBUF and with no extra submits. Where the weight path leaves no room for 1024, the
-cost is a shorter row window: one more task, and not a wrong answer.
-
-The correctness envelope does not reach this on its own, and a whole network does.
-Every direct shape in the table sits at F=0. So does every depthwise one, except a
-MobileNet's 3×3 over a 112-row plane. Nothing reaches the ic axis either. A direct rung
-is programmed only where the plane is 4097-4608 granules and the weights are under
-1 KiB. The matmul's own row planner is past that at every K it runs.
-
-**The packed-image path keeps the direct rule and has never been driven at a rung.**
-The widest stem in the corpus, Inception V3's 299×299, stages 5681 granules and lands
-on F=2048. A 224×224 stem sits at F=0. So that axis is unverified rather than verified.
-[HW sweep, H96 MAX M9, `tests/rk3576_conv_sym.c rung` and `rk3576_conv_lib_gate rowmap`,
-with `tests/rk3576_conv_lib_gate.c` groups `rung256` and `dwbig` for the original kernel
-reading]
+On the direct path, `ic` is padded to a multiple of 32. The slice `32*ic*kh*kw` then moves in
+1024-byte steps at every shape that a square kernel and a whole `ic` can build. Only a
+non-square kernel falls between them. The packed-image path keeps the direct rule. Inception
+V3's 299×299, the widest stem measured, stages 5681 granules and uses F=2048, and a 224×224
+stem sits at F=0. [HW sweep, H96 MAX M9]
 
 ### The captured words and the shared pool
 
-The two values the captures carry are two points on the F scale, not a constant and a
-variant. The word `0x10000000` (F=0) buys 4096 granules, and `0x14000000` (F=1024)
-buys 5120. The second is what the vendor's windowed depthwise program needs. At 112
-wide and ic=32 a row is 56 granules, and its 91-row window is 5096 granules. That
-overflows 4096 and fits 5120 with 24 to spare.
+The two `0x1040` values in the captures are two points on the F scale. The word `0x10000000`
+(F=0) gives 4096 granules, and `0x14000000` (F=1024) gives 5120. The second is what the
+vendor's windowed depthwise program needs. At 112 wide and ic=32 a row is 56 granules, and its
+91-row window is 5096 granules. The window exceeds 4096 and fits 5120 with 24 to spare.
 
-The low bits of `0x1040` are the RK3588 field layout, and the vendor leaves them zero.
-Bits 0-13 are live, and per Mesa's `registers.xml` they are `DATA_BANK[0:3]`,
-`WEIGHT_BANK[4:7]`, `FC_DATA_BANK[8:10]`, `DATA_REUSE[12]` and `WEIGHT_REUSE[13]`.
-Setting any single one of them on top of a working program corrupts the conv. So the
-bank *fields* did not move in the re-pack. What moved is that this part also takes a
-granule allowance in bits[16:27], which is reserved on the RK3588. [HW sweep]
+`0x1040` keeps the RK3588 field layout in its low bits, and adds a granule allowance in
+bits[16:27], which is reserved on the RK3588 [HW sweep]:
 
-Bit 28 is required (a `0x1040` of zero corrupts), bit 29 corrupts, and bits 14, 15,
-30 and 31 are don't-care. [HW sweep]
+| Bits | Field | Function |
+|---|---|---|
+| 0-13 | `DATA_BANK[0:3]`, `WEIGHT_BANK[4:7]`, `FC_DATA_BANK[8:10]`, `DATA_REUSE[12]`, `WEIGHT_REUSE[13]` | The RK3588 bank fields, per Mesa's `registers.xml`. Live. The vendor leaves them zero |
+| 14, 15 | | Don't-care |
+| 16:27 | F | The granule allowance |
+| 28 | | Required. A `0x1040` of zero corrupts the conv |
+| 29 | | Setting it corrupts the conv |
+| 30, 31 | | Don't-care |
 
-The data and weight sides share one pool, and F trades between them. The weight path
-stages per output-channel group, so its resident slice is `32 * ic * kh * kw` bytes
-rather than the whole cube. That is why a 441 KiB weight cube computes fine. Sizing
-that slice against F shows the trade directly. A 150 KiB slice is bit-exact at F=0 and
-breaks at F=2048, and the ceiling falls as the data side grows.
+> [!CAUTION]
+> Setting any single bit of 0-13 on top of a working program corrupts the conv [HW sweep].
+> Setting bit 29 or clearing bit 28 corrupts it too. Software must set bit 28 and leave bits
+> 0-13 and 29 clear.
+
+The data and weight sides share one pool, and F trades between them. The weight path stages
+per output-channel group, so its resident slice is `32 * ic * kh * kw` bytes rather than the
+whole cube. A 441 KiB weight cube is therefore bit-exact. A 150 KiB slice is bit-exact at F=0
+and breaks at F=2048, and the slice ceiling falls as the data side grows:
 
 | F | data allowance | weight slice ceiling | sum |
 |---|---|---|---|
@@ -488,91 +377,84 @@ breaks at F=2048, and the ceiling falls as the data side grows.
 | 1024 | 5120 gr = 320 KiB | 125 KiB exact, 150 KiB breaks | ~455 KiB |
 | 2048 | 6144 gr = 384 KiB | below 75 KiB | ~450 KiB |
 
-Each +1024 granules of data costs the weight path about the 64 KiB the data side
-gained. All three pairs sum to roughly 448 KiB, 14 banks of the RK3588's 32 KiB, of
-which the captures' default program takes 8 for data. The bank *count* is an inference
-from that bank size, and what is measured is the granule budget, the trade and the
-total. Reading the pool as 14 banks also explains the wedge: F at or past ~3060 leaves
-the weight path nothing. The part then writes no output at all at any plane size,
-which looks exactly like a wrong geometry encoder. [HW sweep]
+Each +1024 granules of data costs the weight path about the 64 KiB the data side gained. All
+three pairs sum to roughly 448 KiB, 14 banks of the RK3588's 32 KiB, of which the captures'
+default program gives 8 to data. The bank *count* is an inference from that bank size, and
+the granule budget, the trade and the total are measured. [HW sweep]
 
-Two consequences follow. First, the 8 x 32 KiB in `rocket_hw_rk3576` is the **default
-data allocation**, not the physical CBUF. Raising F buys up to 1.5x the feature
-capacity, at the cost of weight-slice headroom that must then be respected. Second, a
-register the published map records as a constant is a tuning knob. An emitter that
-copies the constant inherits the vendor's choice for a full-plane task rather than
-making its own.
+> [!CAUTION]
+> At F of ~3060 or more, the SoC writes no output at all, at any plane size. On the 14-bank
+> reading, F there leaves the weight path nothing. The symptom is the same as a wrong
+> geometry encoding. Software must keep F below ~3060.
 
-The boundary is sharp enough to plan against, and the pool figure survives a direct
-test. A slice of exactly 192 KiB (6 banks, what the model leaves beside F=0) computes
-bit-exactly at ic=1536 k=2. A 196 KiB slice at ic=1568 breaks. [HW sweep]
+The 8 x 32 KiB in `rocket_hw_rk3576` is therefore the **default data allocation**, and the
+physical CBUF is larger. Raising F gives up to 1.5x the feature capacity, at the cost of
+weight-slice headroom that software must then respect. The published map records `0x1040` as a
+constant, and it is a per-task setting. A regcmd encoder that copies the constant uses the vendor's
+choice for a full-plane task.
+
+The pool boundary is sharp enough to plan against. A slice of exactly 192 KiB (6 banks, what
+the 14-bank model leaves beside F=0) is bit-exact at ic=1536 k=2, and a 196 KiB slice at
+ic=1568 breaks. [HW sweep]
 
 ### Per-task planning of F
 
-The emitter plans F per task, in `rocket_rk3576_cbuf_f()`. It picks the lowest live
-rung whose budget covers the plane. On the direct path, the 256 and 512 rungs count as
-live only where the resident weight cube is at most 16 granules. On the depthwise path
-they never count as live, per above. Where the plane needs more than the data cap, or
-the rung would starve the weight path, the emitter refuses the task. It refuses because
-the recourse (a shorter row window, an ic split) is the caller's to choose.
+`librocketnpu`'s regcmd encoder plans F per task, in `rocket_rk3576_cbuf_f()`. It picks the lowest
+setting that gives its budget and covers the plane. On the direct path, F=256 and F=512 count
+only where the resident weight cube is at most 16 granules. On the depthwise path they never
+count. Where the plane needs more than the data cap, or the setting would leave the weight path
+too little, the regcmd encoder refuses the task. The recourse, a shorter row window or an ic split, is
+the caller's to choose.
 
-The tiler-facing half is `rocket_rk3576_max_task_rows()`: the tallest window one task
-can carry at the highest rung the weight slice leaves room for. Planning reproduces
-both captured words, so the register-fidelity gate stays byte-identical. It turns every
-plane between 4096 and 6144 granules from silent corruption into an exact result. That
-is validated on the part at 4160, 4800, 5600 and 6144 granules, and at 6144 across
-three widths. The flag `ROCKET_RK3576_CBUF_F` forces F and bypasses both checks, and it
-is how the allowance was characterized.
+The tiler-facing half is `rocket_rk3576_max_task_rows()`: the tallest window one task can
+take at the highest setting the weight slice leaves room for. With per-task F, every plane
+between 4096 and 6144 granules is bit-exact rather than silently corrupted. The flag
+`ROCKET_RK3576_CBUF_F` forces F and bypasses both checks.
 
 ## The weight slice and the output-channel group count
 
-The resident weight slice caps how many output-channel groups compute. The pool
-arithmetic above is characterized at one output-channel group, and it is not
-sufficient on its own. A conv driving several groups loses the trailing ones well
-before the slice reaches what the pool leaves it. It loses them one at a time as the
-slice grows. The leading groups come back bit-exact and the rest wrong, with a full
-surface written, no fault and nothing in dmesg. It reads as an output-channel defect
-rather than a capacity one.
+The resident weight slice limits how many output-channel groups produce correct output. The
+pool limits above are measured at one output-channel group.
 
-The governing quantity is the resident weight slice `32 * ic * kh * kw`, one
-output-channel group. The same slice behaves identically whichever `(ic, kh, kw)`
-produces it. Both `ic=512 k=3` and `ic=4608 k=1` give 144 KiB and compute all four
-groups, while `ic=192 k=5` and `ic=544 k=3` sit near 150 KiB and lose two. Sweeping
-`ic` at k=1 moves the slice in 1 KiB steps, which is what resolves the boundary at all.
-At k=3 the step is 9 KiB and at k=5 it is 25. That coarse sampling makes the loss look
-like a jump from four groups straight to two.
+> [!CAUTION]
+> A conv driving several output-channel groups loses the trailing ones well before the slice
+> reaches what the pool leaves it. It loses them one at a time as the slice grows. The leading
+> groups come back bit-exact and the rest incorrect, with the whole output written, no fault
+> and nothing in dmesg. The symptom looks like an output-channel defect rather than a capacity one.
+> Software must keep the slice within the limit for its group count, below.
 
-Measured at F=0 on a 4×2 plane at oc=128 (four groups), and cross-checked at k=3 and
-k=5. The table gives the number of groups that come back bit-exact at each slice:
+The governing quantity is the resident weight slice `32 * ic * kh * kw`, one output-channel
+group. The same slice behaves identically whichever `(ic, kh, kw)` produces it. Both
+`ic=512 k=3` and `ic=4608 k=1` give 144 KiB and are exact on all four groups, while
+`ic=192 k=5` and `ic=544 k=3` sit near 150 KiB and lose two.
+
+The number of groups that are bit-exact at each slice:
 
 | slice | 144 KiB | 145 | 146 | 147 | 148 | 152 | 156 | 162 |
 |---|---|---|---|---|---|---|---|---|
 | groups exact | 4 | 3 | 3 | 3 | 3 | 2 | 2 | 1 |
 
-So the usable rule is **`ic*kh*kw <= 4608`** (a 144 KiB slice), at which every output
-channel count computes. Past it, the emitter refuses rather than running, in
-`rocket_rk3576_cbuf_f()`, against a small measured table keyed on the group count
-(144 KiB at four groups or more, 148 at three, 156 at two). The recourse is an ic
-split, which is the caller's to choose. A single group is left to the pool check
-alone. That check already lands on the measured single-group boundary (175 KiB
-computes, 200 KiB does not, and the pool reaches its limit at 192 KiB). A graded
-multi-group loss is by definition not a single-group effect.
+**Conditions:** F=0, a 4×2 plane at oc=128 (four groups), `ic` swept at k=1, cross-checked at
+k=3 and k=5. H96 MAX M9, measured 2026-07-25 [HW sweep].
 
-The shape of the loss suggests a mechanism that the points do not settle. The boundary
-falls as the group count rises, roughly as though each additional group costs a small
-fixed staging allowance on top of the slice. That fits a weight path that stages the
-next group while computing the current one. Two free parameters against six points is
-not a mechanism, so the emitter carries the measured table rather than a formula.
-[HW sweep, H96 MAX M9, measured 2026-07-25]
+Within one program, every output-channel count is exact at **`ic*kh*kw <= 4608`** (a 144 KiB
+slice). The boundary falls as the group count rises, roughly as though each additional group
+costs a small fixed staging allowance on top of the slice. A weight path that stages the next
+group while computing the current one fits that shape [hypothesis].
+
+Past that limit, `rocket_rk3576_cbuf_f()` refuses the program rather than running it. It checks
+against a small measured table keyed on the group count: 144 KiB at four groups or more, 148 at
+three, 156 at two. The recourse is an ic split, which is the caller's to choose. A single group
+is left to the pool check alone, which already falls on the measured single-group boundary
+(175 KiB is exact, 200 KiB is not, and the pool reaches its limit at 192 KiB).
 
 ### Output-channel tiling under the group cap
 
-The group count is the caller's choice, so the cap is one too. The table above bounds a
-program, not a shape: its group count is what one program drives, not what the
-convolution needs. Splitting the output channels across submits lowers the group count
-per submit, which raises the slice the part takes. Read that way, the table is a
-planner. It maps the slice a shape needs to the most output channels one submit can
-carry.
+The group count is software's choice, so the limit is one too. The table above bounds a
+program, not a shape: its group count is what one program drives, not what the convolution
+needs. Splitting the output channels across submits lowers the group count per submit, which
+raises the slice the SoC takes. The table then maps the slice a shape needs to the most output
+channels one submit can take:
 
 ```
 slice <= 144 KiB   ->  no constraint      (four groups or more)
@@ -581,79 +463,82 @@ slice <= 156 KiB   ->  oc tile 64         (two groups)
 otherwise          ->  oc tile 32         (one group; the pool check governs)
 ```
 
-`rocket_conv2d_int8_rk3576()` plans exactly that and costs one submit per tile. It
-lifts fourteen of the emitter's refusals. The two that reach furthest, `ic=576 k=3`
-(162 KiB) and `ic=5184 k=1` (162 KiB), are ones the four-group rule puts well out of
-range. Both are bit-exact at four tiles of 32 channels. So `ic*kh*kw <= 4608` is the
-single-program rule, not the part's. Through the library the bound is the CBUF pool at
-one group, and the rule is **`32*ic*kh*kw <= 175 KiB`**, that is `ic*kh*kw <= 5600`.
+The four-group limit puts `ic=576 k=3` (162 KiB) and `ic=5184 k=1` (162 KiB) well out of
+range. Split into four tiles of 32 channels, both are bit-exact
+[HW sweep, H96 MAX M9, 2026-07-27]. `ic*kh*kw <= 4608` is therefore the single-program limit.
+With output-channel tiling, the limit is the CBUF pool at one group:
+**`32*ic*kh*kw <= 175 KiB`**, that is `ic*kh*kw <= 5600`.
 
-One refusal survives the split: `ic=256 k=5` needs 200 KiB, which is past the pool at a
-single group. The only recourse there is an input-channel split, which the on-chip
-requant forecloses. The int8 partials cannot be summed without quantizing each one. That
-shape belongs on the int32-output writer.
+`rocket_conv2d_int8_rk3576()` plans exactly that split, at one submit per tile. One shape is
+still refused: `ic=256 k=5` needs 200 KiB, which is past the pool at a single group. The only
+recourse there is an input-channel split, which the on-chip requant forecloses: the int8
+partials cannot be summed without quantizing each one. That shape needs the int32-output
+writer.
 
-The gate `tests/rk3576_conv_lib_gate.c` holds this result. It drives the emitter gate's
-own shape table through the library entries. It passes 111 shapes, asserts the one
-refusal in both directions, and finds every computed shape bit-exact against a CPU
-model. [HW sweep, H96 MAX M9, measured 2026-07-27]
+The limit is the slice, and neither the cube size nor the group count on its own. The shape
+`ic=448 k=3 oc=128` has a 126 KiB slice under a 504 KiB cube and is exact on all four groups.
+The shape `ic=256 k=5 oc=32` has a 200 KiB slice under a 200 KiB cube and does not fit at all.
+Eight groups, `oc=256` at `ic=64`, are exact.
 
-The same sweep confirms that the cube size is not the constraint. The shape
-`ic=448 k=3 oc=128` has a 126 KiB slice under a 504 KiB cube and is exact on all four
-groups. The shape `ic=256 k=5 oc=32` has a 200 KiB slice under a 200 KiB cube and does
-not fit at all. Group count on its own is not the constraint either: `oc=256` at
-`ic=64` is eight groups and exact.
+## The DPU epilogue and the operand DMAs
 
-### The DPU epilogue and the operand DMAs
+The DPU stages after the MAC array produce correct output, and the bias path is bit-exact with
+the coefficient-buffer layout below. With features and weights zero and a per-channel bias, the
+output matches the CPU model exactly across all 32 output channels. The OUT_CVT offset, scale
+and shift move that output exactly as predicted.
 
-Everything downstream of the MAC works, and the bias path is bit-exact. A bias-only
-probe (features and weights zero, a per-channel bias) reproduces the CPU model exactly
-across all 32 output channels (2048/2048 bytes, max |diff| 0). The OUT_CVT sweep moves
-that surface exactly as its offset, scale and shift predict. The bias path computes
-this only with the coefficient-buffer layout below.
+The OUT_CVT requant rounds to nearest rather than truncating. A border whose exact value is
+-10.0006 comes back as -10, where an arithmetic shift gives -11. Adding half an LSB before the
+shift, as `(acc*scale + (1<<(shift-1))) >> shift`, reproduces every pixel of the bias and
+OUT_CVT measurements above exactly. A CPU model without a rounding term is off by one wherever
+the fraction crosses a half. [HW sweep, H96]
 
-The OUT_CVT requant rounds to nearest rather than truncating. A border whose exact
-value is -10.0006 comes back as -10, where an arithmetic shift gives -11. Adding half an
-LSB before the shift, as `(acc*scale + (1<<(shift-1))) >> shift`, reproduces every
-pixel of the probes above exactly. Without it, every otherwise-correct surface is off
-by one wherever the fraction crosses a half. [HW sweep, H96]
+That half-up form differs from the hardware only at an exact tie, and the measurements above
+contain none. Every vendor program and `librocketnpu` leave `0x40B4` bit 30 (`CVT_ROUND`)
+clear. A tie then rounds half to even [HW sweep, H96 MAX M9, 2026-09-23]. The
+tie rule is in
+[../encodings/out-cvt-converter.md](../encodings/out-cvt-converter.md).
 
-All four operand DMAs fire and reach their programmed addresses. Each base below,
-pointed at an unmapped IOVA, makes the job fault with its own IOMMU status word, while
-an untouched run is clean:
+All four operand DMAs are active and reach their programmed addresses. Each base below,
+pointed at an unmapped IOVA, makes the job fault with its own IOMMU status word, while an
+unchanged run is clean:
 
 - The weight base, `0x1110`
 - The feature base, `0x1088`
 - The output base, `0x4018`
 - The bias base, `0x5020`
 
-The output and bias bases are the positive controls, because they are known to be read
-and written. So a "no fault" reading elsewhere would have been evidence, and a fault
-everywhere confirms that no operand loader is silently idle. The fault signature is two
-`rk_iommu ... Enable stall request timed out` lines. [HW sweep, H96]
+The fault appears as two `rk_iommu ... Enable stall request timed out` lines. [HW sweep, H96]
 
-**That fault is not as recoverable as the next job makes it look.** The job
-immediately after it computes normally. But a session that ends with these faults can
-leave the part in a state where the weight loader never arms again. Every later job
-then completes cleanly, with no timeout and no new dmesg line, and writes a bias-only
-surface. The state survived 7 hours of idle and a full `rmmod rocket` /
-`modprobe rocket` cycle, and only a reboot cleared it [HW sweep, H96]. Budget a reboot
-after any unmapped-IOVA probing, and re-run a known-good conv before trusting a
-negative result taken afterward.
+> [!CAUTION]
+> The job immediately after an unmapped-IOVA fault produces correct output. But a session that
+> ends with these faults can leave the SoC in a state where the weight loader never starts
+> again. Every later job then completes cleanly, with no timeout and no new dmesg line, and
+> writes a bias-only output. The state survived 7 hours of idle and a full `rmmod rocket` /
+> `modprobe rocket` cycle [HW sweep, H96 MAX M9, 2026-07-25]. Only a reboot cleared it.
+> Software must not trust a negative result taken after these faults until the board is
+> rebooted and a known-good conv produces correct output again.
 
-The feature strides are confirmed one axis at a time. A uniform feature fill proves
-nothing about addressing, because every read that lands inside the buffer returns the
-same byte. So the sweep varies each axis with the other two held flat. Varying along
-rows, along columns and across channel *groups* each reproduces the CPU model
-bit-exactly. The three axes confirm, in turn, the line stride (`0x1090` = `iw*4`, in
-4-byte units), the C2=16 channel atom inside a row, and the CBUF surface/group stride
-(`0x1094`/`0x1098` = `iw*ih`, in 16-byte units). [HW sweep, H96]
+That state was measured on a `rocket` from before interface version 1.0, with no settle
+recorded between `rmmod` and `modprobe`.
+
+**Not characterized:** this state on `rocket` 1.6.0, and whether the reload with an
+eight-second settle that clears the IOMMU wedge (§"The IOMMU wedge") clears it.
+
+The feature strides are bit-exact along rows, along columns and across channel *groups*. Each
+axis is varied with the other two held constant. The three axes confirm, in turn, the line
+stride, the C2=16 channel atom inside a row, and the CBUF surface/group stride. [HW sweep, H96]
+
+| Register | Value | Unit | Function |
+|---|---|---|---|
+| `0x1090` | `iw*4` | 4-byte | Line stride |
+| `0x1094`, `0x1098` | `iw*ih` | 16-byte | CBUF surface/group stride |
 
 ### The coefficient buffer
 
-**The bias/coefficient buffer at `BS_BASE_ADDR` (`0x5020`) is not a flat per-OC
-int32 array.** It is the structure the vendor's own coefficient buffer uses: groups of
-64 bytes covering 8 output channels each, holding these fields:
+The bias/coefficient buffer at `BS_BASE_ADDR` (`0x5020`) has the structure of the vendor's own
+coefficient buffer. It is made of groups of 64 bytes covering 8 output channels each, with
+these fields:
 
 | field | type | offset in group |
 |---|---|---|
@@ -661,196 +546,217 @@ int32 array.** It is the structure the vendor's own coefficient buffer uses: gro
 | `B[oc]`, weight-zero-point correction | int16 | `32 + (oc%8)*2` |
 | `C[oc]`, per-channel multiplier | int16 | `48 + (oc%8)*2` |
 
-Output channel `oc` lives at group `oc/8`. The part reads a flat int32 array handed to
-it *as* this structure. Only the first 16 channels then get a term at all, on
-alternating channels, at 1024x the intended magnitude. That pattern is an artifact of
-the layout, not a 2-byte operand DMA.
+Output channel `oc` is in group `oc/8`.
 
-**The BS stage adds `A` and then multiplies by `C`**: the surface is
-`(acc + A[oc] + B[oc]*sum(x)) * C[oc]`. The probe reads this off the part against a
-known accumulator and a known bias. It sets `C` to 1 on the even channels and 2 on the
-odd. There, `(acc + A)*C` explains 32 of 32 channels, and `acc*C + A` explains only the
-16 where `C` is 1 [HW sweep, H96, `tests/rk3576_coeff_c.c`]. So a bias quantized in the
-accumulator domain rides the per-channel gain for free, and must not be pre-divided by
-it. With the order backwards, the BS stage scales the bias by the wrong channel gain, a
-plausible surface rather than a fault.
+> [!CAUTION]
+> The coefficient buffer is not a flat per-OC int32 array. Read as this structure, a flat
+> int32 array gives a term to only the first 16 channels, on alternating channels, at 1024x the
+> intended magnitude. That pattern is an artifact of the layout, not of a 2-byte operand DMA.
+> Software must pack the coefficient buffer in the grouped layout above.
 
-The BS result saturates at int32, after the shift word, not before it. A sweep with the
-shift word at zero walks `(acc + A)*C` across `2^31` at a fixed accumulator. Every
-inexact cell implies the same ceiling, 2.147e9 to 2.158e9 against `2^31` = 2.1475e9,
-and none of them wraps [HW sweep, H96]. So with no shift,
+The BS stage adds `A` and then multiplies by `C`: the output is
+`(acc + A[oc] + B[oc]*sum(x)) * C[oc]` [HW sweep, H96].
+
+> [!CAUTION]
+> A bias quantized in the accumulator domain is multiplied by the per-channel gain, and
+> software must not pre-divide it by that gain. With the order backwards, the BS stage scales
+> the bias by the wrong channel gain, and the output has incorrect values rather than a fault.
+
+The BS result saturates at int32, after the shift word, not before it. With the shift word at
+zero, the product saturates and does not wrap [HW sweep, H96]. With no shift,
 `C[oc] <= INT32_MAX / max(abs(acc + A))`, which falls as the layer's fan-in grows.
 
 Under a nonzero shift the multiply is held wide. At a shift of 14 and `C = 16384`, products from
-2.6e9 to 3.3e13 read back exactly [HW sweep, H96 MAX M9, `tests/rk3576_coeff_c.c shift`,
-2026-09-23]. A saturate-first product reads 131071 there. The bound is therefore
+2.6e9 to 3.3e13 are exact [HW sweep, H96 MAX M9, 2026-09-23]. The bound is therefore
 `((acc + A)*C) >> s <= INT32_MAX`, and with a shift C can use its int16 field at any fan-in.
 
-**`C` is per channel, and it gates the whole BS stage.** Every one of 32 channels
-reads its own `C` at 32 distinct values. At `C=1` the datapath is bit-exact, and `C=4`
-scales by exactly 4, so `C` is a live linear per-channel multiplier. At `C=0` the DPU
-writes a full, correctly sized, entirely empty surface, whatever the CNA and the MAC
-did. That holds even for a conv with no bias at all. [HW sweep, H96]
+`C` is a live linear per-channel multiplier. Every one of 32 channels reads its own `C` at 32
+distinct values. At `C=1` the datapath is bit-exact, and `C=4` scales by exactly 4.
+[HW sweep, H96]
 
-An all-zero coefficient buffer is what any caller unaware of this layout hands over.
-The resulting empty surface is indistinguishable by inspection from a wrong geometry
-encoder, and it is the single most expensive trap on this part. Pack the buffer with
-`rocket_rk3576_pack_coeff()` rather than by hand. The `B` term is pinned to 0, which is
-what symmetric quantization wants. It is unvalidated against a non-zero weight zero
-point, and nothing observed so far needs it. [HW sweep, H96]
+> [!CAUTION]
+> At `C=0` the DPU writes an empty output of the correct size, whatever the CNA and the MAC
+> array computed. It does so even for a conv with no bias at all. An all-zero coefficient
+> buffer produces this output, and it is indistinguishable by inspection from a wrong geometry
+> encoding [HW sweep, H96]. Software must program a non-zero `C` for every output channel.
 
-**How `C` is read depends on the precision, so `C = 1` is not portable across it.** The
-integer multiplier above is the int8 program's reading. A float program reads the same
-field as fp16, where the integer `1` is the denormal 6e-8. It underflows the surface to
-empty, the identical signature, from arithmetic rather than from a gate. In fp16, `1.0`
-is `0x3C00`. See [the fp16 datapath](#fp16-the-datapath-and-the-contraction-width-that-bounds-it).
+`librocketnpu` packs the buffer with `rocket_rk3576_pack_coeff()`. It pins the `B` term to 0,
+which is what symmetric quantization needs.
 
-### The feature domain and the padded border
+> [!CAUTION]
+> How `C` is read depends on the precision, so `C = 1` is not portable across it. A float
+> program reads the field as fp16, where the integer `1` is the denormal 6e-8. It underflows the
+> output to empty, the same symptom as `C=0`. Software must program `C` in a float program as
+> fp16, where `1.0` is `0x3C00`. See
+> [the fp16 datapath](#fp16-direct-convolution).
 
-The feature domain is signed int8 and needs no centering. A k=1 conv whose output plane
-sweeps every int8 value once reproduces the CPU model over the whole range. That is one
-flat run from -128 to 127, 8192/8192, max |diff| 0, with the probe feeding raw signed
-bytes and no `+0x80` applied anywhere. [HW sweep, H96]
+### The B term is added: `acc + B*sum(x)`
 
-The DPU epilogue is independently exact for negative accumulators. A bias-only probe
-driven with negative per-channel biases, which the MAC never touches, is bit-exact on
-all 32 channels. The datapath is not uint8-centered, and a feature tensor carrying
-negatives is not wrong for it. A run that says otherwise was made against an all-zero
-coefficient buffer, where the surface is empty whatever the features are. [HW sweep, H96]
+The BS stage adds `B*sum(x)` to the accumulator [HW sweep, H96 MAX M9, measured 2026-07-27].
+Here `sum(x)` is the sum of the input elements the output contracted. The model
+`acc + B*sum(x)` explains every output of every direct shape in the validation set, at
+`B` = 1, 40, 127, -37 and -128.
 
-The padded border is exact. A k=3 SAME 32×32 conv with dense random weights reproduces
-the CPU model over the whole surface, ring included, 32768/32768, max |diff| 0. So does
-the pad probe, which drives the border with a -128 pad tap against zero features. The
-border pad constant `0x1084`, the pad word `0x1080` and the window geometry are all
-right. A border defect on this path is the same coefficient-buffer artifact.
+> [!CAUTION]
+> A weight zero point is programmed negated. An asymmetric weight is
+> `w_true = w_stored - wzp`, and its correction is `-wzp*sum(x)`. Software must program
+> `B = -wzp`. A reversed sign gives a plausible output with a bias-shaped error and nothing
+> that faults.
+
+In `librocketnpu`, `rocket_rk3576_pack_coeff_asym()` names its parameter `b_term` for that
+reason: the caller passes `B = -wzp`.
+
+## The feature domain and the padded border
+
+The feature domain is signed int8 and needs no centering. A k=1 conv whose output plane sweeps
+every int8 value once, from -128 to 127, reproduces the CPU model over the whole range. Its
+input is raw signed bytes, with no `+0x80` applied anywhere. [HW sweep, H96]
+
+The DPU epilogue is independently exact for negative accumulators. Negative per-channel biases,
+which the MAC never touches, are bit-exact on all 32 channels. An all-zero coefficient buffer
+empties the output whatever the features are, so an empty output on negative features comes
+from the coefficient buffer. [HW sweep, H96]
+
+The padded border is exact. The k=3 SAME 32×32 conv with dense random weights reproduces the CPU
+model over the whole output, border included. A border driven with a -128 pad tap against zero
+features is exact too. The border pad constant `0x1084`, the pad word `0x1080` and the window
+geometry are all correct. A border defect on this path is the same coefficient-buffer artifact.
 [HW sweep, H96]
 
 ## The row window and its three registers
 
-A plane over its allowance computes a wrong conv, not a slow one, so the recourse the
-allowance planner names has to exist. That recourse is a split by input rows. Each task
-reads a row window of the full plane and writes the output rows that window supports.
-The task's program still describes the full plane alongside the window. The planner
-`rocket_rk3576_plan_rows()` lays the sequence out, and the emitter takes the window in
-`conv_params_t` `ih`/`oh` against `ih_full`/`oh_full`.
+A row window splits a convolution by input rows, so that a feature plane larger than its CBUF
+allowance can run. A plane over its allowance produces incorrect output, not a slower one.
+Each task reads a window of the plane's input rows and writes the output rows that window
+supports. The task's register program describes the full plane alongside its window. Three
+registers take a second value only on a windowed task: `0x40B8`, `0x1018` and `0x1038`.
 
-The caller's whole job per task is two byte offsets. Both are plain row strides:
-`iy0*iw*16` into the feature cube and `oy0*ow*16` into the output. The cubes are NC1HWC2
-with a 16-byte channel atom, and the CNA takes the DDR group stride from the full plane
-(`0x1094` = `iw*ih_full` by default). So one base plus a row offset addresses that row
-of every channel group. The vendor's sliced capture is the direct evidence on the
-feature side. Its fourth task reads input rows 111.. and `0x1088` carries exactly that
-row offset.
+**Conditions:** H96 MAX M9, int8 direct convolution. Each task refetches its whole window
+against a CBUF base of zero.
 
-`0x1094` is a quantity the emitter fills, not a derivation the hardware repeats. The
-part honors any value at or above the plane. That lets a consumer read a producer's
-surface whose groups are further apart than its own plane would put them. It is
-bit-exact at `+3`, `+16` and `+64` elements over five geometries, with one row task and
-with ten. A control that lays the same padded buffer out without setting the register
-differs every time [HW sweep, H96 MAX M9, `tests/rk3576_surf_stride.c`].
+### Window addressing
 
-The CNA does not read `0x1098` as a second DDR stride. The padded cases are bit-exact
-with it left at `round4(iw*fetch_rows)` [HW sweep, H96 MAX M9, `tests/rk3576_surf_stride.c`].
+Software offsets each task's two base addresses by a plain row stride: the feature base by
+`iy0*iw*16` bytes and the output base by `oy0*ow*16`. Here `iy0` is the window's first input
+row and `oy0` its first output row. The cubes are NC1HWC2 with a 16-byte channel atom. The CNA
+takes the DDR group stride from the full plane (`0x1094` = `iw*ih_full` by default). One base
+plus a row offset therefore addresses that row of every channel group. The vendor's sliced
+capture programs the feature base `0x1088` the same way [source-confirmed: RKNN-Toolkit2
+capture].
 
-Driving the window settles the three registers that take a second value only on a
-windowed program. The sweep measures all three with an `oc=64` conv cut into 32-, 16-
-and 8-row windows of the same 64-row plane. Its two output-channel groups expose
-group 1. [HW sweep, H96 MAX M9]
+The CNA uses `0x1094` as programmed, and honors any value at or above the plane
+[HW sweep, H96 MAX M9]. A task can therefore read another task's output whose channel groups
+are further apart than its own plane would put them. With a padded group stride, `0x1098`
+stays at `round4(iw*fetch_rows)`, and the output is bit-exact. The CNA does not read `0x1098`
+as a second DDR stride [HW sweep, H96 MAX M9].
 
-`0x40B8` is the channel-group jump, `ow * (2*oh_full - oh_task)`, and the form is swept,
-not fitted. It holds for a conv driving many groups at a wide kernel. The form is
-bit-exact across 2, 4, 8 and 16 output-channel groups, k1/k3/k5, stride 1 and 2, and
-VALID and SAME. It is also exact on wide, tall and ragged planes, at ic 32/64/128, and
-at 3 to 16 windows. That sweep is the `surface` group of the conv gate, and the
-description below is what it confirms. [HW sweep, H96 MAX M9, measured 2026-07-25]
+### The windowed registers
 
-The jump is a full destination surface plus the rows of it this task does not write.
-The writer walks the task's rows and then adds this jump to reach the same rows of the
-next group. So a windowed task must be told about the rows it skipped, or every group
-past the first lands short. That is why an `oc=32` split is exact while `oc=64` is half
-wrong. It is also why the defect reads as an output-channel fault rather than a
-windowing one.
+The three registers that take a second value on a windowed task [HW sweep, H96 MAX M9]:
 
-Only this form is bit-exact at all three window sizes. The forms `ow*oh_full`,
-`ow*oh_task`, `2*ow*oh_full` and 0 each corrupt the whole surface. When the task is the
-whole plane, the form reduces to `ow*oh_full`, which is what both full-plane captures
-carry. So the register reads like a constant until a window separates the two terms.
+| Offset | Bits | Function | Measured values |
+|---|---|---|---|
+| `0x40B8` | all | DPU channel-group jump, `ow * (2*oh_full - oh_task)` | The only form bit-exact at 32-, 16- and 8-row windows of a 64-row plane |
+| `0x1018` | 30 | Live, and required. Software must set it | With bit 30 clear, the whole output is incorrect |
+| `0x1018` | 15:0 | Ignored on the direct int8 path | `0x0404`, `0x0505`, `0x040b` and `0x0000` are all bit-exact, windowed and un-windowed alike |
+| `0x1018` | 31 | The reuse form's retain flag (§"CBUF row reuse across a windowed sequence"). Clear on a refetching task | Not characterized |
+| `0x1038` | 31 | Live. Clear on a refetching task, and set on every continuation task of the reuse form | On a refetching task, `0x80000010` corrupts the output |
+| `0x1038` | other bits | Ignored | `0x07`, `0x010e` and `0x10` are all bit-exact |
 
-`0x1018` carries one live bit, and it is not the byte pair. Bit 30 is required:
-clearing it corrupts the whole surface. The low 16 bits are don't-care on the direct
-int8 path. The values `0x0404`, `0x0505`, `0x040b` and `0x0000` are all bit-exact,
-windowed and un-windowed alike.
+The channel-group jump is one full destination plane plus the rows of it the task does not
+write. The DPU writer walks the task's rows, then adds the jump to reach the same rows of the
+next channel group. On a task that covers the whole plane, the jump reduces to `ow*oh_full`,
+which is what both full-plane vendor captures contain. A full-plane capture therefore shows
+the register as a constant.
 
-The windowed value does not stop the DPU on an un-windowed task. A surface that
-suggests otherwise is the cold-start wall, the trap this sheet warns about. Read a
-single "the DPU did not write" as the wall, and re-run before believing it.
+The jump is bit-exact over this range, measured 2026-07-25 [HW sweep, H96 MAX M9]:
 
-`0x1038` likewise carries one live bit, bit 31. The values `0x07`, `0x010e` and `0x10`
-are all bit-exact, and `0x80000010` corrupts the surface.
+- Output-channel groups 2, 4, 8 and 16
+- Kernels k1/k3/k5, stride 1 and 2, VALID and SAME
+- Wide, tall and ragged planes, at ic 32/64/128
+- Windows from 3 to 16
 
-The emitter still reproduces the vendor's values for all three, so the
-register-fidelity gate stays byte-identical to the captures.
+> [!CAUTION]
+> A windowed task whose `0x40B8` leaves out the rows it does not write places every later
+> channel group short of its rows. With one group (`oc=32`) the output is exact, and with two
+> (`oc=64`) half of it is wrong. The defect therefore looks
+> like an output-channel fault rather than a windowing one. Software must program `0x40B8` =
+> `ow * (2*oh_full - oh_task)` on every windowed task.
 
-The split computes bit-exactly against the CPU model, over the whole surface, at every
-shape tried. Those include 112×112 and 224×224 at ic=32, the geometries with no
-single-task plan at all (6272 and 25088 granules against a 6144 cap). They also include
-forced-cap splits from 2 to 16 windows across ic/oc of 32/64/128, k1/k3/k5, stride 1
-and 2, VALID and SAME.
+> [!NOTE]
+> The windowed `0x1018` value does not stop the DPU on an un-windowed task. A single task that
+> writes nothing there is the cold-start defect (§"The cold-start wall"). Re-run the task
+> before attributing the failure to `0x1018`.
 
-The planner spreads the output rows evenly over the fewest tasks that fit, rather than
-taking greedy maximum windows. A greedy pass leaves a ragged tail: a 112-row plane at a
-109-row cap comes out 109+2+1 instead of two windows of 56. Every extra task costs a
-submit.
+A windowed convolution is bit-exact against the CPU model, over the whole output, at every
+shape measured [HW sweep, H96 MAX M9]. The shapes include 112×112 and 224×224 at ic=32, the
+geometries with no single-task plan at all (6272 and 25088 granules against a 6144 cap). They
+also include forced-cap splits from 2 to 16 windows across ic/oc of 32/64/128, k1/k3/k5,
+stride 1 and 2, VALID and SAME.
 
-A second sweep measures what a window costs, with the cold-start wall closed. It cuts
-the same 64×64 ic64 oc64 k3 SAME output into progressively more windows and submits
-them with no inter-task gap. [HW sweep, H96 MAX M9, measured 2026-07-25]
+### Cost per window
+
+**Conditions:** H96 MAX M9, measured 2026-07-25, on a `rocket` with the cold-start defect fixed
+and without patch 0012. The output is 64×64 ic64 oc64 k3 SAME, cut into progressively more
+windows and submitted with no inter-task gap.
 
 | windows | 2 | 4 | 5 | 11 | 32 |
 |---|---|---|---|---|---|
-| wall time | 2.5 ms | 4.8 ms | 6.0 ms | 13.0 ms | 38.7 ms |
+| wall-clock time | 2.5 ms | 4.8 ms | 6.0 ms | 13.0 ms | 38.7 ms |
 
-The cost is flat at ~1.2 ms per window, so a split is linear in windows and the
-fewest-that-fit rule is the right one. Almost all of that is submit-and-wait. Emitting a
-window's regcmd on the host takes 0.02-0.05 ms, and a single-task conv costs 1.2 ms
+The cost is flat at ~1.2 ms per window [HW sweep, H96 MAX M9]. A split is therefore linear in
+windows, and the fewest windows that fit cost least. Almost all of the 1.2 ms is
+submit-and-wait.
+Emitting a window's regcmd on the host takes 0.02-0.05 ms, and a single-task conv costs 1.2 ms
 whether its output is 2 KB or 1.6 MB.
 
-The floor is the driver's completion poll, not the silicon. This part has no maskable
-completion IRQ, so `rocket` polls on an hrtimer. Shortening that interval moves the
-per-task cost with it almost exactly. Retiring on the DPU's own completion, rather than
-on `PC_DONE`, is what makes it safe to shorten. The `PC_DONE` signal fires before the
-DPU's writes have drained. The patch `patches/rk3576/npu/0012` retires on the DPU's
-completion and takes the period to 50 us, and 0011 removes the IOMMU half of the hazard.
+The fixed per-task cost is the driver's completion poll rather than NPU execution. The RK3576
+has no maskable completion IRQ, so `rocket` polls on an hrtimer, and the per-task cost follows
+the poll interval almost exactly. The DPU's writes drain after `PC_DONE` fires. Retiring on
+the DPU's own completion instead of `PC_DONE` is what makes a shorter interval safe. The patch
+`patches/rk3576/npu/0012` retires on the DPU's completion and takes the period to 50 us, and
+0011 removes the IOMMU half of the hazard. With 0012 the fixed per-task cost falls to the
+per-submit time in §"The per-submit floor is the driver's completion poll", below.
 
-The per-task figures in this section were measured without 0012, at ~1.2 ms. With 0012
-the floor is ~0.44 ms. See "The per-submit floor is the driver's completion poll" below.
+### Software support
 
-## `ih_full` on a single-task plan
+In `librocketnpu`, the planner `rocket_rk3576_plan_rows()` lays the window sequence out, and
+the regcmd encoder takes the window in `conv_params_t` `ih`/`oh` against `ih_full`/`oh_full`. The
+regcmd encoder emits the vendor's values for all three registers, so its programs stay
+byte-identical to the captures.
 
-A single-task plan needs `ih_full` and `oh_full` set from the plane, the same as a split
-plan. The planner `rocket_rk3576_plan_rows()` can return one task whose row window is
-shorter than the plane. A caller that sets `ih_full`/`oh_full` only when the plan splits
-then mis-programs the DDR channel-group stride.
+The planner spreads the output rows evenly over the fewest tasks that fit, rather than taking
+greedy maximum windows. A greedy pass leaves a ragged tail: a 112-row plane at a 109-row cap
+comes out 109+2+1 instead of two windows of 56. Every extra task costs a submit.
 
-This is ordinary geometry, not an edge case. Any stride greater than 1 whose output does
-not consume the plane leaves trailing input rows unread. So a 32×32 k1 s2 VALID conv
-plans one task over 31 of its 32 rows. With `ih_full` left at 0, the emitter takes the
-group stride from the window. Register `0x1094` then comes out `iw*31` instead of
-`iw*32`, and every channel group past the first reads at the wrong offset.
+## The group stride on a single-task plan
 
-The symptom is a full, correctly sized surface bearing no relation to the input. There
-is no fault and no dmesg line, and the surface looks identical to a broken geometry
-encoder's. The un-windowed path in `rk3576_first_light` sets the window directly and
-never trips it. So the defect appears only once a caller routes every conv through the
-planner, which is what a tiler does. Set `ih_full`/`oh_full` from the plane on every
-task. [HW sweep, H96 MAX M9]
+Every task needs the DDR channel-group stride `0x1094` set from the full plane, including a
+task whose row window is shorter than the plane. A single-task plan can have such a window.
+Any stride greater than 1 whose output does not consume the plane leaves trailing input rows
+unread. A 32×32 k1 s2 VALID conv therefore runs as one task over 31 of its 32 rows. With the
+stride taken from the window, `0x1094` comes out `iw*31` instead of `iw*32`. Every channel
+group past the first is then read at the wrong offset [HW sweep, H96 MAX M9].
+
+> [!CAUTION]
+> A `0x1094` taken from the task's window gives an output of the correct size that bears no
+> relation to the input. There is no fault and no dmesg line, and the output looks identical
+> to that of a regcmd encoder with broken geometry fields. Software must set `0x1094` from the
+> full plane on every task, including the only task of a single-task plan.
+
+In `librocketnpu`, a single-task plan needs `ih_full` and `oh_full` set from the plane, the
+same as a split plan. The planner `rocket_rk3576_plan_rows()` can return one task whose row
+window is shorter than the plane. With `ih_full` left at 0, the regcmd encoder takes the group
+stride from the window. A caller that sets `ih_full`/`oh_full` only when the plan splits
+therefore mis-programs the stride. The defect appears only once a caller sends every conv
+through the planner, which is what a tiler does. Software must set `ih_full`/`oh_full` from
+the plane on every task.
 
 ## The geometry fields are narrower than their register halves
 
-The encoder writes each extent into a 16-bit half or a whole register. The part computes
-with fewer bits. Past each field a task writes a full, plausible, wrong surface and
-completes normally. Measured through the public entries, every element scored [HW sweep,
-H96 MAX M9, 2026-09-26, `tests/rk3576_conv_width_probe`]:
+Each geometry extent is programmed into a 16-bit register half or a whole register. The
+RK3576 computes with fewer bits [HW sweep, H96 MAX M9, 2026-09-26]. The field widths, and what
+a task past each one writes:
 
 | Extent | Field | Past it |
 |---|---|---|
@@ -863,27 +769,34 @@ H96 MAX M9, 2026-09-26, `tests/rk3576_conv_width_probe`]:
 | Plane strides | whole words | exact at 409600 elements |
 | PPU rows and channels | 13 bits | 8300 rows wrong from row 107, 8208 channels from channel 16 |
 
-**A wrapped width also breaks the next legal job in the same process.** After an
-8300-wide task, an 8192-wide one returned 259665 of 262144 elements wrong and a 2048-wide
-one 64961 of 65536, both with rc 0. A third job retired, and the entry's guard redid it
-exactly. The mechanism is not decoded. So a driver must refuse these extents before the
-device sees one, not recover after.
+**Not characterized:** which of the input and output width registers holds the 13-bit field,
+and strides 8 and 16, which program 0.
 
-The library refuses every extent past its field, at claim time and in the encoder. Nothing
-on this part tiles a convolution's width. The probe could not say which width register
-holds the 13-bit field, since every arm had the input and output widths equal. Strides 8
-and 16 program 0 and did not run.
+> [!CAUTION]
+> A width, kernel, stride or PPU extent past its field wraps, and the task writes an output of
+> the correct size with incorrect values. The task completes normally. A depthwise
+> output-channel count past its field leaves the output unwritten, and the task retires at the
+> driver's 125 ms backstop on `rocket` 1.6.0. Neither reports an error. Software must keep
+> every extent within the field widths in the table above.
+
+> [!CAUTION]
+> A wrapped width also breaks the next valid job in the same process. Software must refuse
+> these extents before the device sees one. Recovery after the job does not protect the next
+> one.
+
+After an 8300-wide task, an 8192-wide job returned 259665 of 262144 elements wrong, with no
+error reported [HW sweep, H96 MAX M9]. A 2048-wide one returned 64961 of 65536 wrong. The
+mechanism is not decoded.
+
+`librocketnpu` refuses every extent past its field, at claim time and in the regcmd encoder. Nothing
+in `librocketnpu` tiles a convolution's width on the RK3576.
 
 ### The fields the vendor compiler checks
 
-RKNN-Toolkit2 checks each field it emits against its width and prints the ones that
-overflow, as `REGTASK: ... target: f2, offset: 0x1090, shift = 0, limit: 0x3fff`. One-op
-graphs sized past a field along one axis at a time make it name fields
-[`rocket-userspace/tests/data/rk3576-vendor-capture/regtask/mkregtask.py`, toolkits 2.2.0
-and 2.3.0, 2026-09-27]. On the RK3588 every field it printed matches Mesa's `registers.xml`:
-DPU_RDMA `0x500C` [12:0], DPU `0x4038` [12:0] and DPU `0x403C` [12:0] and [28:16]
-[source-confirmed]. So the method reads the compiler's widths correctly. The RK3576 prints
-target `f2` and these:
+RKNN-Toolkit2 checks each field it emits against its width, and prints each one that
+overflows, as `REGTASK: ... target: f2, offset: 0x1090, shift = 0, limit: 0x3fff`
+[source-confirmed: RKNN-Toolkit2 2.2.0 and 2.3.0]. For the RK3576 it prints target `f2` and
+these fields:
 
 | Offset | Field | Printed by |
 |---|---|---|
@@ -892,42 +805,50 @@ target `f2` and these:
 | DPU `0x402C` | [12:0] | the same |
 | DPU_RDMA `0x5014` | [12:0] | the same |
 
-A compiler width is the compiler's, and the line stride shows it. The encoder writes
-`iw*4` there, and the row planner gives 2-row tasks at `iw` 4096 and 6000. Those tasks carry
-`0x4000` and `0x5DC0`, past the 14 bits, and compute exactly [HW sweep, H96 MAX M9,
-2026-09-27, `tests/rk3576_conv_width_probe r4`]. So read a printed width as a bound to test,
-not as one measured. The three channel fields agree with the 13 bits in the table above.
+The three channel fields agree with the 13 bits in the table above. The CNA line stride does
+not. The regcmd encoder writes `iw*4` there, and the row planner gives 2-row tasks at `iw` 4096
+and 6000. Those tasks program `0x4000` and `0x5DC0`, past the 14 bits, and are exact
+[HW sweep, H96 MAX M9, 2026-09-27].
 
-The sweep sees only fields the compiler overflows. An axis it tiles, splits across cores or
-sends to the CPU prints nothing. On both targets that was width, height, input and output
-channels, and a matmul's K and M.
+> [!NOTE]
+> A field width RKNN-Toolkit2 prints is the compiler's limit. Treat a printed width as a bound
+> to test on the device, not as one measured.
+
+**Not characterized:** fields the compiler does not overflow. An axis it tiles, splits across
+cores or sends to the CPU prints nothing. On both SoCs that was width, height, input and
+output channels, and a matmul's K and M.
 
 ## The first-conv ARGB sub-encoding
 
-A convolution whose input is a packed image runs on its own CNA datapath. The image
-carries 3 or 4 interleaved bytes per pixel rather than an NC1HWC2 cube. This datapath
-is not the normal program at a small channel count: about sixteen registers are packed
-differently.
-
-It is the only way a vision model's stem runs on this part at all. The normal path
-needs `ic` a multiple of 32 (see below), and an image is 3. Twelve captured programs
-pin it, at two image sizes (224×224 and 64×64) and two row splits.
+A convolution whose input is a packed image runs on its own CNA datapath. The image has 3 or 4
+interleaved bytes per pixel rather than an NC1HWC2 cube. About sixteen registers are packed
+differently from the normal program. A vision model's stem runs on the RK3576 only on this
+datapath. The normal path needs `ic` a multiple of 32 (§"Channel counts as multiples of 32"),
+and an image has 3. The encoding is transcribed from vendor captures
+[source-confirmed: RKNN-Toolkit2 captures].
 
 The RK3588 has the same datapath. Mesa drives it as `CNA_CONV_CON1`
-`NONALIGN_DMA | GROUP_LINE_OFF | ARGB_IN(8)` for a 1-channel input. Register `0x100C`
-is one of the few geometry registers the RK3576 does not re-pack. On both parts,
-`GROUP_LINE_OFF` is bit 29 and `ARGB_IN` is bits[15:12]. The captured `ARGB_IN` of
-`0xA` sits exactly where Mesa's 1-channel `0x8` does, one step per extra image channel,
-so the field is `8 | (image_channels - 1)`. The `CONV_MODE` field is 6, a third value
-beside direct (0) and depthwise (1).
+`NONALIGN_DMA | GROUP_LINE_OFF | ARGB_IN(8)` for a 1-channel input. Register `0x100C` is one
+of the few geometry registers the RK3576 does not re-pack. On both SoCs, `GROUP_LINE_OFF` is
+bit 29 and `ARGB_IN` is bits[15:12]. The captured `ARGB_IN` of `0xA` sits exactly where
+Mesa's 1-channel `0x8` does, one step per extra image channel, so the field is
+`8 | (image_channels - 1)`. The `CONV_MODE` field is 6, a third value beside direct (0) and
+depthwise (1).
 
-The CNA reads the packed row straight out of DDR. The CVT, bypassed on every other
-layer, expands each pixel to four int8 lanes while applying a per-channel scale and
-offset. The kernel's horizontal extent is then folded into the channel axis: the conv
-the MAC sees is `kh x 1` over `4*kw` channels. That is why these programs carry two
-disagreeing channel counts, the sub-encoding's clearest signature in a capture.
+The low field of `0x100C` depends on the precision: 6 at int8 and 2 at fp16. The found int8
+ARGB programs contain `0x2000a006` and the float ones `0x2020a122`. Bit 2 clears on the float
+path, while `GROUP_LINE_OFF` and `ARGB_IN` stay where they are. The `ARGB_IN` field follows
+the channel count as `8 | (ic-1)`: `0x8` at 1 channel, `0xA` at 3 and `0xB` at 4. Mesa's
+1-channel `0x8` is therefore the same field.
 
-| Register | Normal path | ARGB path |
+The CNA reads the packed row straight out of DDR. The CVT, bypassed on every other layer,
+expands each pixel to four int8 lanes. The captures program it with a per-channel Q14 unity
+scale and an offset, and the offset is inert on the RK3576 (§"The int8 ARGB input domain"). The
+kernel's horizontal extent is then folded into the channel axis: the conv the MAC sees is
+`kh x 1` over `4*kw` channels. An ARGB program therefore contains two disagreeing channel
+counts, the sub-encoding's clearest signature in a capture.
+
+| Register | Normal path | int8 ARGB path |
 |---|---|---|
 | `0x100C` | `proc<<7 \| in<<4 \| conv_mode` | `GROUP_LINE_OFF \| ARGB_IN(8\|(ic-1))<<12 \| 6` |
 | `0x1020` weight elems | `ic*kh*kw` | `kh * round16(4*kw)`, a 16-byte row per kernel row |
@@ -938,47 +859,53 @@ disagreeing channel counts, the sub-encoding's clearest signature in a capture.
 | `0x1044` lo, `0x103C` hi | `ceil(iw*ic/64)` | `iw*4/64 + 1` |
 | `0x1048` CVT | `0x0B`, bypassed | truncate 14 per live channel, bypass clear |
 | `0x104C`/`0x1050` | scales = 1 | `0x4000` (Q14 unity) per live channel |
-| `0x1054`-`0x105C` | 0 | the uint8 zero point, negated, per live channel |
-| `0x1084` pad const | `zp - 0x80`, already centered | raw `zp + 0x80`, one byte per channel |
-| `0x1090` line stride | `iw*4` (a cube row in 4-byte words) | `iw*ic/16` (the packed row in granules) |
+| `0x1054`-`0x105C` | 0 | -128 per live channel in the captures. Inert |
+| `0x1084` pad const | `zp - 0x80`, already centered | the stored zero point, `zp + 0x80` for a uint8 `zp`, one byte per channel |
+| `0x1090` line stride | `iw*4` (a cube row in 4-byte words) | `iw*ic/16` (the packed row in 16-byte atoms) |
 | `0x1078` hi | `iw-1` | `iw*ic/16 - 1` |
 | `0x1094`, `0x1098` | plane / task surface strides | both `line_stride * ih` |
 | `0x118C` | `(iw-1)<<16 \| (ih_full-1)` | `(entries-1)<<16 \| (entries-2)` |
 | CORE `0x3018` | `0x10000001` | `0x10000081` |
 
-Everything past the CNA is the direct path's, including `0x40B8`'s channel-group
-jump, so this is a CNA sub-encoding and not a second pipeline.
+Everything past the CNA, including `0x40B8`'s channel-group jump, is programmed as on the
+direct path. The ARGB datapath is a CNA sub-encoding, not a second pipeline.
 
-Three things follow that a caller must act on. The feature buffer is a packed image,
-`iw*ic` bytes per row, so a row-window plan's feature offsets are in those units. The
-pixels are raw uint8 and the converter does the centering. That is why `0x1084` pads in
-the raw byte domain: the pad is inserted before the CVT runs. And `iw` must be a
-multiple of 16, because both the DDR row stride and the CBUF row are counted in 16-byte
-granules.
+On this datapath, software must:
 
-The `+1` on the CBUF row is the fold's lookahead. The row is the image row expanded to
-4 lanes per pixel (`iw*4` bytes, `iw/16` granules), plus one granule. The extra granule
-is there because the last output column reads `kw` pixels and reaches past the granule
-its own pixel sits in. Both captured widths carry exactly `+1`.
+- Offset a row window's feature base in packed-image units. The feature buffer is a packed
+  image, `iw*ic` bytes per row.
+- Write the image in two's complement and program the pad constant `0x1084` as the stored
+  zero point, one byte per image channel. The CNA reads each packed byte as a signed int8,
+  and the CVT offset does not center it (§"The int8 ARGB input domain").
+- Program an `iw` that is a multiple of 16. The DDR row stride is counted in 16-byte atoms,
+  and the CBUF row in 64-byte granules. Both are whole only at such an `iw`.
 
-**`0x118C` is not a plane extent here.** A normal-path decode of an ARGB capture reads
-a nonsense full-plane height out of it. An ARGB program carries no plane height
-anywhere, because the packed image is a single surface. So `0x1094` and `0x1098` both
-hold the task's own rows, and there is no channel-group stride to describe.
+The `+1` on the CBUF row is the fold's lookahead. The row is the image row expanded to 4 lanes
+per pixel (`iw*4` bytes, `iw/16` granules), plus one granule. The extra granule is there
+because the last output column reads `kw` pixels and reaches past the granule its own pixel
+sits in. Both captured widths have exactly `+1`.
 
-One geometry reading is an inference. Every ARGB capture is `kw=3`, so `4*kw` and a
-constant 12 fit the programmed channel count equally. Several readings of the
-48-element weight kernel fit equally too. The mechanism above (4 lanes per pixel
-column, `kw` columns) is what makes `4*kw` the reading rather than a curve fit. A first
-conv at another kernel width is unvalidated.
+On this datapath `0x118C` is not a plane extent. An ARGB program contains no plane height
+anywhere, because the packed image is a single surface. `0x1094` and `0x1098` both hold the
+task's own rows, and there is no channel-group stride to describe.
+
+> [!NOTE]
+> A normal-path decode of an ARGB capture reads a meaningless full-plane height out of
+> `0x118C`.
+
+Every found ARGB capture is `kw=3`, where `4*kw` and a constant 12 fit the programmed channel
+count equally. Programmed as `4*kw`, the int8 first conv is bit-exact at `kw` 3, 5 and 7
+[HW sweep, H96 MAX M9], which separates the two. The float program does not fold, and its
+manufactured captures cover `k` 1, 3, 5 and 7 (§"The fp16 first-conv program").
 
 ### The ARGB weight cube
 
-The captures carry register programs, not weight BOs. So the found programs pin only
-the cube's size and stride, and nothing about its byte order. The size is
-`oc * kh * round16(4*kw)` bytes, one 16-byte row per kernel row per output channel. The
-float cube's layout is decoded from captures manufactured with weights unique per
-position (`tests/data/rk3576-vendor-capture/argb/mkargb.py`):
+The int8 register program declares the ARGB weight cube as `oc * kh * round16(4*kw)` bytes,
+one 16-byte row per kernel row per output channel. A capture contains the register program and
+not the weight BO, so it shows the cube's size and stride and nothing about its byte order.
+The fp16 and int8 cubes order their bytes differently.
+
+The fp16 cube's layout [source-confirmed, RKNN-Toolkit2 rk3576 float build]:
 
 ```
 slot(oc, c, kh, kw) = (oc/16) * (KH*KW*64)
@@ -991,24 +918,20 @@ slot(oc, c, kh, kw) = (oc/16) * (KH*KW*64)
 In this layout:
 
 - Each weight sits in a sixteen-bit slot.
-- Each (output channel, tap) has four lanes. Lane `c` carries image channel `c`, and
-  any lane past `ic` is don't-care.
+- Each (output channel, tap) has four lanes. Lane `c` holds image channel `c`, and any lane
+  past `ic` is don't-care.
 - Output channels are interleaved in groups of sixteen inside one tap.
 - The tap axis is kh-outer.
 
-The 64 is 16 output channels times 4 lanes. The term `4*kw` is not rounded up to 16
-here, so this layout's element count is not the byte size the register program
-declares. At `oc=16 k=3` the cube is 576 halfwords, where the declared size is 768
-bytes. The layout holds at `ic` 1/3/4, `k` 1/3/5/7 and `oc` 16/32/48/64, at four
-widths, three heights and both strides. The packer is
-`rocket_rk3576_weight_argb_fp16()`. [source-confirmed, RKNN-Toolkit2 rk3576 float build]
+The 64 is 16 output channels times 4 lanes. The term `4*kw` is not rounded up to 16 here,
+where the int8 cube's row is. The fp16 program declares `oc * 4*kh*kw * 2` bytes, which is
+this layout's size. At `oc=16 k=3` the cube is 576 halfwords, and the program declares 1152
+bytes [source-confirmed, RKNN-Toolkit2 rk3576 float build]. The layout holds
+at `ic` 1/3/4, `k` 1/3/5/7 and `oc` 16/32/48/64, at four widths, three heights and both
+strides [source-confirmed, RKNN-Toolkit2 rk3576 float build].
 
-**The int8 cube is not this one.** A quantized ARGB capture does take the path:
-`0x100C` reads `0x2000a006`, exactly the found value. But its weights do not survive
-quantization as a findable value set. So the probe reads this cube off the part
-instead, with an impulse image and a one-byte cube (`rk3576_conv_gate fcmap`). Every
-live byte then names its output channel, both taps and its lane at once. The answer is
-a different object from the float cube in every axis but the lanes:
+The int8 cube is a different object from the fp16 cube in every axis but the lanes
+[HW sweep, H96 MAX M9]:
 
 ```
 byte(oc, c, kh, kw) = (oc/32) * (KH * R * 32)
@@ -1026,127 +949,98 @@ In this layout:
   outermost.
 - The tap column is folded into the same `R`-byte row as the four lanes. Of that row,
   `4*KW` is live, and the rest is padding the DMA still fetches.
-- Lane `c` carries image channel `c`.
+- Lane `c` holds image channel `c`.
 
-The map is a bijection over every live byte at `oc` 32 and 64, `k` 3/5/7 and `ic` 3
-and 4. That covers 1152, 2304, 3200, 6272 and 864 live bytes. Each lands on exactly one
-output position of one channel, with none left over and none doubled. The map is also
-translation-invariant: the impulse moved three and six pixels reads the same.
-[HW sweep, H96 MAX M9]
+The map is exact over every live byte at `oc` 32 and 64, `k` 3/5/7 and `ic` 3 and 4
+[HW sweep, H96 MAX M9]. It is also translation-invariant.
 
-The 32-channel group is observable only above one group. At `oc=32` a flat `oc*R` fits
-equally, and `oc=64` is what separates them. The `k=5` and `k=7` cubes separate `R`
-from a constant 16, because `R` is 32 there. The packer is
-`rocket_rk3576_weight_argb_int8()`. [HW sweep, H96 MAX M9]
+### The int8 ARGB input domain
 
-**The converter's offset is inert, and the packed byte is a plain signed int8.** The
-table above lists `0x1054`-`0x105C` as the uint8 zero point the CVT subtracts, as the
-datapath's description says. But every ARGB capture is zero point 0, so no capture
-exercises those registers. Driven on the part, they do nothing. An image written at
-`raw = s + (zp + 0x80)` comes back with the raw byte read as a signed int8 and no
-subtraction at all. The byte `0x80` reads -128, `0xC0` reads -64 and `0xFF` reads -1
-[HW sweep, H96 MAX M9].
+On the int8 path the CVT's offset is inert, and the packed byte is a plain signed int8
+[HW sweep, H96 MAX M9]. Driven on the RK3576, `0x1054`-`0x105C` do nothing. An image written
+at `raw = s + (zp + 0x80)` comes back with the raw byte read as a signed int8 and no
+subtraction at all. The byte `0x80` reads -128, `0xC0` reads -64 and `0xFF` reads -1. Every
+int8 ARGB capture programs the same offset, -128 on each live channel, so no capture shows
+whether the CVT applies it.
 
-So a caller writes two's complement and folds the input zero point into the coefficient
-group's `A` term, exactly as the direct path does. The border constant must still be the
-stored zero point, so that a pad tap's true value is zero. [HW sweep, H96 MAX M9]
+> [!CAUTION]
+> The CVT does not subtract the zero point in `0x1054`-`0x105C` [HW sweep, H96 MAX M9]. The
+> CNA reads each packed byte as a signed int8. Software must write the image in two's
+> complement and fold the input zero point into the coefficient group's `A` term, as on the
+> direct path. Software must still program the border constant as the stored zero point, so
+> that the pad rows and corners feed a true value of zero. The pad columns do not read the
+> constant and feed 0 whatever it holds [HW sweep, H96 MAX M9, 2026-08-02]. At a non-zero
+> input zero point, software must materialize them ([rk3576.md](rk3576.md) §"Pad columns on
+> the packed path").
 
 ### Geometry bounds of the int8 first conv
 
-The int8 first conv adds four geometry bounds. None of them appears in any capture,
-because every captured first conv is a 3×3 stride-2 SAME convolution that satisfies all
-four by construction. Three are silent when violated, so the library entry refuses them
-rather than leaving them to compute.
+The int8 first conv has four geometry bounds. None of them appears in any capture, because
+every captured first conv is a 3×3 stride-2 SAME convolution that satisfies all four. None
+raises an error when violated. Two give an output of the correct size with incorrect values,
+and two leave the output untouched.
 
-**The left pad must be non-zero.** At `pad_left = 0` the DPU writes nothing at all, an
-untouched surface, not a wrong one, at every plane, stride, kernel and channel count
-tried. Bits[15:8] of `CNA_PAD_CON0` (`0x1080`) decide it alone. Forcing `0x0100` into a
-zero-pad program makes that same program write, and forcing `0x0000` into a working one
-stops it. The `pad_top` field in bits[7:0] does neither.
+> [!CAUTION]
+> At `pad_left = 0` the DPU writes nothing at all, and the output buffer is left untouched.
+> Software must program a non-zero left pad in bits[15:8] of `CNA_PAD_CON0` (`0x1080`).
 
-This bound is why a TFLite-style SAME 3×3 stride-2 stem does not run and an ONNX-style
-symmetric one does. TFLite puts the odd pad byte on the trailing edge and leaves
-`pad_left` at 0.
+The left pad decides it alone, at every plane, stride, kernel and channel count measured.
+Forcing `0x0100` into a zero-pad program makes that same program write, and forcing `0x0000`
+into a working one stops it. The `pad_top` field in bits[7:0] does neither. A TFLite-style
+SAME 3×3 stride-2 stem therefore does not run, and an ONNX-style symmetric one does. TFLite
+puts the odd pad byte on the trailing edge and leaves `pad_left` at 0.
 
-**The output width must be `iw/stride`.** Any other width writes a full, correctly sized
-surface that is sheared. The tap a weight byte lands on drifts one output column per
-output row, exactly as a row-stride mismatch does. It shears for a narrow `ow` and an
-over-padded wide one alike.
+> [!CAUTION]
+> An output width other than `iw/stride` writes a full, correctly sized output that is
+> sheared. Software must program the output width as `iw/stride`.
 
-**The output width must also be a multiple of 16**, and `iw` being one does not imply
-it. At `ow` 24 and 56, output row 0 is exact and every row after it is wrong. Both come
-from an `iw` that is a multiple of 16. The widths `ow` 16, 32, 48, 64, 80, 96 and 112 are all
-exact. Taken with the rule above, this means `iw` must be a multiple of `16*stride`. The
-direct path carries no such rule, and this one comes with the channel fold.
+The tap a weight byte falls on drifts one output column per output row, exactly as a
+row-stride mismatch does. The output shears for a narrow `ow` and an over-padded wide one
+alike.
 
-**One image channel is programmed as two**, and the feature DMA's row width forces
-that, not the mode word. Bits[31:16] of `0x1078` carry `line_stride - 1`, which is right
-from `ic=2` up. At `ic=1` the DPU writes nothing at all, an untouched surface, not a
-wrong one. Raising that field alone revives the write at every plane, but nothing is
-exact, because the DMA then reads past the packed row. At `iw=64` (4 granules) the
-field must reach 4, and at `iw=128` (8 granules) it must reach 8. The best exactness any
-value reaches is about 40% of the surface [HW sweep, H96 MAX M9, measured 2026-07-28].
+> [!CAUTION]
+> An output width that is not a multiple of 16 writes output row 0 exactly and every row after
+> it wrong. Software must program the output width as a multiple of 16. An `iw` that is a
+> multiple of 16 does not imply it.
 
-So the library widens the row instead of the register, with a second interleaved
-channel of zero samples against zero weights. Then `ic=1` is bit-exact at 64×64,
-128×128 and 224×224, with the same envelope as `ic=2`. It refuses `k=1`, `k=5` and
-`oc=16` exactly where two channels do [HW sweep, H96 MAX M9, measured 2026-07-28]. The
-pad leaves the arithmetic untouched. The MAC term is zero because the weight is, and
-`sum_w` is unchanged, so the coefficient `A` is too. The asymmetric `B` multiplies a sum
-of raw samples that gains only zeros, so the zero-point fold keeps the caller's tap
-count.
+At `ow` 24 and 56, output row 0 is exact and every row after it is wrong. Both come from an
+`iw` that is a multiple of 16. The widths `ow` 16, 32, 48, 64, 80, 96 and 112 are all exact.
+Taken with the previous bound, `iw` must be a multiple of `16*stride`. The direct path has no
+such rule, and this one comes with the channel fold.
 
-The cost is one byte per pixel of host packing and a doubled feature read. The mode
-word's `ARGB_IN` nibble is `8 | (ic-1)`, so `ic=1` is also the one value leaving its low
-bits clear. But forcing that nibble to any of the working values leaves the surface
-untouched, so the nibble does not gate the write. The test `tests/rk3576_argb_ic1.c`
-holds this result, with the register sweep that found it.
-[HW sweep, H96 MAX M9, measured 2026-07-28]
+> [!CAUTION]
+> At `ic=1` the DPU writes nothing at all, and the output buffer is left untouched. Software
+> must program one image channel as two, with a second interleaved channel of zero samples
+> against zero weights.
+
+The feature DMA's row width forces the second channel, not the mode word. Bits[31:16] of
+`0x1078` contain `line_stride - 1`, which is right from `ic=2` up. Raising that field alone
+revives the write at every plane, but nothing is exact, because the DMA then reads past the
+packed row. At `iw=64` (4 granules) the field must reach 4 for the write, and at `iw=128`
+(8 granules) 8. The best exactness any value reaches is about 40% of the output
+[HW sweep, H96 MAX M9, measured 2026-07-28].
+
+With the second channel, `ic=1` is bit-exact at 64×64, 128×128 and 224×224, over the same
+shapes as `ic=2` [HW sweep, H96 MAX M9, measured 2026-07-28]. The pad leaves the arithmetic
+untouched. The MAC term is zero because the weight is, and `sum_w` is unchanged, so the
+coefficient `A` is too. The asymmetric `B` multiplies a sum of raw samples that gains only
+zeros, so the zero-point fold keeps the caller's tap count. The cost is one byte per pixel of
+host packing and a doubled feature read.
+
+The mode word's `ARGB_IN` nibble is `8 | (ic-1)`, so `ic=1` is also the one value leaving its
+low bits clear. The nibble does not control the write [HW sweep, H96 MAX M9, measured
+2026-07-28]. Forcing it to any of the working values leaves the output untouched.
 
 The output-channel count follows the direct path's multiple-of-32 rule (`oc=16` writes
-nothing). It does not follow the float first conv's 32-channel per-program cap: one
-int8 program delivers 64 output channels. Above that the caller splits, as on the float
+nothing). One int8 program delivers 64 output channels, where the float first conv has a
+32-channel per-program cap. Above that, software splits the output channels, as on the float
 path.
-
-`rocket_conv2d_int8_rk3576()` owns all of it:
-
-- The packed image
-- The cube
-- The row window
-- The output-channel split
-- The zero-point fold
-- The de-scatter
-
-It is bit-exact against a CPU model at twenty shapes. Those include the 224×224
-stride-2 stem at `oc` 32 and 64 and at `k` 3 and 7. The `fq` group of
-`rk3576_conv_lib_gate` holds this, and also asserts all seven refusals in both
-directions. [HW sweep, H96 MAX M9]
-
-A capture is an oracle for a whole program, and running one verbatim separates a dead
-mode from a wrong extrapolation. This library's emitter reproduced twelve int8 ARGB
-captures register for register and still wrote nothing at every geometry tried. That
-reads as a dead datapath.
-
-The test `tests/rk3576_fc_vendor.c` takes the captured op stream out of the golden
-table, patches only the five address registers and submits it. The vendor's own
-program then writes its whole surface. So the mode works, and the extrapolation away
-from the captured geometry is what fails. Every bound above comes from walking from
-that geometry back toward a small one, one axis at a time.
-
-The low field of `0x100C` is not precision-independent. The found int8 ARGB programs
-carry `0x2000a006` and the float ones `0x2020a122`, so the field is 6 at int8 and 2 at
-fp16. Bit 2 clears on the float path, while `GROUP_LINE_OFF` and `ARGB_IN` stay where
-they are. The `ARGB_IN` field tracks the channel count as `8 | (ic-1)`: `0x8` at 1
-channel, `0xA` at 3 and `0xB` at 4. That confirms the reading that Mesa's 1-channel
-`0x8` is the same field.
 
 ### The fp16 first-conv program
 
-The fp16 first conv is a different program, not the int8 one at another precision. Six
-fields move with the precision, and the first two are the shape of the datapath rather
-than a width. Manufactured captures separate every one of them, each varying one axis
-against the rest. They vary `iw` at 16, 32 and 64, `ih` at 16, 32 and 48, both strides,
-`k` 1/3/5/7 and `oc` 16/32/48/64. [source-confirmed, RKNN-Toolkit2 rk3576 float build]
+The fp16 first conv is a separate program from the int8 one. The seven fields below move with
+the precision. The first two change the shape of the datapath rather than a width
+[source-confirmed, RKNN-Toolkit2 rk3576 float build]:
 
 | | int8 | fp16 |
 |---|---|---|
@@ -1156,107 +1050,133 @@ against the rest. They vary `iw` at 16, 32 and 64, `ih` at 16, 32 and 48, both s
 | `0x1044` low | the granule count | `iw` |
 | `0x118C` | `(entries-1, entries-2)` | `(entries-1, entries-1)` |
 | DDR row stride (`0x1090`) | `iw*ic/16` | `iw*ic*2/16` |
-| CVT | runs: Q14 unity, the uint8 zero point as a per-channel offset | bypassed, offsets zero |
+| CVT | runs: Q14 unity, with a per-channel offset that is inert | bypassed, offsets zero |
 
-There is no channel fold at fp16. The int8 path folds the kernel's width into the
-channel axis (4 lanes per pixel column, `kw` columns), so it programs 12 at `kw=3`
-against a feature DMA of 3. The float path does not fold: the programmed count is the
-image's, and the taps stay on the kernel axis. The `+1` granule goes with the fold,
-because it is the fold's lookahead (the last output column of a row reads `kw` pixels,
-which reach past its own granule). A float program at `k` 1, 3, 5 and 7 carries the
-same entry count at every kernel size.
+**Conditions:** manufactured captures with `iw` at 16, 32 and 64, `ih` at 16, 32 and 48, both
+strides, `k` 1/3/5/7 and `oc` 16/32/48/64.
 
-The decoded weight cube says the same thing independently. It carries explicit `kh`
-and `kw` axes with four lanes inside a tap, where a folded cube would carry the columns
-inside the lanes.
+The fp16 program has no channel fold. The int8 path folds the kernel's width into the channel
+axis (4 lanes per pixel column, `kw` columns), so it programs 12 at `kw=3` against a feature
+DMA of 3. The float path does not fold: the programmed count is the image's, and the taps
+stay on the kernel axis. The `+1` granule goes with the fold, because it is the fold's
+lookahead (the last output column of a row reads `kw` pixels, which reach past its own
+granule). A float program at `k` 1, 3, 5 and 7 has the same entry count at every kernel size.
 
-The input is an fp16 packed image: 3 or 4 interleaved halfwords per pixel, which is why
-the row stride takes the element size. The CVT is bypassed rather than configured,
-since a float image is already in the value domain the MAC wants. The per-channel
-truncates and Q14 scales stay in `0x1048` under the bypass, where they are inert.
+The decoded fp16 weight cube agrees independently. It has explicit `kh` and `kw` axes with four
+lanes inside a tap, where a folded cube would put the columns inside the lanes.
 
-Read correctly, the weight-byte registers are the same two on both paths. Register
-`0x1020` is the bytes one output channel occupies, the element count scaled by the
-element size. The high half of `0x1030` is twice the raw element count. The two
-coincide at fp16 and differ by the factor of two at int8, which is why one can be
-mistaken for the other.
+The input is an fp16 packed image: 3 or 4 interleaved halfwords per pixel, which is why the
+row stride takes the element size. The CVT is bypassed rather than configured, since a float
+image is already in the value domain the MAC wants. The per-channel truncates and Q14 scales
+stay in `0x1048` under the bypass, where they are inert.
 
-The element count per output channel is `ic*kh*kw` on the direct path, `4*kh*kw` on the
-float first conv (dense, no round-up of the lane group to 16) and `kh*round16(4*kw)` on
-the int8 one. Depthwise is its own case and must not be scaled. A depthwise weight
-occupies a 16-bit slot whatever the precision, so its count is already the float one.
+The weight-byte registers are the same two on both paths. Register `0x1020` is the bytes one
+output channel occupies, the element count scaled by the element size. The high half of
+`0x1030` is twice the raw element count. The two coincide at fp16 and differ by the factor of
+two at int8, so one can be mistaken for the other.
 
-### Output channels per first-conv program
+The element count per output channel is `ic*kh*kw` on the direct path, `4*kh*kw` on the float
+first conv (dense, no round-up of the lane group to 16) and `kh*round16(4*kw)` on the int8
+one. Software must not scale the depthwise count. A depthwise weight occupies a 16-bit slot
+whatever the precision, so its count is already the float one.
 
-One first-conv program delivers **32 output channels and no more**. At `oc` 48, 64 and
-96, exactly 32 whole channels come back bit-exact, and the rest of the surface is never
-written. The written part is a contiguous prefix, not the interleave the int32 writer's
-byte budget gives. At `oc` 24 and 32 the surface is complete. [HW sweep, H96 MAX M9]
+### Output channels per fp16 first-conv program
 
-This is not a register the emitter gets wrong: the program matches the vendor's own
-`oc=48` and `oc=64` captures register for register. The weight cube reproduces those
-captures too, so the vendor's compiler emits single programs the part does not fully
-execute. The recourse is the one the direct path already uses for its weight slice:
-split the output channels, one submit per tile of 32. Each tile is an independent
-convolution over its own channels.
+One fp16 first-conv program delivers 32 output channels and no more [HW sweep, H96 MAX M9].
+At `oc` 24 and 32 the output is complete. The written part is a contiguous prefix, not the
+interleave the int32 writer's byte budget gives.
 
-The entry `rocket_conv2d_fp16_rk3576()` does the split. The output cube's channel groups
-are contiguous planes, so a tile is the same BO at a plane offset.
+> [!CAUTION]
+> At `oc` 48, 64 and 96, exactly 32 whole channels come back bit-exact, and the rest of the
+> output is never written. Software must split the output channels into tiles of 32, one
+> submit per tile.
 
-The row window composes with it on the other axis. The planner at a precision is
-`rocket_rk3576_plan_rows_prec()`. It changes the CBUF entry count per row and the row
-cap the allowance affords. On this path it also changes the feature offsets. A float
-packed image is `ic` interleaved halfwords per pixel, where an int8 one is bytes.
+The vendor's compiler emits single programs that the RK3576 does not fully execute. A program
+and weight cube that match the vendor's own `oc=48` and `oc=64` captures register for register
+write only 32 channels. The split is the one the direct path uses for its weight slice, and
+each tile is an independent convolution over its own channels. The output cube's channel
+groups are contiguous planes, so a tile is the same BO at a plane offset.
 
-A 224×224 plane is 6272 granules against a 6144 ceiling and has no single-task plan.
-With the window it is bit-exact at `k` 3 and 7 and at `oc` 32 and 64, the two splits
-running together.
+The row window composes with the output-channel split on the other axis. At fp16 the CBUF
+entry count per row and the row cap the allowance gives both change. On this path the feature
+offsets also change, because a float packed image is `ic` interleaved halfwords per pixel,
+where an int8 one is bytes.
+
+A 224×224 plane is 6272 granules against a 6144 ceiling and has no single-task plan. With the
+window it is bit-exact at `k` 3 and 7 and at `oc` 32 and 64, the two splits running together.
 
 ### The vendor's float BS arrangement
 
-The vendor's float programs use a BS arrangement that this library does not. Three
-DPU_RDMA words carry a different constant in every vendor float program. Two of them are
-`0x5034` at `0x1` and `0x5044` at `0x40010050`, against the integer path's `0x41` and
-`0x40000010`. This library reproduces both, and both are bit-exact on the part.
+The vendor's float programs use a BS arrangement that differs from the integer path's in
+three DPU_RDMA registers and in `0x4044`. Every vendor float program contains the values below
+[source-confirmed: RKNN-Toolkit2 captures]. The last column is measured on the RK3576
+[HW sweep, H96 MAX M9]:
 
-The third shows that register fidelity is not the goal. **`0x501C` (BRDMA_CFG), the BS
-operand reader, reads `0x100` in every vendor float program, against the integer path's
-`0x710`. Emitting the vendor's value makes the DPU write nothing at all**: an untouched
-surface, no fault, nothing in dmesg. It does not act alone: paired with the BS ALU config
-those same programs carry (`0x4044 = 2`, where the integer path uses 1), the writer runs
-again. The arithmetic is then wrong on about a tenth of the surface
-(1866/2048, worst relative error 0.016).
-[HW sweep, H96 MAX M9, leave-one-out over the six float-path registers]
+| Register | Integer path | Vendor float programs | Vendor value on the RK3576 |
+|---|---|---|---|
+| `0x5034` | `0x41` | `0x1` | bit-exact |
+| `0x5044` | `0x40000010` | `0x40010050` | bit-exact |
+| `0x501C` (BRDMA_CFG), the BS operand reader | `0x710` | `0x100` | the DPU writes nothing |
+| `0x4044`, the BS ALU config | 1 | 2 | bit-exact with `0x501C` at `0x710` |
 
-On its own, with `0x501C` at `0x710`, `0x4044 = 2` is bit-exact. So the vendor's float
-epilogue is a different BS *arrangement*, not a different constant. This library packs
-its A/B/C coefficient group for the integer one. Keep `0x710` until the arrangement is
-decoded as a whole.
-[HW sweep, H96 MAX M9, leave-one-out over the six float-path registers]
+> [!CAUTION]
+> The vendor's `0x501C` value `0x100` makes the DPU write nothing at all: an untouched output,
+> no fault, nothing in dmesg. Paired with the vendor's `0x4044 = 2`, the writer runs again,
+> and the arithmetic is wrong on about a tenth of the output. Of 2048 elements, 1866 are within
+> 1% of the CPU model, and the worst relative error is 0.016. Software must keep `0x501C` at
+> `0x710` with a coefficient group packed for the integer arrangement [HW sweep, H96 MAX M9].
 
-Two more float-path corrections are bit-exact on the part. CORE `0x3018` bit 0 is an int8
-marker that every float program clears. DPU `0x4010`'s middle field (the DPU's input
-width) stays zero on the float path, where only the output width and the processing
-precision move.
+On its own, with `0x501C` at `0x710`, `0x4044 = 2` is bit-exact. The vendor's float epilogue
+is therefore a different BS *arrangement*, not a different constant, and it is not decoded as
+a whole.
+
+Two more float-path values are bit-exact on the RK3576. CORE `0x3018` bit 0 is an int8
+marker that every float program clears. DPU `0x4010`'s middle field (the DPU's input width)
+stays zero on the float path, where only the output width and the processing precision move.
 
 ### The vendor compiler's packed-path choice
 
-The vendor compiler takes the packed path at 1, 3 and 4 channels, and not at 2. It
-compiles a 2-channel float conv down the direct path, with no `GROUP_LINE_OFF` and no
-`ARGB_IN`. That is a toolkit preference and not a hardware bound. The packed path
-computes bit-exactly at two channels on the part (`rk3576_conv_lib_gate fc-2ch-k3`), so
-the library takes it for every count at or below four. In a capture set, a channel count
-with no ARGB capture is not evidence that the part refuses that count.
+The vendor compiler takes the packed path at 1, 3 and 4 channels, and not at 2. It compiles a
+2-channel float conv down the direct path, with no `GROUP_LINE_OFF` and no `ARGB_IN`. That
+choice is a toolkit preference: the packed path is bit-exact at two channels on the RK3576
+[HW sweep, H96 MAX M9]. In a capture set, a channel count with no ARGB capture does not show
+that the RK3576 refuses that count.
+
+### Software support
+
+In `librocketnpu`, `rocket_rk3576_weight_argb_fp16()` packs the fp16 ARGB cube and
+`rocket_rk3576_weight_argb_int8()` the int8 one.
+
+`rocket_conv2d_int8_rk3576()` implements the int8 first conv, its path for `ic <= 4`:
+
+- The packed image
+- The cube
+- The row window
+- The output-channel split
+- The zero-point fold
+- The de-tile
+
+It is bit-exact against a CPU model at twenty shapes [HW sweep, H96 MAX M9]. They include the
+224×224 stride-2 stem at `oc` 32 and 64 and at `k` 3 and 7. It refuses the three silent
+geometry bounds rather than leaving them to compute. It widens a 1-channel image's row to two
+channels instead of raising the `0x1078` field. At `ic=1` it refuses `k=1`, `k=5` and `oc=16`
+exactly where two channels do.
+
+`rocket_conv2d_fp16_rk3576()` does the fp16 output-channel split. The planner at a precision
+is `rocket_rk3576_plan_rows_prec()`, which sets the CBUF entry count per row, the row cap and
+the feature offsets for the precision.
+
+On the float path `librocketnpu` reproduces the vendor's `0x5034` and `0x5044` values. It
+packs its coefficient group (`A`, `B`, `C`) for the integer BS arrangement, and keeps
+`0x501C` at `0x710`. It takes the packed path for every channel count at or below four.
 
 ## CBUF row reuse across a windowed sequence
 
-The emitter's own windows refetch: each task fetches its whole window against a CBUF
-base of zero, which is self-consistent and bit-exact on the part. The vendor's programs
-keep rows resident instead, and twelve captured continuation tasks pin the scheme
-exactly.
-
-Consecutive windows share `kh - stride_y` input rows. The vendor keeps those resident
-and moves the CBUF write pointer instead of refetching them. Seven registers carry it:
+Consecutive windows share `kh - stride_y` input rows. The vendor's programs keep those rows
+resident and move the CBUF write pointer instead of refetching them [source-confirmed:
+RKNN-Toolkit2 captures]. A task can instead fetch its whole window against a CBUF base of
+zero, which is self-consistent and bit-exact on the RK3576. Seven registers program a
+continuation task:
 
 | Register | On a continuation task |
 |---|---|
@@ -1268,60 +1188,60 @@ and moves the CBUF write pointer instead of refetching them. Seven registers car
 | `0x1018` bit 31 | set when the task retains rows |
 | `0x1038` bit 31 | set on every task past the first, retaining or not |
 
-The feature address (`0x1088`) also points at the first new row rather than at the
-window start. The vendor's `dw` capture is the clean case. Its second task reads input
-rows 89..111 of a 112-row plane, retains 2, and carries `0x1088` = row 91.
+The feature address (`0x1088`) also points at the first new row rather than at the window
+start. In the vendor's `dw` capture, the second task reads input rows 89..111 of a 112-row
+plane, retains 2, and has `0x1088` = row 91.
 
-`retained` is the window arithmetic, the previous window's end minus this window's
-start, which at these geometries equals `kh - stride_y`. When it is zero, the vendor
-resets the base to the sequence's origin instead of continuing it, which is what a k=1
-continuation carries.
+`retained` is the window arithmetic, the previous window's end minus this window's start,
+which at these geometries equals `kh - stride_y`. At zero, the vendor resets the base to the
+sequence's origin instead of continuing it, which is what a k=1 continuation contains.
 
-`rocket_rk3576_plan_rows()` fills `retained` and `cbuf_resident` on every task, and
-`gen_conv2d_int8_rk3576_reuse()` emits the reuse form. The reuse is opt-in. It saves
-`entries * retained` granules of feature DMA per continuation task, under a tenth of the
-window's traffic at the captured geometries. A window costs ~1.2 ms, and that cost is
-the driver's completion poll, not the fetch. So the reuse does not shorten a windowed
-conv measurably.
+Reuse saves `entries * retained` granules of feature DMA per continuation task, under a tenth
+of the window's traffic at the captured geometries. A window costs ~1.2 ms, and that cost is
+the driver's completion poll, not the fetch. Reuse is therefore expected not to shorten a
+windowed conv measurably [expected].
 
-What the reuse buys is that the vendor's split programs become a complete oracle. Seven
-registers that the gate's diff cannot otherwise reach are checked exactly across
-thirteen continuation tasks. The tasks span three kernel sizes, both strides, both
-channel counts and all three CBUF origins.
+> [!CAUTION]
+> A continuation task with a wrong CBUF base reads resident rows that are not there, and
+> corrupts the output silently. Software must derive each continuation task's base and resume
+> point from the window arithmetic above.
 
-**The reuse path is unvalidated on silicon.** A wrong base reads resident rows that are
-not there and corrupts silently, so the refetching path stays the default.
+**Not characterized:** the reuse path on silicon, and sequences of three or more tasks. Every
+captured split is two tasks. Over a longer sequence, `cbuf_resident` is expected to accumulate
+by the same arithmetic and nothing more [expected].
 
-Three-task sequences are not pinned. Every captured split is two tasks. Accumulation of
-`cbuf_resident` over a longer sequence is the natural extension of the same arithmetic
-and nothing more. [expected]
+In `librocketnpu`, `rocket_rk3576_plan_rows()` fills `retained` and `cbuf_resident` on every
+task, and `gen_conv2d_int8_rk3576_reuse()` emits the reuse form. The reuse form is opt-in, and
+the refetching path is the default. Emitting it makes the vendor's split programs a complete
+reference for seven registers the regcmd encoder's register comparison cannot otherwise reach.
 
 ## The same graph, compiled three times
 
 Each `.rknn` capture holds its graph compiled three times, and the three compiles never
-differ in geometry. Two of them are the same per-layer task split at different CBUF
-origins, 0 and 7168 granules. The origin is added to every base in the table above. The
-third splits the whole chain instead of each layer. It runs all five layers over the top
-half of the image, then all five over the bottom half, from a CBUF origin of 6144. It is
-the one that sets `0x1014` bit 28 and drops the early duplicate `0x1038` preamble write
-(138 register writes rather than 139).
+differ in geometry. Two of them are the same per-layer task split at different CBUF origins,
+0 and 7168 granules. The origin is added to every base in the table above. The third splits
+the whole chain instead of each layer. It runs all five layers over the top half of the image,
+then all five over the bottom half, from a CBUF origin of 6144. It is the one that sets
+`0x1014` bit 28 and drops the early duplicate `0x1038` preamble write (138 register writes
+rather than 139).
 
-One reading fits: the third is the two-core compile. Under that reading, 7168 granules
-are one core's whole CBUF pool, and an image-plane split is the standard way to use two
-cores. The fit is not evidence. Bit 28 of `0x1014` sits where the RK3588 puts
-`NN_MODE`, which is consistent with a mode bit and says nothing about which mode. All of
-it is decodable off-device, and none of it is decided by these captures.
+On one reading, the third compile is the two-core compile [hypothesis]. Under that reading,
+7168 granules are one core's whole CBUF pool, and an image-plane split is the standard way to
+use two cores. Bit 28 of `0x1014` sits where the RK3588 puts `NN_MODE`, which is consistent
+with a mode bit and says nothing about which mode. All of it is decodable off-device, and none
+of it is decided by these captures.
 
-None of this matters to an emitter. The origins, the format low bits (`0x1018`,
-`0x1038`) and the allowance field are the vendor allocator's per-compile choices. A
-hardware sweep found only `0x1018` bit 30 and `0x1038` bit 31 live on the int8 path.
+A regcmd encoder does not need to reproduce the three compiles. The origins, the format low bits
+(`0x1018`, `0x1038`) and the allowance field are the vendor allocator's per-compile choices.
+On the refetching int8 path the live bits measured are `0x1018` bit 30 and `0x1038` bit 31
+(§"The row window and its three registers"). `0x1018` bit 31, the reuse form's retain flag, is
+not characterized on the RK3576.
 
-## The DPU epilogue: what an appended stage moves
+## The appended DPU epilogue stage
 
-Three captures are the same conv as `conv2d_rk3576.rknn` with one extra op appended, one
-each of a bias add, a scale and an eltwise sum. That makes them a controlled experiment
-run by the vendor's own compiler. The delta against the plain conv is three registers,
-and it is the same three, with the same values, for all three ops:
+One DPU epilogue op appended to a convolution changes three registers [source-confirmed:
+RKNN-Toolkit2 captures]. A bias add, a scale and an eltwise sum each change the same three, to
+the same values:
 
 | Register | plain conv | conv + an epilogue stage |
 |---|---|---|
@@ -1329,25 +1249,23 @@ and it is the same three, with the same values, for all three ops:
 | `0x4050` BS config | `0x80011111` | `0x80021111` (bits[19:16] 1 -> 2) |
 | `0x501C` BRDMA config | `0x710` | `0x114` |
 
-The finding is that the three ops are indistinguishable here. These registers do not
-encode which epilogue op runs. A per-output-channel bias, a per-channel scale and a
-per-channel sum all lower onto one BS-stage configuration. What separates them is the
-coefficient buffer's contents and the requant triple (`0x40AC`-`0x40B4`), which is the
-only other thing that differs between the three captures.
+These registers do not encode which epilogue op runs. A per-output-channel bias, a
+per-channel scale and a per-channel sum all lower onto one BS-stage configuration. What
+separates them is the coefficient buffer's contents and the requant triple
+(`0x40AC`-`0x40B4`), the only other thing that differs between the three captures.
 
-Neither `0x4050` nor `0x501C` decodes under the RK3588's field map at these offsets. The
-value `0x80011111` sets bit 12, which is reserved in the RK3588's `BS_CFG`. The RK3576's
-`BRDMA_CFG` is wider than the RK3588's 5-bit field. So this note carries both as
-transcribed constants rather than decomposed fields. The reading that fits is that the
-BS stage takes its second operand from `DPU_RDMA` rather than from the inline path. That
-is the same stage and the same buffer as the asymmetric-weight `B` term.
+Neither `0x4050` nor `0x501C` decodes under the RK3588's field map at these offsets. The value
+`0x80011111` sets bit 12, which is reserved in the RK3588's `BS_CFG`. The RK3576's
+`BRDMA_CFG` is wider than the RK3588's 5-bit field. Both values are therefore transcribed
+constants rather than decomposed fields. The BS stage appears to take its second operand from
+`DPU_RDMA` rather than from the inline path [hypothesis]. On that reading it is the same stage
+and the same buffer as the asymmetric-weight `B` term.
 
 ### The BS operand source
 
-Driven one register at a time, the bundle separates cleanly, and `0x501C` moves the BS
-operand source. The drive runs against a conv carrying a known non-zero `B`
-(`rk3576_conv_gate` with `ROCKET_G_WZP=40`, which reports how many outputs each
-candidate sign convention explains). [HW sweep, H96 MAX M9]
+`0x501C` is the BS operand-source register, and `0x4044` and `0x4050` are inert without it
+[HW sweep, H96 MAX M9]. Driven one at a time and together, against a conv with a known
+non-zero `B`, the three registers give these outputs:
 
 | driven | outputs `+B*sum(x)` explains | outputs no-B explains |
 |---|---|---|
@@ -1360,28 +1278,26 @@ candidate sign convention explains). [HW sweep, H96 MAX M9]
 | `0x4050` + `0x501C` | 1423/32768 | **8192/32768** |
 | all three | 1423/32768 | 8192/32768 |
 
-`0x501C` is the operand-source register, and the other two are inert without it. On the
-plain path, `0x4044` and `0x4050` change nothing at all. Not one output of a
-32768-element surface moves, down to the incidental 537 that the no-B model always
-coincides on. Driven alone, **`0x501C` stops the DPU writing**: "task never wrote its
-rows" over four retries, no fault, nothing in dmesg.
+On the plain path, `0x4044` and `0x4050` change nothing at all. Not one of the 32768 outputs
+moves, down to the incidental 537 that the no-B model always coincides on.
 
-The register needs a matching BS config to write again, and the matching config depends
-on the value. The epilogue's `0x114` is re-enabled by `0x4050` bits[19:16] = 2, and the
-float path's `0x100` by `0x4044` = 2.
+> [!CAUTION]
+> Driven alone, `0x501C` stops the DPU writing, with no fault and nothing in dmesg. Software
+> must program `0x501C` with its matching BS config, which depends on the value. The
+> epilogue's `0x114` is re-enabled by `0x4050` bits[19:16] = 2, and the float path's `0x100`
+> by `0x4044` = 2.
 
-Under the epilogue arrangement, the BS stage does not read the coefficient group's `B`.
-The count that `+B*sum(x)` explains falls from every output to 1423. Exactly one output
-in four matches the model with no B term at all. The counts are 8192/32768, 7200/28800
-and 512/2048 on three different shapes, a quarter each time.
+Under the epilogue arrangement, the BS stage does not read the coefficient group's `B`. The
+count that `+B*sum(x)` explains falls from every output to 1423. Exactly one output in four
+matches the model with no B term at all. The counts are 8192/32768, 7200/28800 and 512/2048 on
+three different shapes, a quarter each time.
 
-So these registers do not select an
-epilogue *op*, as the three captures showed. They select where the BS stage takes its
-second operand from. The quarter is what a buffer packed for the inline positions looks
-like when read as the other kind of stream.
+These registers select where the BS stage takes its second operand from, not an epilogue
+*op*. The quarter is what a buffer packed for the inline positions looks like when read as
+the other kind of stream [hypothesis].
 
-The float path's refusal to write is the same mechanism, and it makes a third BS
-arrangement visible:
+The float path's refusal to write is the same mechanism, and it makes a third BS arrangement
+visible:
 
 | arrangement | `0x4044` | `0x4050` | `0x501C` |
 |---|---|---|---|
@@ -1389,24 +1305,28 @@ arrangement visible:
 | int8 conv + an epilogue stage | 0 | `0x80021111` | `0x114` |
 | vendor float conv | 2 | `0x00021111` | `0x100` |
 
-This library packs its A/B/C group for the first, which is bit-exact at both precisions.
-Decoding the other two would say what the vendor's epilogue and float paths buy. Neither
-is needed to compute.
+The first arrangement is bit-exact at both precisions with a coefficient group (`A`, `B`, `C`)
+packed for it. `librocketnpu` packs its coefficient group for that arrangement.
+
+**Not characterized:** the fields of the other two arrangements. Neither is needed to
+compute.
 
 ## Depthwise convolution
 
-`gen_conv2d_dw_int8_rk3576()` computes bit-exactly. Its register program reproduces the
-vendor across 88 captured task programs with no field left open. That is not sufficient,
-because two of the path's inputs are buffers rather than registers. A `.rknn` capture
-carries a register program. The coefficient group and the weight cube are memory the
-registers point at, and a capture says nothing about either. Both differ from the direct
-path's and both are silent when wrong, so both must be read off the part.
+The int8 depthwise convolution is bit-exact on the RK3576 [HW sweep, H96 MAX M9]. A register
+program that matches the vendor's does not on its own give a correct result. Two of the path's
+inputs are buffers rather than registers: the coefficient group and the weight cube. A `.rknn`
+capture contains a register program and says nothing about the memory the registers point
+at. Both buffers differ from the direct path's, and a wrong one gives incorrect output
+with no fault. Both layouts are therefore measured on the RK3576.
 
-### The envelope
+In `librocketnpu`, `gen_conv2d_dw_int8_rk3576()` emits the depthwise program. It reproduces
+the vendor's across 88 captured task programs with no field left open.
 
-The depthwise path is bit-exact against a CPU model over the whole surface, with every
-shape at `maxdiff 0`. The gate is `rk3576_conv_gate dw` at 35 shapes, gap-free with no
-cold-start-wall retries. [HW sweep, H96 MAX M9]
+### Validated depthwise shapes
+
+The depthwise path is bit-exact against a CPU model over the whole output, at every shape
+below [HW sweep, H96 MAX M9].
 
 | axis | covered |
 |---|---|
@@ -1417,108 +1337,90 @@ cold-start-wall retries. [HW sweep, H96 MAX M9]
 | plane | 16×16 to 112×112, plus 15×18, 17×19 and 19×19 |
 | row window | 1, 2, 3 and 6 tasks |
 
-A depthwise task costs about 1.1-1.2 ms of NPU wall, whatever the channel count, the
-kernel or the plane. That is the same per-submit dispatch floor the direct path pays,
-with no compute term visible at these shapes. A row window costs that per task.
+A depthwise task costs about 1.1-1.2 ms of NPU wall-clock time, whatever the channel count,
+the kernel or the plane. The cost is the same fixed per-submit dispatch cost the direct path
+has, with no compute term visible at these shapes. A row window costs that per task.
 
-The awkward numbers in that table are its purpose. Channel counts that are not multiples
-of 32 are where this path's granules stop agreeing:
+Channel counts that are not multiples of 32 are where this path's granule counts stop
+agreeing:
 
 - The weight cube rounds to 16.
 - The CBUF allocation takes a 16-group count of 3 mod 4 one group further.
 - The 2-bit group field in `0x4050` wraps.
 
-A gate that rounds every depthwise count up to 32 exercises none of that. Planes whose
-`ow*oh` is not a multiple of four are where the padded output surface stride below
-shows. Channel counts in multiples of 32 and planes in multiples of four hide both.
+Planes whose `ow*oh` is not a multiple of four are where the padded output surface stride
+below applies.
+
+> [!NOTE]
+> A test that rounds every depthwise channel count up to 32 exercises none of those
+> quantities. Channel counts in multiples of 32 and planes in multiples of four hide both.
 
 ### The depthwise coefficient group
 
-The depthwise coefficient group covers 8 output channels in 48 bytes and carries no `B`.
-The direct path's group is 64 bytes for the same 8 channels: `A` (int32 bias) at
-`(oc%8)*4`, `B` (weight zero point) at `+32`, `C` (int16 multiplier) at `+48`. The
-depthwise layout is:
+The depthwise coefficient group covers 8 output channels in 48 bytes and has no `B`. The
+direct path's group is 64 bytes for the same 8 channels: `A` (int32 bias) at `(oc%8)*4`, `B`
+(weight zero point) at `+32`, `C` (int16 multiplier) at `+48`. The depthwise layout is:
 
 ```
 A[oc]  int32  at (oc%8)*4
 C[oc]  int16  at 32 + (oc%8)*2
 ```
 
-Channel `oc` sits in group `oc/8`, and the group stride is 48.
-`rocket_rk3576_pack_coeff_dw()` and `rocket_rk3576_coeff_bytes_dw()` implement it.
-[HW sweep, H96 MAX M9]
+Channel `oc` sits in group `oc/8`, and the group stride is 48 [HW sweep, H96 MAX M9].
 
-Handed the 64-byte group, the depthwise path reads `A` and `C` at indices that drift
-apart at different rates. There, `A` strides 4 bytes per channel and `C` strides 2. Past the
-first eight channels, each is read out of a different group. The BS stage computes
-`(acc + A) * C`, so the surface comes back as follows:
+> [!CAUTION]
+> Handed the direct path's 64-byte group, the depthwise path writes a correctly sized, mostly
+> empty output with no fault. Software must pack the depthwise coefficient group as 48 bytes
+> per 8 channels.
+
+With the 64-byte group, the depthwise path reads `A` and `C` at indices that drift apart at
+different rates. There, `A` strides 4 bytes per channel and `C` strides 2. Past the first
+eight channels, each is read out of a different group. The BS stage computes `(acc + A) * C`,
+so the output comes back as follows:
 
 - Most channels multiply a bias by a zero and never reach DDR at all.
-- A few channels, whose `C` lands in the `A` region, square their own bias.
+- A few channels, whose `C` falls in the `A` region, square their own bias.
 - One group's `C` multipliers are read as the next group's biases.
 
-The result is a correctly sized, mostly empty surface with no fault to catch it. That is
-the same signature a wrong geometry register gives, so it reads as a datapath defect
-rather than a packing one.
+The result has the same signature a wrong geometry register gives, so it reads as a datapath
+defect rather than a packing one.
 
-### The B term is added: `acc + B*sum(x)`
+In `librocketnpu`, `rocket_rk3576_pack_coeff_dw()` and `rocket_rk3576_coeff_bytes_dw()`
+implement the depthwise layout.
 
-Every vendor capture carries `B = 0`, so a capture shows the field's position and width
-but not its sign convention. Driving `B` on the direct path against a CPU model settles
-it. The candidate models use `sum(x)`, the sum of the input elements the output
-contracted. The model `acc + B*sum(x)` explains every output of every direct shape in
-the conv gate's envelope group. It does so at `B` = 1, 40, 127, -37 and -128.
-[HW sweep, H96 MAX M9, measured 2026-07-27]
-
-The models `-B*sum(x)` and an inert `B` explain only the few percent that coincide. That
-share is larger at small `|B|`, because the correction often rounds to the same int8.
-The variable `ROCKET_G_WZP` in `tests/rk3576_conv_gate.c` drives it and scores all three
-models. [HW sweep, H96 MAX M9, measured 2026-07-27]
-
-**A weight zero point is programmed negated.** An asymmetric weight is
-`w_true = w_stored - wzp`, and its correction is `-wzp*sum(x)`. So pass `B = -wzp` to
-`rocket_rk3576_pack_coeff_asym()`, whose parameter is named `b_term` for exactly that
-reason. A reversed sign gives a plausible surface with a bias-shaped error and nothing
-that faults.
-
-The depthwise group has no slot for a weight zero point, so **an asymmetric depthwise
-weight must be folded into the bias**. There is no `_asym` form for it.
+The depthwise group has no slot for a weight zero point. Its correction is not a per-channel
+constant, so the bias cannot apply it either. Software must apply it in the weight cube, as
+`w - w_zp` across each (channel, tap)'s two live bytes ([rk3576.md](rk3576.md) §"The depthwise
+weight zero point").
 
 ### The weight cube
 
-The depthwise weight cube has two layouts, one per precision, which share a block
-structure and nothing else.
+The depthwise weight cube has two layouts, one per precision. They share a block structure
+and nothing else.
 
-The float cube is decoded, not inferred. Its captures carry a unique weight value per
-(channel, tap), at C = 24, 32, 48, 64 and 128 and at k = 3 and 5:
+The float cube places each weight in a 16-bit slot:
 
 ```
 slot(c, kh, kw) = (c/32)*32*KH*KW + (kh*KW + kw)*held + (c%32)
 held            = min(32, C - (c/32)*32)
 ```
 
+The layout is decoded from vendor captures with a unique weight value per (channel, tap).
+The captures cover C = 24, 32, 48, 64 and 128, at k = 3 and 5.
+
 The layout has four properties:
 
-- A weight occupies a 16-bit slot. That is why one geometry's float and int8 cubes are
-  the same size. It is also why `WEIGHT_BYTES` carries a factor of 2 that is not the
-  element size.
+- A weight occupies a 16-bit slot, so one geometry's float and int8 cubes are the same size.
+  The slot width is also why `WEIGHT_BYTES` contains a factor of 2 that is not the element
+  size.
 - Channels group by 32, each group a contiguous block.
 - Inside a group the order is tap-major, kh outer.
-- A trailing partial group is dense. Its tap stride is the channels it holds, not 32,
-  so C=48 is 432 slots and not 576.
+- A trailing partial group is dense. Its tap stride is the number of channels it holds, not
+  32, so C=48 is 432 slots and not 576.
 
-`rocket_rk3576_weight_dw()` implements this layout, and `dw/named/mknamed.py --decode`
-re-derives it from the committed captures without a board. The naming must be carried
-in float weights. Per-channel weight quantization normalizes each channel by its own
-maximum, which erases any naming carried in magnitude. The fp16 format represents
-integers exactly to 2048, so a unique-integer ramp survives the float path untouched.
-The ramp is findable in the file by its exact value set.
-
-The int8 cube is **not the float cube's low byte**, and it is not the RK3588's
-group-of-64 single-byte packing either. The probe mode `rk3576_conv_gate dwmap` reads it
-off the part. That mode drives an impulse feature against a cube that is zero but for
-one byte, and reports which output that byte reaches. Over a C=32 k=3 cube, every one of
-the 576 bytes reaches exactly one (channel, tap): [HW sweep, H96 MAX M9]
+The int8 cube is neither the float cube's low byte nor the RK3588's group-of-64 single-byte
+packing. Each byte of a C=32 k=3 cube, 576 in all, reaches exactly one (channel, tap)
+[HW sweep, H96 MAX M9]:
 
 ```
 byte(c, kh, kw) = (c/64)*64*KH*KW*2 + (kh*KW + kw)*held*2 + 4*((c%64)/2) + (c%2)
@@ -1528,335 +1430,319 @@ held            = min(64, round16(C - (c/64)*64))
 Against the float cube, the int8 cube differs in three ways:
 
 - The channel group is 64, where the float cube's is 32.
-- Inside a tap block, the channel a byte carries is `2*(b/4) + (b%2)`. So channel `c`
-  owns two bytes per tap, at `4*(c/2) + (c%2)` and two further on. **Both bytes are live
-  and both contribute.** A weight written into both is added twice, so the packer writes
-  the first and leaves the second at zero.
-- A trailing partial group strides by what it holds rounded up to 16, where the float
-  cube's is dense in the raw count. That makes the whole cube exactly
-  `round16(C)*KH*KW*2` bytes.
+- Inside a tap block, the byte at offset `b` belongs to channel `2*(b/4) + (b%2)`. Channel
+  `c` has two bytes per tap, at `4*(c/2) + (c%2)` and two further on. Both bytes are read,
+  and a weight written into both is added twice. Software must write the weight into the
+  first byte and leave the second at zero.
+- A trailing partial group strides by what it holds rounded up to 16, where the float cube's
+  is dense in the raw count. The whole cube is exactly `round16(C)*KH*KW*2` bytes.
 
-`rocket_rk3576_weight_dw_int8()` implements this layout. It returns a byte offset where
-the float entry point returns a slot. **An int8 weight written as a 16-bit value into the
-float slot puts its sign extension into the byte that belongs to the next channel.**
-That is a silent -1 weight on a neighbor, not padding.
+> [!CAUTION]
+> An int8 weight written as a 16-bit value into the float slot puts its sign extension into
+> the next channel's byte. The sign extension is a silent -1 weight on the neighbor, not
+> padding. Software must write an int8 weight as one byte, at the int8 cube's offset.
 
-Two shapes hide the group size, and they are the ones that pass first. At a single group
-the two layouts coincide. At `k=1` there is one tap, so the group base and the tap
-stride cannot be told apart. **C=64 k=3 separates 64 from 32.** At that shape, `dwmap`
-predicts 576 of 576 (channel, tap) positions at 64 and 64 of 576 at 32. C=24 and C=72
-separate the round16 partial group from the raw one.
+> [!NOTE]
+> Two shapes do not distinguish the group sizes. At a single channel group the two layouts
+> coincide. At `k=1` there is one tap, so the group base and the tap stride cannot be told
+> apart. C=64 k=3 separates a group of 64 from a group of 32, and C=24 and C=72 separate the
+> round16 partial group from the raw one.
+
+In `librocketnpu`, `rocket_rk3576_weight_dw()` computes the float slot, and
+`rocket_rk3576_weight_dw_int8()` computes the int8 cube's byte offset.
 
 ### The depthwise output surface stride
 
-The depthwise path pads the output surface stride to four elements. Register `0x401C` is
-the distance in elements from one 16-channel output group to the next. The depthwise
-path programs `round4(ow*oh_full)` there, where the direct path programs `ow*oh_full`.
+Register `0x401C` is the output surface stride: the distance in elements from one
+16-channel output group to the next. The depthwise path programs `round4(ow*oh_full)` there,
+where the direct path programs `ow*oh_full`. The stride applies in DDR.
 
-It is a DDR stride, so **a caller must size the output BO and de-scatter with it**,
-through `rocket_rk3576_out_surf_elems(ow, oh_full, dw)`. A de-scatter that assumes the
-plane lands every group past the first up to four elements early. That reads as "the
-first 16 channels are exact and the rest are noise": at C=32 exactly half the surface,
-at C=64 exactly a quarter.
+The padding has no effect at a plane whose `ow*oh_full` is already a multiple of four, which
+is most planes. Planes of 16×16 and 112×112 are unaffected, and 15×18, 17×19 and 19×19 are
+padded. For `ow*oh_full` of 270, 323 and 361 the vendor programs 272, 324 and 364
+[source-confirmed, HW sweep, H96 MAX M9].
 
-The padding is invisible at any plane whose `ow*oh_full` is already a multiple of four,
-which is most planes. Planes of 16×16 and 112×112 pass, and 15×18, 17×19 and 19×19 do
-not. The plane term in `0x40B8` is four of these same rounded surfaces.
+On the direct path the stride is not rounded. A VALID-padded oc=128 conv at
+`ow*oh_full = 105` is bit-exact with 105 programmed and wrong with 108
+[source-confirmed, HW sweep, H96 MAX M9].
 
-### The depthwise probe modes
+> [!CAUTION]
+> Software must size the depthwise output BO, and de-tile it, with the rounded stride. A
+> de-tile that assumes the unrounded plane places every group past the first up to four
+> elements early. Only the first 16 channels are then exact: half the output at C=32, and a
+> quarter at C=64.
 
-`rk3576_conv_gate` carries five modes. Each has a `direct` control, which runs the same
-reading on the path known to be bit-exact. The control is load-bearing: a mode that
-cannot reproduce the direct map is not measuring what it claims to.
+In `librocketnpu`, `rocket_rk3576_out_surf_elems(ow, oh_full, dw)` returns the stride.
 
-| mode | what it reads |
-|---|---|
-| `dwmap` | which output each weight byte reaches, one submit per byte |
-| `dwbias` | which coefficient slot each channel read |
-| `dwcoeff` | the inverse: which output bytes each coefficient position moves |
-| `dwout` | the raw output BO, undescattered |
-| `-l` | the shape table, without running it |
+A depthwise program is given the raw output channel count, and the DPU writes no channel group
+past it. At `oc=144` the output has 9 written groups against the 10 a direct consumer of 144
+channels reads [HW sweep, H96 MAX M9, 2026-07-31].
 
-Two properties make these modes decode rather than score, and any successor needs both:
+### Depthwise geometry registers
 
-- **`dwcoeff` measures its own baseline.** A comparison of each position against the
-  packed constant is a delta only where the part agrees that the surface is flat. On a
-  path whose surface is not flat, every position reads as "changed" and the probe says
-  nothing. The mode keeps one unprobed submit as a reference image, which makes a
-  per-position delta meaningful whatever the baseline looks like. There is no need to
-  flatten the hardware first.
-- **`dwcoeff` and `dwout` read raw bytes.** Scoring a depthwise surface through the
-  direct path's de-scatter hides exactly the permutation these modes are looking for.
+The depthwise path's geometry registers follow the formulas below
+[source-confirmed, RKNN-Toolkit2 rk3576 depthwise builds].
 
-`ROCKET_G_DWOUT_OUTSCALE` divides the requant down, so a lane at the int8 clip names its
-magnitude instead of reading as "large". The variables `ROCKET_G_DWOUT_BASE`, `_STEP`,
-`_CBASE` and `_CSTEP` drive the `A` and `C` ramps independently. The two ramps separate
-"this lane read the wrong bias" from "this lane read its multiplier out of the bias
-region". With `A` constant at 5 and `C` at 1, a lane reading a real `C` answers 5. A
-lane reading `A` as its own `C` answers 25.
-
-### Manufactured depthwise captures
-
-Captures built to order separate the axes that the found captures confound, and they
-close four depthwise formulas. The manufactured set covers 22 channel counts from 8 to
-256, strides 1 and 2, kernels 1, 3, 5 and 7, and rectangular planes.
-[source-confirmed, RKNN-Toolkit2 rk3576 depthwise builds]
+**Conditions:** vendor register programs at 22 channel counts from 8 to 256, strides 1 and 2,
+kernels 1, 3, 5 and 7, and rectangular planes.
 
 The path has two channel granules, and they are different numbers:
 
 - The weight granule is `C` rounded up to 16. `WEIGHT_BYTES` (`0x101C`) is
   `round16(C)*kh*kw*2`, and `WEIGHT_ELEMS` (`0x1020`) is `round16(C)*kh*kw`. The
-  weight-bytes-per-kernel term (`0x1030` high) is `kh*kw*round16(C)/8`, confirmed at
-  k=1, 3, 5 and 7. The found captures are all k=3 and cannot tell `kh*kw*C/8` from
-  `kh*kw*4`.
-- The feature granule is `C` rounded up to 16. If the resulting 16-channel group count
-  is 3 mod 4, the granule rounds up one group further. So 48 rounds to 64 and 112 to 128,
-  while 80 and 144 stay put. It sizes the CBUF entry counts (`0x1028` high, `0x103C`
-  high, `0x1044` low). Read as hardware, channels are fetched in blocks of 64, and a
-  trailing partial block holds one, two or four sixteens, never three.
+  weight-bytes-per-kernel term (`0x1030` high) is `kh*kw*round16(C)/8`, at k=1, 3, 5 and 7.
+- The feature granule is `C` rounded up to 16. If the resulting 16-channel group count is 3
+  mod 4, the granule rounds up one group further. For example, 48 rounds to 64 and 112 to
+  128, while 80 and 144 are unchanged. The granule sizes the CBUF entry counts (`0x1028`
+  high, `0x103C` high, `0x1044` low). The rule is consistent with a fetch in blocks of 64
+  channels, where a trailing partial block holds one, two or four sixteens, never three.
 
-The depthwise field in `0x4050` tracks the channel count, not the stride. Bits[9:8] are
-the 16-channel group count minus one, modulo 4, computed on the *unrounded* count. So
-C=48 carries 2 there, while its feature allocation is 64's. The found captures cannot
-attribute the field, because every C=32 program in them is stride 1 and every C=64 one
-is stride 2. Manufactured captures at both strides show it flat in the stride and
-stepping with C, wrapping at 80, 144 and 208.
+The depthwise field in `0x4050`, bits[9:8], is the 16-channel group count minus one, modulo
+4, computed on the *unrounded* count. C=48 has 2 there, while its feature allocation is
+64's. The field is independent of the stride, and steps with C, wrapping at 80, 144 and 208.
 
-An emitter that writes the C=32 word unconditionally hands the BS stage, above C=32, a
-word the vendor never uses. **That returns a wholly untouched output BO**: no surface at
-all, no fault, no dmesg line.
+> [!CAUTION]
+> Software must program the depthwise `0x4050` field from the channel count. Above C=32,
+> the C=32 word hands the BS stage a word the vendor never uses. The output BO is then left
+> wholly untouched, with no fault and no dmesg line.
 
-The direct path's `0x4050` is the even-count word at every count this emitter programs.
-The emitter programs a direct conv's output channels as a whole number of 32-channel
-groups (`rocket_rk3576_pad_oc`), because a partial group computes wrong. So the
-programmed 16-channel atom count is always even. The `gahingwoo/mesa-rk3576` fork clears
-bit 8 only when `DIV_ROUND_UP(oc, 16)` is odd, and it programs `oc` verbatim to get
-there. At every count programmed here, its rule gives this emitter's `0x80011111`.
+On the direct path, `0x4050` is the even-count word at every count `librocketnpu`'s regcmd encoder
+programs. A partial 32-channel output group produces incorrect output, so the regcmd encoder pads a
+direct conv's output channels to whole 32-channel groups (`rocket_rk3576_pad_oc`). The
+programmed 16-channel atom count is always even. The `gahingwoo/mesa-rk3576` fork clears bit
+8 only when `DIV_ROUND_UP(oc, 16)` is odd, and programs `oc` unpadded. At every padded count,
+its rule gives the same `0x80011111`.
 
-Real `oc` 8-112, padded, are exact through the emitter and the tiling entry [HW sweep, H96
+Real `oc` 8-112, padded, are exact through the regcmd encoder and the tiling entry [HW sweep, H96
 MAX M9, rocket 1.6.0, 2026-09-30]. Written alone into those even-count programs, the
-odd-count word `0x80011011` computes 19 of 21 shapes wrong, most at the backstop,
-consistent with that rule. Two are exact, `oc` 112 at stride 2 and `oc` 48 windowed, and
-the rule does not explain them. Whether the odd-count word lets an unpadded partial group
-compute is not measured.
+odd-count word `0x80011011` produces incorrect output at 19 of 21 shapes, consistent with the
+fork's rule.
 
-The plane term in `0x40B8` is a whole destination surface, and its multiplier is flat in
-the kernel size. The register is `4*surface - ow*oh_task` on the depthwise path and
-`2*surface - ow*oh_task` on the direct one, where `surface` is `0x401C`. A capture set
-that is all k=3 cannot tell the 4 from `kh+1`. At k=1, 5 and 7 it does not move.
+Four of the five other `0x4050` fields change the result. In a single-field sweep at `oc` 128
+and `oc` 88, each was moved alone to upstream Mesa's value. `RGP_CNTER` gives incorrect output
+with no hang, and `RESERVED_0` a correct output with a job timeout. `SIZE_E_0` and `OW_SRC`
+give incorrect output and a timeout. `SIZE_E_1` changes nothing at either shape.
 
-Register `0x401C` rounds up to four elements on the depthwise path and not on the direct
-one. The rounding is invisible at every plane whose `ow*oh_full` is already a multiple
-of four. That covers every capture on both paths and every hardware sweep the formula
-was fitted against. Rectangular and odd depthwise planes show it: the vendor programs
-272, 324 and 364 for `ow*oh_full` of 270, 323 and 361.
-[source-confirmed, HW sweep, H96 MAX M9]
+Across 94 vendor programs, `SIZE_E_1` is 0 in all 81 regular convolutions. It is 1 in all 13
+depthwise ones [external: gahingwoo/mesa-rk3576 at `1f0de93`, their round 260, ROCK 4D, not
+reproduced]. A program that changes `0x4050` writes the whole word for its path.
 
-The direct path's answer is a hardware result rather than a transcription, because no
-direct capture has a plane that separates it. A VALID-padded oc=128 conv at
-`ow*oh_full = 105` is bit-exact with 105 programmed and wrong with 108. Carrying the
-depthwise rounding onto the direct path costs that shape and nothing else in the
-67-shape gate. One shape in the whole envelope is sensitive to it.
-[source-confirmed, HW sweep, H96 MAX M9]
+**Not characterized:** whether the odd-count word lets an unpadded partial group compute.
 
-Register `0x118C` is `iw-1` in both halves. On a square plane the low half also reads as
-the full plane height, so square captures cannot tell the two apart. All 142 non-ARGB
-programs carry `iw-1` twice, with no exception. The fact is not depthwise-specific. It
-holds on the direct path too, where square planes hide it for the same reason.
+The plane term in `0x40B8` is a multiple of the output surface stride, and its multiplier is
+independent of the kernel size. The register is `4*surface - ow*oh_task` on the depthwise path
+and `2*surface - ow*oh_task` on the direct one, where `surface` is `0x401C`. The multiplier
+does not move at k=1, 5 and 7.
 
-The low half of `0x1024` is not a depthwise channel count. It is the same raw `1` at
-every count from 8 to 256. An independent on-hardware sweep of the field reaches the
-same conclusion from the other direction.
+Register `0x118C` is `iw-1` in both halves, on the depthwise path and the direct path alike.
+On a square plane the low half also matches the full plane height, so only a non-square
+plane separates the two.
 
-## fp16: the datapath, and the contraction width that bounds it
+The low half of `0x1024` is the same raw `1` at every depthwise channel count from 8 to 256.
+It is not a channel count.
 
-An fp16 direct convolution computes bit-faithfully on this part and delivers every
-output channel. The library drives it with `gen_conv2d_fp16_rk3576()` for one task and
-`rocket_rk3576_plan_ic()` for an arbitrary input-channel count. **One bound remains: the
-contraction is sixteen input channels wide.** The split is the way around it.
+## fp16 direct convolution
 
-Two apparent gaps are one fact seen from two sides. One is an output writer that spends
-four bytes on a two-byte element and reaches only `oc/2` channels. The other is a
-feature surface index that caps a task at 8 input channels. The DPU's output element
-stride is `16/ic` words. At `ic = 8` that is two words per element, which gives the
-"four bytes on a two-byte element" reading. At `ic = 16` it is exactly one word, and the
-surface is the plain native cube.
+An fp16 direct convolution is bit-faithful on the RK3576 and writes every output channel. One
+task contracts sixteen input channels. A convolution with more input channels runs as one
+task per 16-channel slice, with the partial outputs summed on the host.
 
-Everything in the rest of this section is
-[source-confirmed, RKNN-Toolkit2 rk3576 float build, HW sweep, H96 MAX M9, measured 2026-07-26].
+Each fact in this section is
+[source-confirmed, RKNN-Toolkit2 rk3576 float build, HW sweep, H96 MAX M9, measured 2026-07-26]
+unless tagged otherwise.
 
-### Capturing the vendor float program
+The DPU's output element stride is `16/ic` words. At `ic = 8` it is two words per element, so
+the writer uses four bytes for a two-byte element and reaches only `oc/2` channels. At
+`ic = 16` it is exactly one word, and the output is the plain native cube.
 
-This library's float program is a transcription of the vendor's. Every `.rknn` in the
-vendor-capture set is int8, and a zero precision field is invisible. It says nothing
-about where the field is, how wide it is, or whether this part carries one there at
-all. An int8 capture therefore cannot check a float field inferred from the RK3588's
-packing, and one such inference is wrong for this part.
+> [!NOTE]
+> An incorrect fp16 program gives one of three results, each from a different stage. An
+> untouched output buffer is a DMA that did not run. An all-zero output is an underflowed or
+> gated epilogue. Only an output of the correct size with incorrect values is an arithmetic
+> or layout error. Only a comparison against a CPU model reveals it.
 
-RKNN-Toolkit2 emits a float program for this part. With `do_quantization=False` on a
-float ONNX, the toolkit leaves the weights float and the vendor compiler picks the float
-datapath. The script `tests/data/rk3576-vendor-capture/float/mkfloat.py` rebuilds the
-captures and carries the dependency pins. The pins are particular. The toolkit imports
-`onnx.mapping`, which onnx 1.16 removed, and `pkg_resources`, which setuptools 81
-removed, and neither failure names itself.
+In `librocketnpu`, `gen_conv2d_fp16_rk3576()` emits one task, and `rocket_rk3576_plan_ic()`
+plans an arbitrary input-channel count.
 
-Two things make the resulting diff small enough to read:
+### The vendor float program
 
-- **Only seven registers move with `ic`** across the whole 139-word program: `0x101C`,
-  `0x1020`, `0x1028`, `0x1030`, `0x103C`, `0x1044` and `0x107C`. All seven scale
-  linearly, and the fp16 program emitted from the RK3588 encoding matches six of them.
-- **Fourteen registers differ from the fp16 program emitted from the RK3588 encoding**,
-  and they are the same fourteen at every geometry. Three of them are load-bearing. Each
-  of the other eleven can be dropped with the datapath still exact.
+`librocketnpu`'s float program is a transcription of the vendor's. An int8 program has every
+precision field at zero. A zero field does not show where a float field is, how wide it is,
+or whether the RK3576 has one there.
+
+RKNN-Toolkit2 emits a float program for the RK3576. With `do_quantization=False` on a float
+ONNX, the toolkit leaves the weights float and the vendor compiler selects the float
+datapath.
+
+> [!NOTE]
+> RKNN-Toolkit2 imports `onnx.mapping`, which onnx 1.16 removed, and `pkg_resources`, which
+> setuptools 81 removed. Neither import failure names its cause.
+
+> [!NOTE]
+> For a model whose plane size is not a power of two, the compiler appends a 1×1×1 program
+> beside the conv. The helper program has a DPU_RDMA configuration that no conv program has,
+> and a conv regcmd encoder never produces it.
+
+Against the fp16 program emitted from the RK3588 encoding, the vendor's float program differs
+in two ways:
+
+- Only seven registers move with `ic` across the whole 139-word program: `0x101C`,
+  `0x1020`, `0x1028`, `0x1030`, `0x103C`, `0x1044` and `0x107C`. All seven scale linearly,
+  and the fp16 program emitted from the RK3588 encoding matches six of them.
+- Fourteen registers differ from the RK3588-encoding program, the same fourteen at every
+  geometry. Three of them are required, the float-mode registers below. Each of the other
+  eleven can be dropped with the datapath still exact.
 
 ### The float-mode registers
 
-Three registers carry the float mode. Each is constant across every geometry the vendor
-emits (`ic` 8-64, `oc` 32/64, `k` 1/3, planes 16 and 32). Each is load-bearing on its
-own. With any one of them at its integer value, the contraction reads every feature
-surface twice and skips the odd ones. **A single-register sweep cannot find this**,
-because the fix is a register set.
+Three registers select the float mode. Each is constant across every geometry the vendor
+emits (`ic` 8-64, `oc` 32/64, `k` 1/3, planes 16 and 32), and each is required on its own:
 
-| register | integer value | float value | what is load-bearing |
+| register | integer value | float value | required |
 |---|---|---|---|
 | CNA `0x100C` | `0x00000000` | `0x00200120` | all of `bit21 \| proc<<7 \| in<<4` |
 | DPU `0x4038` | `0x00120080` | `0x00100092` | the low half, `0x0092` |
 | DPU `0x4050` | `0x80011111` | `0x00021111` | bit 31 clear |
 
-Each register has a detail of its own:
+> [!CAUTION]
+> Software must program all three registers to their float values. With any one of them at
+> its integer value, the contraction reads every feature surface twice and skips the odd
+> ones.
 
-- **CNA `0x100C` bit 21 is a float enable** that the integer programs never set. The two
+The three registers behave as follows:
+
+- CNA `0x100C` bit 21 is a float enable that the integer programs never set. The two
   precision fields do not imply it. With both precisions right and bit 21 clear, the
   contraction still doubles, exactly as it does with bit 21 set and a precision wrong.
-- **DPU `0x4038`'s high half is free, but it must be non-zero**, or the DPU writes
-  nothing at all. Both `0x0012` and `0x0010` compute.
-- **DPU `0x4050`'s low nibbles do not enter here.** The values `0x00011111`,
-  `0x00021111` and `0x00020000` all compute. The value `0x80021111` returns `+inf`,
-  because the accumulator has summed the doubled reads. The nibble is the write-extent
-  field described below, and bit 31 is the float bit.
+- Software must program DPU `0x4038`'s high half non-zero, or the DPU writes nothing at all.
+  Its value is otherwise free: `0x0012` and `0x0010` both work.
+- In DPU `0x4050`, bit 31 is the float bit, and the low nibbles have no effect on the float
+  mode. The values `0x00011111`, `0x00021111` and `0x00020000` all work. The value
+  `0x80021111` returns `+inf`, because the accumulator has summed the doubled reads. The
+  nibble is the write-extent field described below.
 
-### PROC_PRECISION
+### Precision fields
 
-PROC_PRECISION is the operand width. **CNA `0x100C`'s `proc_precision` field carries
-fp16 (`2`), not fp32.** The RK3588's field semantics suggest that the field names the
-multiply-accumulate datapath's width, so that a float convolution accumulating in fp32
-wants `5` there. That reading is wrong for this part: programming `5` with every other
-float field right reads each feature surface twice.
+PROC_PRECISION, the `proc_precision` field of CNA `0x100C`, is the operand width.
 
-A probe that is uniform in the channel axis cannot catch this, because there a doubled
-read is indistinguishable from a scale. See Traps.
+> [!CAUTION]
+> Software must program `proc_precision` to fp16 (`2`), not fp32. The RK3588's field
+> semantics suggest the field names the multiply-accumulate datapath's width, so that a
+> convolution accumulating in fp32 wants `5`. Programming `5` with every other float field
+> right reads each feature surface twice. A test input that is uniform in the channel axis
+> does not detect it, because there a doubled read is indistinguishable from a scale.
 
 CORE `0x3018` does not follow the CNA word, and the two divide the work:
 
-- **CNA `0x100C`'s `in_precision` pins the operand width class, not its type.** Values
-  `1`, `2` and `3`, the three 2-byte codes, all compute. Value `0` (a 1-byte element)
-  writes an entirely zero surface. So an fp16 and a bf16 program are indistinguishable
-  in this field.
-- **CORE `0x3018` pins the operand type.** Value `2` is fp16 and `3` is bf16, and each
-  returns a wrong surface on the other's bytes. Fed bf16 bytes, `3` contracts
-  bit-exactly in the matmul-form program, the case that
-  [rk3576.md](rk3576.md) §"The precision fork" records.
+- CNA `0x100C`'s `in_precision` selects the operand width class, not its type. Values `1`,
+  `2` and `3`, the three 2-byte codes, all work, so an fp16 and a bf16 program are
+  indistinguishable in this field. Value `0` (a 1-byte element) writes an entirely zero
+  output.
+- CORE `0x3018` selects the operand type. Value `2` is fp16 and `3` is bf16, and each
+  returns incorrect output on the other's bytes. Fed bf16 bytes, `3` contracts bit-exactly
+  in the matmul-form program, the case that [rk3576.md](rk3576.md) §"The precision fork"
+  records.
 
 ### The float narrowing and the output width
 
-The output is fp16 only with the float narrowing enabled. The epilogue is a float path,
-and its result is an fp32 word. Two fields decide what reaches DDR:
+The DPU epilogue is a float path, and its result is an fp32 word. The output is fp16 only
+with the float narrowing enabled. Two fields select what reaches DDR:
 
-- **DPU `0x40B0` bit 16 is `fp32tofp16_en`**, at the RK3588's own bit position. Without
-  it, the DPU writes the fp32 word as-is.
-- **DPU `0x4010` bits [31:29] select a width, not a conversion.** Value `5` writes the
-  whole 32-bit word, and `2` and `3` write its low and high halves.
+- DPU `0x40B0` bit 16 is `fp32tofp16_en`, at the RK3588's bit position. Without it, the
+  DPU writes the fp32 word as-is.
+- DPU `0x4010` bits [31:29] select a width, not a conversion. Value `5` writes the whole
+  32-bit word, and `2` and `3` write its low and high halves.
 
-The two compose as follows:
+The two combine as follows:
 
 | narrowing | width | what reaches DDR |
 |---|---|---|
 | on | `2` | true fp16 (`0x5400` for 64.0) |
 | on | `3` | the top half of the fp32 word, which is bfloat16 |
 | off | `5` | fp32 |
-| off | `2` | the fp32 word's low mantissa bits, **zero for every value a small integer test pattern can produce** |
+| off | `2` | the fp32 word's low mantissa bits, zero for every value a small integer test pattern can produce |
 
-**An fp16 program emitted from the RK3588 encoding programs the last combination.** It
-writes a full, correctly sized, entirely zero surface from a datapath that is running,
-which reads as a dead MAC.
+> [!CAUTION]
+> An fp16 program emitted from the RK3588 encoding programs the last combination. It writes
+> an all-zero output of the correct size from a running datapath, which looks like a dead
+> MAC array. Software must set `fp32tofp16_en` and width `2` for an fp16 output.
+
+> [!NOTE]
+> Every value that a small integer convolution produces has zero low mantissa bits in fp32.
+> Read through a 16-bit output width, an fp32 result is then uniformly zero, the same result
+> as a gated epilogue or a dead MAC array. Read at width `5`, or drive values whose low
+> mantissa bits are non-zero.
 
 ### The direct-path float weight cube
 
-**The float weight cube groups both channel axes by 16**, where the int8 weight cube
-groups both by 32 (`weight_conv_int8`). Otherwise the reorder is Mesa's
-`oc1, ic1, kh, kw, oc2, ic2`, and `rocket_rk3576_weight_conv_fp16()` is the index. The
-feature cube is C2 = 8 fp16 lanes in the same 16-byte atom. A bijective decode pins it,
-not a score (C2 = 4 and 16 both fail).
+The float weight cube groups both channel axes by 16, where the int8 weight cube groups both
+by 32. Otherwise the reorder is Mesa's `oc1, ic1, kh, kw, oc2, ic2`. The feature cube is
+C2 = 8 fp16 lanes in the same 16-byte atom (C2 = 4 and 16 both fail).
 
-Each group needs a shape chosen so that it is observable at all, and the output group is
-the harder of the two:
+Each weight group is pinned at a shape where it is observable:
 
-- **The ic group is 16.** It is exact where 4, 8 and 32 are not.
-- **The oc group is 16.** It is exact at `ic = 16` with `k` 3 and 5. **It cannot be
-  pinned at `k = 1`**, because the kernel index sits between the group and the
-  `(oc2, ic2)` pair. At `k = 1` the index collapses to `(oc/G)*G + oc%G = oc`, and every
-  group size is byte-identical. A sweep run only at `k = 1` reports all four candidates
-  as correct.
+- The ic group is 16. It is exact where 4, 8 and 32 are not.
+- The oc group is 16. It is exact at `ic = 16` with `k` 3 and 5.
 
-This is the concrete form of the general trap below: a reading of 8 here comes from a
-shape where the field is algebraically dead.
+> [!NOTE]
+> The oc group cannot be pinned at `k = 1`, because the kernel index sits between the group
+> and the `(oc2, ic2)` pair. At `k = 1` the index collapses to `(oc/G)*G + oc%G = oc`, and
+> every group size is byte-identical. A kernel that ramps over `ic`, or any score summed over
+> the channel axis, is invariant under every permutation of that axis. Neither can pin the ic
+> group. Use realistic weights at a shape where the group is live.
 
-A kernel that ramps over `ic` does not settle the ic group, and neither does any score.
-That probe sums over the channel axis, so it is invariant under every permutation of it.
-Use realistic weights at a shape where the group is live.
+> [!CAUTION]
+> A partial input-channel group still occupies a whole one. A convolution with 8 real input
+> channels runs as an `ic = 16` task, zero-padded, and needs a cube for 16. Software must size
+> the weight buffer from `ceil(ic/group)*group`. At `k = 1` an allocation taken from the real
+> channel count overruns inside the BO's page, and the output is correct. At a kernel large enough to run past the page, the overrun looks as if the
+> RK3576 cannot run `k = 3`.
+
+In `librocketnpu`, `rocket_rk3576_weight_conv_fp16()` is the index.
 
 ### The fp16 output map
 
 The fp16 output map is the plain native cube. At the 16-channel contraction the writer
-has no defect: 8 channels to a 16-byte atom, one atom per pixel, and channel groups as
-contiguous planes. Every programmed channel is present exactly once. For output channel
-`c` at pixel `p`, in 16-bit words:
+places 8 channels in a 16-byte atom, one atom per pixel, with channel groups as contiguous
+planes. Every programmed channel is present exactly once. For output channel `c` at pixel
+`p`, in 16-bit words:
 
 ```
 word = (ow*oh*8)*(c/8) + 8*p + (c%8)
 ```
 
-The map is measured, not fitted. `rk3576_fp16_sweep map` drives a probe whose every
-output lane carries a unique name, and decodes the surface. The decode is a bijection
-onto the whole surface. Every word names the (channel, pixel) this map predicts, with
-none left over and none undecodable.
-
-In the library, `rocket_rk3576_fp16_out_index()` is that map. Its companion
-`rocket_rk3576_fp16_accumulate()` de-scatters one surface through it into a row-major
-fp32 accumulator, which is what an `ic` split needs. The host-side `regcmd_rk3576_gate`
-checks the bijection, so an off-by-one in it does not wait for a board.
-
-The map is what changes when `ic` does, which is the single clearest reading of the
-bound. At the same `oc = 16` and a 4×4 plane:
+The map changes with `ic`. At the same `oc = 16` and a 4×4 plane:
 
 | `ic` | slot of channel `c` within its atom | channels reaching DDR |
 |---|---|---|
 | 8 | `2*(c%4)`, odd words zero | `oc/2` |
-| 16 | `c%8` | **all of them** |
+| 16 | `c%8` | all of them |
 | 32 | `(c/2)%8`, odd channels lost | `oc/2` |
+
+In `librocketnpu`, `rocket_rk3576_fp16_out_index()` is that map. Its companion
+`rocket_rk3576_fp16_accumulate()` de-tiles one output through it into a row-major fp32
+accumulator, which an `ic` split needs.
 
 ### The contraction width
 
-The contraction is sixteen input channels wide, and `gen_conv2d_fp16_rk3576()`
-**refuses** any other `ic` rather than warning about it. A wrong count writes a full,
-correctly sized, wrong surface with nothing to fault on. So a caller must not be able to
-reach it silently. The unchecked bring-up entry beside it is `gen_conv2d_rk3576_prec()`,
-which the sweep's own modes drive.
+The fp16 contraction is sixteen input channels wide.
 
-Probe 10 reads the multiplicity straight off the part. One input channel carries 1.0,
-every weight lane is 1.0, and the output is that channel's read count. The variable
-`ROCKET_FS_TAP` moves the tapped channel. At `ic = 32`, the pair `TAP=0` and `TAP=16`
-separates the two failure modes in one run. Without the float fields they read 2.0 and
-0.0, and with them both read 1.0.
+> [!CAUTION]
+> Software must program each fp16 conv task with `ic = 16`. A task with any other count
+> writes an output of the correct size with incorrect values, and nothing faults.
 
-With the fields right, the read count is 1.0 at `ic` 16, 32, 64 and 128 and at every
-tap, so the reads are unbounded. What bounds a task is the writer's element stride
-above.
+Without the float-mode fields, at `ic = 32`, input channel 0 is read twice and input channel
+16 is not read. With them, the read count is one at `ic` 16, 32, 64 and 128 and at every
+channel, so the reads do not bound `ic`. What bounds a task is the writer's element stride,
+`16/ic` words.
 
-### The fp16 envelope
+In `librocketnpu`, `gen_conv2d_fp16_rk3576()` refuses any `ic` other than 16. The unchecked
+bring-up entry beside it is `gen_conv2d_rk3576_prec()`.
+
+### Single-task fp16 coverage
 
 A single fp16 task is bit-faithful against the CPU model (`worst relative error 0`) at
-`ic = 16`, and every programmed output channel lands. The envelope covers:
+`ic = 16`, and every programmed output channel is written. The coverage is:
 
 | axis | covered |
 |---|---|
@@ -1867,79 +1753,53 @@ A single fp16 task is bit-faithful against the CPU model (`worst relative error 
 
 ### An arbitrary `ic` via a 16-channel split
 
-Splitting `ic` into slices of 16 and summing the partial surfaces on the host
-reproduces the model exactly at any input channel count. It is bit-exact,
-`worst relative error 0`, at `ic` 16, 32, 64 and 128 crossed with `k` 1, 3 and 5.
-
-`rocket_rk3576_plan_ic()` is the split. It sits beside `rocket_rk3576_plan_rows()` and
-follows the same pattern: it lays the slices out, and the caller emits one conv per
-entry. The slice is fixed at 16 rather than as wide as the CBUF allows. A wider slice is
-a wrong task, not a cheaper one. It plans the `ic` axis only. A plane whose
-16-channel slice still overflows the CBUF is refused, with a pointer at the row
-planner, rather than run.
+Splitting `ic` into slices of 16 and summing the partial outputs on the host reproduces the
+model exactly at any input channel count. It is bit-exact, `worst relative error 0`, at `ic`
+16, 32, 64 and 128 crossed with `k` 1, 3 and 5.
 
 The slices cost nothing to address. At C2 = 8 the feature cube's channel groups are
 contiguous planes of `iw*ih_full` 16-byte atoms. Slice `k` is therefore the same BO at a
 base offset. An atom stays 16 bytes when C2 halves, so the stride is independent of the
-element size.
+element size. Only the weight cube is rebuilt per slice.
 
-Only the weight cube is rebuilt per slice. Each slice is its own convolution with its
-own group count, so a slice's cube is not a sub-cube of the whole conv's
-(`rocket_rk3576_fp16_pack_slice_weights()`). Size that cube by the groups.
+> [!CAUTION]
+> Software must build each slice's weight cube as a convolution of its own, with its own
+> group count, and size it by the groups. A slice's cube is not a sub-cube of the whole
+> conv's. Slicing the full cube by byte range gives a correctly sized cube with the kernel
+> positions shuffled.
 
-The bias belongs to one slice only. Every slice adds the whole `A` term, so a
-coefficient buffer carrying a bias handed to all of them lands it `ic/16` times.
+> [!CAUTION]
+> Software must give the bias to one slice only. Every slice runs the whole epilogue and adds
+> the whole `A` term, so a bias in every slice's coefficient buffer is added `ic/16` times.
+> The error is a per-channel constant on an otherwise exact output. A wrong `B` sign
+> convention gives the same shape.
 
-On-chip accumulation is unblocked and small. The DPU eltwise stage does this job on the
-RK3588 (`ROCKET_KACC`), and here it would remove `ic/16` readbacks. Nothing stands in its
-way. At this contraction width, the partial it would read back is a plain, dense,
-complete fp16 cube, not a surface carrying the writer's defect.
+> [!CAUTION]
+> Software must plan the CBUF allowance at the precision the conv is emitted at. The feature
+> plane's granule cost is per byte, so a 2-byte element doubles it. An allowance planned at
+> the int8 rate is sized for half an fp16 plane. That plane then gives incorrect values in a
+> full-size output.
 
-On-chip accumulation is not the largest win on this path. It is worth 7-13% of the wall
-[HW sweep, H96 MAX M9, measured 2026-07-28, `oc` 32, 28×28 k3, `ic` 16-128,
-`tests/rk3576_fp16_split_cost.c` with `ROCKET_RK3576_FP16_PROF=1`]:
+In `librocketnpu`, `rocket_rk3576_plan_ic()` is the split. It sits beside
+`rocket_rk3576_plan_rows()` and follows the same pattern: it lays the slices out, and the
+caller emits one conv per entry. The slice is fixed at 16 rather than as wide as the CBUF
+allows, because a wider slice is a wrong task. The planner splits the `ic` axis only. It
+refuses a plane whose 16-channel slice still overflows the CBUF, with a pointer at the row
+planner. `rocket_rk3576_fp16_pack_slice_weights()` builds a slice's weight cube.
 
-| phase | share of the entry's wall |
-|---|---|
-| submit | 77-87% |
-| readback (what on-chip accumulation removes) | 7-13% |
-| weight repack | 4-7% |
-| output stamp | 2-4% |
-
-The sixteen-channel contraction sets the slice count, whatever sums the partials. So
-the submits stay and only the readback goes. The EW operand DMA that the DPU would issue
-instead is not free, so the net saving is below that band. Read the table as a bound.
-
-A slice costs the poll floor plus `dpu_grace_us`, in full. The same sweep records zero
-poisoning retries at every shape, so a slice's ~1.4 ms is not the hazard being cleared.
-A wide-output task raises no DPU completion, so `0012` retires it on `PC_DONE` plus the
-whole blind settle. Halving the grace moves the wall by very nearly the grace, once per
-slice [HW sweep, `ic` 128, 8 slices, five runs each, ranges disjoint]:
-
-| `dpu_grace_us` | 8-slice wall | per slice |
-|---|---|---|
-| 500 (default) | 15.39-16.16 ms, median 15.89 | ~1.99 ms |
-| 250 | 12.95-13.97 ms, median 13.29 | ~1.66 ms |
-
-That is 300 us of a 250 us cut landing per slice, and the convolution stays bit-exact at
-every value tried down to 150.
-
-The default cannot collect that lever. The same number is the deadline on the
-DPU-completion wait for every job that does raise one. A narrow-output matmul fails 10
-runs of 10 at 200 us (see the grace table).
-
-An fp16 conv pays the grace in full only because its tasks raise no DPU completion at
-all. What would collect the 1.18x is a way to say which class a task is in. Userspace
-knows the class when it emits the program, and the driver cannot see it at `PC_DONE`
-time. Lowering the shared default trades the fp16 path's wall time against the
-correctness of every other path.
+Both CBUF planners take the precision the conv is emitted at: `rocket_rk3576_cbuf_f_prec`
+and `rocket_rk3576_max_task_rows_prec`. The shorter names are the same planners at int8. The
+weight side stays at the int8 model on purpose, as an upper bound on the float slice. An
+over-estimate refuses early instead of corrupting.
 
 ### Cost of an fp16 conv
 
-The fp16 convolution runs as the `ic/16` split. The table prices it at the submits the
-split spends [HW sweep, H96 MAX M9, measured 2026-07-26, `oc` 64, third of three runs].
+The fp16 convolution runs as the `ic/16` split, and its cost follows the submits the split
+issues [HW sweep, H96 MAX M9, measured 2026-07-26].
 
-| shape | submits | NPU | host pack + de-scatter | total |
+**Conditions:** `oc` 64.
+
+| shape | submits | NPU | host pack + de-tile | total |
 |---|---|---|---|---|
 | 32×32 ic16 k3 | 1 | 1.51 ms | 2.52 ms | 4.04 ms |
 | 32×32 ic64 k3 | 4 | 5.57 ms | 3.36 ms | 8.92 ms |
@@ -1947,39 +1807,75 @@ split spends [HW sweep, H96 MAX M9, measured 2026-07-26, `oc` 64, third of three
 | 56×56 ic64 k3 | 4 | 6.21 ms | 8.62 ms | 14.83 ms |
 | 56×56 ic128 k3 | 8 | 11.93 ms | 15.93 ms | 27.86 ms |
 
-The NPU wall is flat in the work and linear in the submits, at about 1.4-1.5 ms per
-submit whatever the plane and the kernel. At 56×56, `k = 3` does nine times the
-multiply-accumulates of `k = 1` and costs the same 6 ms. No compute term is visible at
-these shapes. The wall is entirely the per-submit dispatch floor, the same 1.1-1.3 ms
-that the int8 path pays once for its whole `ic` (`rk3576_conv_gate envelope`). At the
-8-channel split the same shapes cost 8 and 16 submits. Doubling the contraction width
-halves the submit count and the NPU wall with it.
+The NPU time is flat in the work and linear in the submits, at about 1.4-1.5 ms per submit
+whatever the plane and the kernel. At 56×56, `k = 3` does nine times the multiply-accumulates
+of `k = 1` and costs the same 6 ms. No compute term is visible at these shapes. The NPU time
+is entirely the per-submit dispatch overhead, the same 1.1-1.3 ms that the int8 path costs
+once for its whole `ic`.
 
-Only the NPU column is a measurement. The host column is noisy on this thermally
-limited board, where the same shape varies by a factor of two run to run. The 56×56
-`k = 1` row is the clearest case of it. The NPU column is stable to within 6% across
-pacing gaps of 0, 20 and 50 ms.
+Only the NPU column is a measurement. The host column is noisy on this board, where the same
+shape varies by a factor of two run to run. The 56×56 `k = 1` row
+shows it most clearly. The NPU column is stable to within 6% across pacing gaps of 0, 20 and
+50 ms.
 
-Both planners take the precision that the conv is emitted at:
-`rocket_rk3576_cbuf_f_prec` and `rocket_rk3576_max_task_rows_prec`. The shorter names
-are the same planners at int8. The feature plane's granule cost is per byte, so a
-2-byte element doubles it. An allowance planned at the int8 rate is sized for half an
-fp16 plane, and that plane computes wrong with a full surface written. The weight side
-of the trade stays at the int8 model on purpose, as an upper bound on the float slice.
-Over-estimating refuses early instead of corrupting.
+#### Readback share
+
+On the RK3588 the DPU eltwise stage sums partials on-chip (`ROCKET_KACC`). Here it would
+remove `ic/16` readbacks [expected]. Nothing in the datapath blocks it: at this contraction
+width, the partial it would read back is a plain, dense, complete fp16 cube.
+
+On-chip accumulation is not the largest saving on this path. Readback is 7-13% of the
+entry's wall-clock time [HW sweep, H96 MAX M9, measured 2026-07-28]:
+
+**Conditions:** `oc` 32, 28×28 k3, `ic` 16-128.
+
+| phase | share of the entry's wall-clock time |
+|---|---|
+| submit | 77-87% |
+| readback (what on-chip accumulation removes) | 7-13% |
+| weight repack | 4-7% |
+| output stamp | 2-4% |
+
+The sixteen-channel contraction sets the slice count, whatever sums the partials. On-chip
+accumulation therefore removes the readback and leaves the submits. The EW operand DMA that
+the DPU would issue instead is not free, so the net saving is below the readback share
+[expected].
+
+#### DPU grace
+
+**Conditions:** `ic` 128, 8 slices. A `rocket` with patch `0012`, from before interface version
+1.0, measured 2026-07-28.
+
+On that module a slice costs the driver's per-submit completion-poll overhead plus
+`dpu_grace_us`, in full: the driver retires it on `PC_DONE` plus the grace. Halving the grace
+reduces the wall-clock time by very nearly the grace, once per slice [HW sweep]:
+
+| `dpu_grace_us` | 8-slice wall-clock time | per slice |
+|---|---|---|
+| 500 (default) | 15.39-16.16 ms, median 15.89 | ~1.99 ms |
+| 250 | 12.95-13.97 ms, median 13.29 | ~1.66 ms |
+
+Each slice saves 300 us for the 250 us cut, 1.20x over the eight slices [host-computed]. The
+convolution stays bit-exact at every grace value tried down to 150.
+
+On that module the default grace cannot be lowered for this path alone. The same number is the
+deadline on the DPU-completion wait for every job that raises one. A narrow-output matmul
+fails 10 runs of 10 at 200 us (§"Tasks that raise no DPU completion").
+
+On `rocket` 1.6.0 the fp16 programs raise the DPU completion, and the grace does not set a
+slice's cost ([rk3576.md](rk3576.md) §"Retirement on the DPU completion").
 
 ### The write-extent field and the byte-placement words
 
-The low nibbles of `0x4050` encode the written extent. The field encodes 1, 2 and 4
-bytes per element as `{0, 1, 3}`: the direct int8 word carries `1` and the depthwise
-word `3`. That is the same `size_e = bytes-1` relation that the RK3588 pairs with its
+The low nibbles of `0x4050` encode the written extent. The field encodes 1, 2 and 4 bytes per
+element as `{0, 1, 3}`: the direct int8 word contains `1` and the depthwise word `3`. The
+encoding is the same `size_e = bytes-1` relation that the RK3588 pairs with its
 surface-advance multiplier. The RK3576's surface advance follows the same multiplier
-(`ow*(2*oh_full - oh)` direct, `ow*(4*oh_full - oh)` depthwise). The field moves the
-written *extent* only, never the atom. It is not what the float mode needs from this
-register: bit 31 is.
+(`ow*(2*oh_full - oh)` direct, `ow*(4*oh_full - oh)` depthwise). The field moves the written
+*extent* only, never the atom. The float mode depends on bit 31 of this register, not on this
+field.
 
-Two DPU words do move the output, and they look like the float mode's answer without
-being it:
+Two DPU words move the output within the atom. Neither selects the float mode:
 
 | register | effect |
 |---|---|
@@ -1988,212 +1884,78 @@ being it:
 
 ### Coefficient formats in float mode
 
-`A` (bias) is consumed as fp32. Packed as its fp32 bit pattern for `bias[c] = c+1` and
-read back at width `5`, it returns `3f800000 40000000 40400000 40800000`, exactly 1.0,
-2.0, 3.0 and 4.0. `C` (multiplier) is consumed as **fp16**, so the int8 default `C = 1`
-is the denormal 6e-8 and underflows the whole surface to empty. The fp16 value `1.0` is
-`0x3C00`.
+In float mode the DPU reads `A` (bias) as fp32 and `C` (multiplier) as fp16.
 
-Asymmetric weights are a packing question, not an encoding one. `B` in the coefficient
-group is a per-output-channel int16 beside the bias `A` and the multiplier `C`. Driving a
-weight zero point through it needs no register change, and
-`rocket_rk3576_pack_coeff_asym()` takes one. The DPU adds the term, so a weight zero
-point is programmed negated. The measurement is under "The B term is added" above.
+> [!CAUTION]
+> Software must program `C` as an fp16 value in float mode. The int8 default `C = 1` is the
+> denormal 6e-8, and underflows the whole output to empty. The fp16 value `1.0` is `0x3C00`.
 
-### The harness
+Asymmetric weights are a packing question, not an encoding one. The `B` field in the
+coefficient group is a per-output-channel int16 beside the bias `A` and the multiplier `C`.
+Driving a weight zero point through it needs no register change. The DPU adds the term, so
+software must program a weight zero point negated. The measurement is under "The B term is
+added" above. In `librocketnpu`, `rocket_rk3576_pack_coeff_asym()` takes the zero point.
 
-`tests/rk3576_fp16_sweep.c` scores every candidate against a CPU model of the same
-convolution. The failure mode here is a full, correctly sized, *wrong* surface, which no
-amount of looking at the output reveals. The harness reports an untouched buffer, an
-all-zero surface and a wrong surface as three separate results. An untouched buffer is a
-dead DMA, and an all-zero surface is an underflowed or gated epilogue. Only a wrong
-surface is an arithmetic or layout error.
+## DPU shift operand (`0x5024`)
 
-Its probes turn "wrong" into "wrong here". Each is built so that its answer does not
-depend on what it is not measuring:
-
-| probe | what it drives | what a correct part returns |
-|---|---|---|
-| 1 | uniform feature and kernel, each value its own knob (`_PIN`, `_PW`) | `ic*k*k * in * w`, and a result that tracks a side's *high byte* names the side being read as int8 |
-| 2 | one non-zero element on each side | one non-zero output lane, at a position |
-| 3 | the pixel ramp on every input channel | `y*iw+x+1` in every lane, whatever the lane map |
-| 5 | uniform feature, kernel *c* weighted *c+1* | `c+1` in every lane, whatever the lane map |
-| 6 | input channel *c* carries *c+1*, kernel taps ic=0 | `1`. Any other value names the channels the part paired with lane 0 |
-| 7 | uniform feature, kernel ramps over ic | `1+...+ic`. Any other value counts the weight lanes it walked |
-| 8 | unique naming: every lane carries `ow*oh*c + p + 1` | itself, the output map, decoded rather than guessed |
-| 9 | unique feature, output channel *c* taps input channel *c* | the input cube handed back through the datapath |
-| 10 | one input channel at 1.0, every weight lane 1.0 | `1`. The value is that channel's read count |
-
-Probes 3 and 5 are uniform by design in the axis they do not name. They read the output
-map without first knowing the lane map. Probes 6 and 7 do the reverse.
-
-Probes 8, 9 and 10 exist because that uniformity is also the others' blind spot. Probes
-1, 3, 5, 6 and 7 each pass against a datapath that reduces the wrong input channels. A
-probe set built only from them reports an exact conv that is not one. Probes 8 and 9
-name lanes instead of scoring them, so the pass is a *bijection*, not a match count.
-Probe 10 measures the reduction directly. Run `map` before believing any fp16 layout claim.
-
-| knob | what it does |
-|---|---|
-| `map` (argv) | drive probe 8 and decode the surface, reporting where each lane landed and how many copies |
-| `ROCKET_FS_OUT_LAYOUT` | `0` the native output cube, `1` the library's `rocket_rk3576_fp16_out_index()` |
-| `ROCKET_FS_TAP` | move the single live weight lane off ic=0. `-1` taps every input channel (probe 3) |
-
-| knob | what it does |
-|---|---|
-| `int8` (argv) | the control, the known-good path through the same harness |
-| `icsplit` (argv) | the library's `ic` split, scored end to end and timed |
-| `f32out` (argv) | the fp16 datapath read back as the full 32-bit epilogue word |
-| `bitsweep` (argv) | one register walked bit by bit or over `ROCKET_FS_SWEEP_VALS` |
-| `ROCKET_FS_BIAS` | `1` integer bias probe, `2` the same value as fp32 bits |
-| `ROCKET_FS_CMUL` | the `C` multiplier. `15360` is fp16 1.0 |
-| `ROCKET_FS_SET` | whole-register overrides for the `manual` candidate |
-| `ROCKET_FS_C2` / `_WOC` / `_WIC` / `_OUT_C2` | the cube geometry, each axis on its own |
-| `ROCKET_FS_DUMP` / `_DUMP_OFF` / `_SCAN` | raw words at an offset, and the written extent and every non-zero lane |
-
-**Run the `int8` control before believing any fp16 result.** It exercises the same
-scatter, submit and de-scatter on a path this part is known to compute. So it fails only
-when the harness is wrong. It must report `2048/2048`.
-
-**Read the raw surface, not only the score.** Scoring reads the buffer *through* the
-layout under test, so it cannot show a layout that disagrees with it.
-
-### Traps
-
-- **A register sweep must parse hex.** The call `atoi("0x100c")` returns 0. A sweep that
-  silently patches register 0 reports that every value changed nothing. A correct sweep
-  of an inert register reports exactly the same. The mistake can survive a full pass, as
-  it did over `0x100C` before the reading that mattered was found.
-- **`feature_data()` and `weight_conv_*()` take 1-based channel and kernel indices.** A
-  0-based call drives the group remainder negative and misplaces the whole cube. The
-  result is a wrong surface rather than an absent one, so it reads as an encoding error.
-- **An integer test pattern cannot see a low-16-bit truncation.** Every value that a
-  small integer convolution produces has zero low mantissa bits in fp32. Reading an fp32
-  result through a 16-bit output width therefore returns a *uniformly zero* surface. That
-  is the same signature as a gated epilogue or a dead MAC. Read at width `5`, or drive
-  values whose low mantissa bits are non-zero.
-- **A bias probe fixes only the channel-to-lane mapping.** Every pixel carries the same
-  value per channel, so nothing in it constrains the pixel mapping.
-- **A probe that is uniform in one axis cannot validate the reduction.** A uniform
-  feature reports how many lanes were read, never which. A weight held constant over
-  `ic` makes the contraction invariant under any permutation of the channel axis. A sum
-  over `ic` is permutation-invariant however it is driven. A datapath that reduces the
-  wrong input channels passes all of them. Measure the multiplicity (probe 10) and
-  decode a unique-naming probe (`map`) before calling any float datapath exact.
-- **Size a weight cube by its group, not by `ic`.** A partial input-channel group still
-  occupies a whole one, so `ic = 8` at an ic group of 16 needs a cube for 16. An
-  allocation taken from `ic` alone under-allocates. At `k = 1` the overrun stays inside
-  the BO's page and computes correctly anyway. It surfaces only at a kernel large enough
-  to run past the page, where it reads as "this part cannot do `k = 3`". Size the buffer
-  from `ceil(ic/group)*group`.
-- **A cube-geometry sweep needs a shape where the field is observable.** The float
-  weight cube's output-channel group is algebraically invisible at `k = 1`. The kernel
-  index sits between the group and the `(oc2, ic2)` pair, so at `k = 1` the index
-  collapses to `(oc/G)*G + oc%G = oc`. Every candidate then emits the same bytes. A sweep
-  at `k = 1` reports the field settled while testing nothing, which is how it fitted the
-  wrong value 8. Before believing a geometry knob, check that two candidates produce
-  different buffers.
-- **Score only what the map covers.** Reading a surface through the layout under test
-  cannot reveal a layout that disagrees with it. A partial match invites fitting a shift
-  to three atoms. Decode a unique-naming probe instead: the answer is a bijection or it
-  is not.
-- **Pace probe loops.** Back-to-back submits return untouched surfaces at a rate that
-  depends on the gap. At 200 ms and above, every submit writes. Treat one no-write as a
-  measurement to repeat, and re-submit rather than record it.
-- **The bias belongs to one slice of an `ic` split.** Every slice runs the whole epilogue
-  and adds the whole `A` term. A coefficient buffer carrying a bias, handed to all of
-  them, lands it `ic/16` times. The error is a per-channel constant on an otherwise exact
-  surface, which is the shape a wrong `B` sign convention also has.
-- **A slice's weight cube is not a sub-cube of the whole conv's.** Each slice is its own
-  convolution, so its group count follows the slice rather than the total. Slicing the
-  full cube by byte range hands the part a correctly sized cube with the kernel positions
-  shuffled.
-- **One register at a time cannot find a mode.** The float datapath needs three
-  registers together. Each of the three looks inert while either of the others is at its
-  integer value. A single-register sweep of any one of them reports it dead, and a
-  leave-one-out over the working set is what separates them. Two of the three are also
-  unreachable by a single-bit sweep from the integer word.
-- **A vendor capture is cheaper than a sweep, and one can be manufactured.** A capture
-  set that is all int8 carries no float fields, but a float capture can still exist.
-  RKNN-Toolkit2 emits one for this part after about an hour of dependency pinning, and
-  one diff of it settled what bit-level sweeps had not. The same lever settled four
-  depthwise register formulas and the depthwise weight cube. Before sweeping for
-  anything, ask which ONNX input makes the vendor compiler emit it.
-- **A found capture set is a set of confounds.** The vendor compiles real models, so
-  the axes that co-vary in real models co-vary in every capture. In this part's
-  captures, every C=32 depthwise program was stride 1 and every C=64 one stride 2. Every
-  depthwise kernel was 3, and every plane was square.
-
-  Three register formulas fitted through those confounds were all wrong: `0x4050`'s
-  channel field, the surface rounding in `0x401C`/`0x40B8`, and `0x118C`. Register
-  `0x118C` is `iw-1` in both halves, and it reads as the plane height whenever
-  `iw == ih`. When a capture set cannot vary an axis, manufacture one that does before
-  fitting anything to it.
-- **A degenerate helper program is not a convolution.** A model on a plane whose size
-  is not a power of two makes the compiler append a 1×1×1 program beside the conv. That
-  program carries a DPU_RDMA config that no conv carries. A conv emitter never produces
-  it, and it reads as a spurious gate failure.
-- **Timing an `ic` split at a probe pacing gap measures the gap.** The gap knob
-  `ROCKET_FS_GAP_MS` exists to make a no-write rare, not to make a number meaningful.
-  Time at `0`, and read the retry count that the harness reports alongside.
-
-## `0x5024` is the DPU shift word, and zero is not a safe value for it
-
-`BS_BASE_ADDR1` (`0x5024`) is a live operand base, not a spare word. The DPU
-reads one 32-bit word through it per task and right-shifts the accumulator by two
-independent 6-bit fields:
+`BS_BASE_ADDR1` (`0x5024`) is the base address of a per-task operand, the DPU shift word. The
+DPU reads one 32-bit word through it per task and right-shifts the BS product by two
+independent 6-bit fields, one per sign:
 
 ```
 bits[5:0]   right shift applied where the result is NON-NEGATIVE
 bits[13:8]  right shift applied where the result is NEGATIVE
 ```
 
-Both are exact powers of two over the whole range. A word of `0x0202` takes an
-accumulator of +64 to +16 and one of -64 to -16. A field of 8 or more flushes that sign
-to zero. The two sides are independent. The field selection follows the sign of
-the **accumulator**, not the sign of the weight, so swapping the feature sign swaps which
+Both are exact powers of two over the whole range. A word of `0x0202` takes an accumulator of
++64 to +16 and one of -64 to -16. A field of 8 or more flushes that sign to zero. The two
+sides are independent. [HW sweep, H96]
+
+The sign of the BS product selects the field, not the sign of the weight. With `C` positive,
+as in every measurement, that is the sign of `acc + A`. Swapping the feature sign swaps which
 output channels move. [HW sweep, H96]
 
 The shift applies to the BS product, and it rounds half to even [HW sweep, H96 MAX M9,
-`tests/rk3576_coeff_c.c shift`, 2026-09-23]. The stage computes `((acc + A)*C) >> s`. Take
-`C = 24576`, a shift of 14 and an accumulator of 160000, which is not a multiple of `2^14`. The
-part returns the multiply-then-shift value rather than `(acc >> 14)*C`, and the product is held
-wide, as the coefficient buffer above records.
+2026-09-23]. The stage computes `((acc + A)*C) >> s`, multiplying before it shifts, with the
+product held wide as the coefficient buffer section above records. A per-channel `C` is
+therefore a fixed-point gain, with the shift as its binary point.
 
-An exact half rounds to the even side. With `C = 1` and a shift of 1, 32 odd values of A over
-both signs round this way. Of five candidate rules, only half to even fits every channel. So a
-per-channel C carries a fixed-point gain with the shift as its binary point.
+Every capture stores 0 here, for the same reason every capture stores 0 for the feature,
+weight, output and bias bases. It is an address that the vendor runtime patches at load
+time, and a `.rknn`-derived program is the *stored* register set.
 
-Every capture stores 0 here, for the same reason every capture stores 0 for the
-feature, weight, output and bias bases. It is an address that the vendor runtime
-patches at load time, and a `.rknn`-derived program is the *stored* register set.
-Leaving it at zero is not benign, because **IOVA 0 is a real buffer on a mainline
-`rocket` stack**. The per-fd address space bump-starts at 0, so whichever BO the
-caller allocates first is addressable as 0. The DPU then takes both shift amounts
-out of that buffer's first four bytes, which are normally the head of the feature
-cube. Point it at 64 zeroed bytes: `rocket_rk3576_coeff_bytes()` reserves them
-past the A/B/C groups, and the emitter addresses them.
+> [!CAUTION]
+> Software must point `0x5024` at a word that holds the intended shifts, such as 64 zeroed
+> bytes. IOVA 0 is a real buffer on a mainline `rocket` stack. The per-fd address space
+> bump-starts at 0, so whichever BO is allocated first is addressable as 0. With `0x5024` at
+> zero, the DPU takes both shift amounts out of that buffer's first four bytes, normally the
+> head of the feature cube.
 
-The fault presents as data-dependent arithmetic, not as addressing, because the shift
-depends on two bytes of *feature data*. A conv is bit-exact for one feature tensor and
-attenuated by an arbitrary power of two for another. It does so reproducibly, with no
-fault and no dmesg.
+The fault presents as data-dependent arithmetic, not as addressing, because the shift depends
+on two bytes of *feature data*. A conv is bit-exact for one feature tensor and attenuated by
+an arbitrary power of two for another. It does so reproducibly, with no fault and no dmesg.
 
-It also hides from the obvious probes. A uniform feature fill puts the same byte in both
-fields, so the result is either right or uniformly wrong. An identity weight set reads
-one input channel per output channel and cannot show a contribution that the model
-expects to be zero. Any feature whose first two bytes have zero low-6-bits, such as a
-fill of 64 or of 0, computes perfectly. The symptom follows the
-*feature cube's channel 1* only because that channel's first byte is byte 1 of the buffer.
+Common test inputs do not show it:
 
-Recognize it by its pattern. The result is exact for some feature tensors and a clean
-power-of-two too small for others. The factor does not change with the programmed
-requant scale, which places the fault upstream of the OUT_CVT and downstream of the MAC.
+- A uniform feature fill puts the same byte in both fields, so the result is either right or
+  uniformly wrong.
+- An identity weight set reads one input channel per output channel, and cannot show a
+  contribution that the model expects to be zero.
+- Any feature whose first two bytes have zero low-6-bits, such as a fill of 64 or of 0, is
+  exact.
+
+The symptom follows the *feature cube's channel 1* only because that channel's first byte is
+byte 1 of the buffer. The result is exact for some feature tensors and a clean power-of-two
+too small for others. A factor that does not change with the programmed requant scale places
+the fault upstream of the OUT_CVT and downstream of the MAC.
+
+In `librocketnpu`, `rocket_rk3576_coeff_bytes()` reserves 64 zeroed bytes past the A, B and
+C groups, and the RK3576 regcmd encoder points `0x5024` at them.
 
 ## The cold-start wall
 
-On an unpatched `rocket`, only the first job of each NPU power session computes. The
-table submits the same job N times and counts how many wrote [HW sweep, H96]:
+On an unpatched `rocket`, only the first job of each NPU power session writes its output.
+The same job, submitted repeatedly, behaves as follows [HW sweep, H96]:
 
 | Gap between jobs | Result |
 |---|---|
@@ -2202,21 +1964,27 @@ table submits the same job N times and counts how many wrote [HW sweep, H96]:
 | 300 ms | all 8 write, byte-identical |
 | separate processes | every one writes |
 
-The NPU runtime-suspends 50 ms after its last job. So the unit is the NPU power
-session, not the fd, not the process, and not chained-versus-independent submits.
-Independent per-op submits inside one power session fail exactly as a chained task
-does, and any gap past the autosuspend delay re-arms the PC.
+The NPU runtime-suspends 50 ms after its last job. The unit is the NPU power session, not the
+fd, not the process, and not chained-versus-independent submits. Independent per-op submits
+inside one power session fail exactly as a chained task does, and any gap past the
+autosuspend delay re-arms the PC.
 
-An external report on a different userspace (mesa/rocket + Teflon) matches this. It
-read the behavior as the part arming its weight loader once per power session, and
-found that independent per-op submits cannot bypass it. The same behavior on this
-project's own encoder and submit path is what places it in the driver.
+> [!CAUTION]
+> On an unpatched `rocket`, every job after the first in an NPU power session completes and
+> leaves its output untouched. Software must leave a gap longer than the 50 ms autosuspend
+> delay between jobs, or run a `rocket` that programs the RK3576's `PC_TASK_CON` field width
+> (below).
+
+An external report on a different userspace (mesa/rocket + Teflon) describes the same
+behavior, and found that independent per-op submits cannot bypass it. The same behavior
+under `librocketnpu`'s own regcmd encoder and submit path places the cause in the driver.
 
 ### The `PC_TASK_CON` field width
 
-The wall's cause is the `PC_TASK_CON` field width. The register packs `TASK_NUMBER` in
-the low bits, with three control bits directly above it. The field is 12 bits wide on
-the RK3588 and **16 on the RK3576**, so all three control bits move up by four:
+`PC_TASK_CON` holds the task count of a kick, `TASK_NUMBER`, in its low bits, with three
+control bits directly above it. The field is 12 bits wide on the RK3588 and **16 on the
+RK3576**, and the difference causes the cold-start defect. All three control bits move up by
+four:
 
 | | `TASK_NUMBER` | `TASK_PP_EN` | `TASK_COUNT_CLEAR` | `TASK_LAST_LAYER_CLEAR` |
 |---|---|---|---|---|
@@ -2224,101 +1992,51 @@ the RK3588 and **16 on the RK3576**, so all three control bits move up by four:
 | RK3576 | `BIT[15:0]` | `BIT(16)` | `BIT(17)` | `BIT(18)` |
 
 The RK3588 register description marks the top control bit reserved. On the RK3576 it is
-`task_last_layer_clear`, and it belongs on every submit alongside the count clear.
-Chaoyi Chen of Rockchip gave the layout on the `linux-rockchip` list
-([message](https://lore.kernel.org/all/4f300b78-d96d-4d98-8819-dc292b0c9b97@rock-chips.com/)),
-which makes the naming authoritative rather than inferred. Shifting the whole triple
-gives the same word independently, and both derivations write `0x70001`
-[source-confirmed].
+`task_last_layer_clear`, and software should set it on every submit alongside the count
+clear. Chaoyi Chen of Rockchip gave the layout on the `linux-rockchip` list
+([message](https://lore.kernel.org/all/4f300b78-d96d-4d98-8819-dc292b0c9b97@rock-chips.com/)).
+Shifting the RK3588's control triple up by four gives the same word, and both derivations
+write `0x70001` [source-confirmed].
 
-`rocket` builds the word from the RK3588 field accessors unconditionally, giving
-`0x7001`. On this part that asks the PC for a task count of 28673, with all three
-control bits above the register's defined fields. The PC starts that 28673-task
-program, runs the one task it was handed, and is left mid-stream. Nothing else in the
-session starts. A power cycle resets the PC, and that is the whole of why a gap re-arms
-it.
+Mainline `rocket` builds the word from the RK3588 field accessors on every SoC, giving
+`0x7001`. On the RK3576 that word asks the PC for a task count of 28673, with all three
+control bits above the register's defined fields. The PC starts that 28673-task program,
+runs the one task it was handed, and is left mid-stream. No later job in the power session
+starts. A power cycle resets the PC, and that reset is the only reason a gap between jobs
+re-arms it.
 
-Building the word from a per-SoC width clears the wall, and leaves the RK3588 word
-bit-identical at 12 bits. Back to back with no gap, 1 of 8 submits writes without the
-fix and 8 of 8 with it. A longer soak writes 32 of 32, byte-identical to each other and
-bit-exact against the CPU model. A row-windowed 112×112 k3 conv is bit-exact over the
-whole surface with no inter-task gap. The patch is `rk3576/npu/0008` in the `rk3576-npu`
-profile. [HW sweep, H96 MAX M9, measured 2026-07-25]
+Software must build the word from a 16-bit `TASK_NUMBER` field on the RK3576. Building the
+word from a per-SoC width removes the defect, and leaves the RK3588 word bit-identical at 12
+bits. Back-to-back submits with no gap then all write, byte-identical to
+each other and bit-exact against the CPU model. A row-windowed 112×112 k3 convolution is
+bit-exact over its whole output with no gap between tasks [HW sweep, H96 MAX M9, measured
+2026-07-25]. The driver change is patch `rk3576/npu/0008` in the `rk3576-npu` profile.
 
-Sweeping the control field at each width isolates the cause to `TASK_NUMBER` alone:
+`TASK_NUMBER` alone decides whether later jobs write. With the field at its 16-bit position,
+every job writes whatever the three control bits hold, including with every control bit
+clear. With the field at the RK3588 position, no control-bit value tried makes later jobs
+write [HW sweep, H96 MAX M9].
 
-| word written | `TASK_NUMBER` seen (16-bit field) | wrote |
-|---|---|---|
-| `0x70001`, `0x60001`, `0x50001`, `0x30001`, `0x20001`, `0x10001`, `0x00001` | 1 | 8 of 8 each |
-| `0x07001` (the RK3588 word) | 28673 | 1 of 8 |
-| `0x06001`, `0x04001`, `0x02001`, `0x01001` | 24577, 16385, 8193, 4097 | 0-1 of 8 |
+No regcmd write removes the defect, so the fix is a driver patch [HW sweep, H96 MAX M9].
 
-So `TASK_COUNT_CLEAR` is not the mechanism. With the field correctly placed, the part
-works with every control bit clear. With it misplaced, no control-bit value tried helps.
+The `POINTER` field of `S_POINTER` is live, and selects a producer register group:
 
-Of the other two per-SoC PC parameters in the vendor config, the IRQ-locked
-`PC_DATA_ADDR` write of `pc_dma_ctrl` is not needed. Neither is the RK3576-only
-`state_init` hook. The other parameter, `pc_task_status_offset`, is real and
-load-bearing. The register at `0x48` is the live task counter that a chained stream's
-completion is read from (see "`PC_DONE` is per task" below).
+> [!CAUTION]
+> `POINTER=1` in the CNA, CORE, DPU or RDMA `S_POINTER` regcmd makes every job write
+> nothing [HW sweep, H96 MAX M9]. Software must leave `POINTER` at 0 in the register program.
 
-Nothing a regcmd can write clears the wall, so the fix is a driver patch. Each of these leaves
-the part at one job per power session [HW sweep, H96 MAX M9]:
+Under `PP_MODE`, the `POINTER` field is hardware-owned [linux-rockchip RFC v4 4/6 cover and
+code comments, Jiaxing Hu, 2026-08-03, their measurement, not reproduced here]. Writes to it,
+from the driver or from the regcmd, change neither its readback nor the result. A second party
+measured both on a Radxa ROCK 4D. The report agrees with the `S_POINTER` sweep on the
+RK3576, which finds no value that changes the outcome of a second submit. It disagrees on
+`POINTER=1` written from the regcmd, which stops every job on the H96 MAX M9 and changes
+nothing in the report.
 
-- Sweeping the CNA/CORE/DPU/RDMA `S_POINTER` value over the whole ping-pong field
-  (`POINTER`, both `PP_EN`s, `PP_MODE`, both `PP_CLEAR`s)
-- Writing `PC_TASK_CON` from inside the stream
-- Replaying the vendor's state-init sequence as regcmd writes
+**Not characterized:** the cause of that disagreement.
 
-Two of those results are informative in themselves. Forcing `POINTER=1` makes every
-job write nothing, so the bit is live and selects a producer register group. Job 2 still
-fails with `POINTER` held at 0, so the consumer is not advancing behind the writer, which
-rules the ping-pong groups out. [HW sweep, H96 MAX M9]
-
-**Read back, the `POINTER` field is not the driver's to write while `PP_MODE` is set.**
-A second party reports from a Radxa ROCK 4D [linux-rockchip RFC v4 4/6 cover and code
-comments, Jiaxing Hu, 2026-08-03, their measurement, not reproduced here]:
-
-- Bit 0 written as 0 reads back as 1, on every job, for the rest of the session.
-- Flipping it per submit, in the direct register writes *and* in all four `S_POINTER`
-  entries of the regcmd, moves neither the readback nor the result.
-- Selecting a bank the way the vendor's `state_init` does, with the `PP` bits clear,
-  stops the units arming at all.
-- Pulsing `POINTER_PP_CLEAR`, with or without `EXECUTER_PP_CLEAR`, moves nothing.
-- A 20 KB read snapshot of `pc`, `cna`, `core`, `dpu` and `rdma` differs in exactly one
-  word, `OPERATION_ENABLE`. The snapshot is taken at the same point in a job that
-  computed and in one that did not.
-
-So the field is hardware-owned under `PP_MODE`. That agrees with the sweep above, which
-finds no `S_POINTER` value that changes a second submit's fate. It disagrees with one half
-of that sweep. Forcing `POINTER=1` from inside the regcmd kills every job here, where they
-report that flipping it changes nothing. Two candidate reasons remain, and neither is
-settled:
-
-- The writes go in from different places: a regcmd the PC is fetching, against a
-  slave-mode register write.
-- The posted series carries no equivalent of `0008`. It still emits mainline's
-  `PC_TASK_CON_TASK_NUMBER(1)` against the RK3588's 12-bit accessor.
-
-The posting does not show whether the tree the experiments ran on carried such a fix. Their
-public repo has had its own 16-bit fix since at least 2026-07-26, so do not state which.
-
-That caveat is a method trap, not a register fact. On a driver that still programs the
-RK3588's 12-bit `PC_TASK_CON` word, the second submit of every power session writes
-nothing. The reason has nothing to do with the register under test. Every arm of a
-ping-pong sweep then reads "no change", and the ledger is uninformative by construction
-however exhaustive it is.
-
-Before attributing anything to a configuration difference between job 1 and job 2,
-establish that job 2 can compute *at all*. Stamp the output BO with a sentinel first. A
-repeated configuration that reads a stale surface is byte-exact for the wrong reason.
-That is exactly the shape that "one configuration is byte exact forever, a different one
-computes nothing" produces. A fresh BO's zeros cannot separate "never ran" from "ran and
-wrote zeros" (see the write guard in [rk3576.md](rk3576.md)). Fill it through a
-`PREP_BO`/`FINI_BO` bracket rather than a bare `memset`, or the dirty lines race the DMA.
-
-The vendor `rknpu` config carries three per-SoC parameters that mainline `rocket`
-hardcodes at the RK3588 value. Only the first is load-bearing:
+The vendor `rknpu` config has three per-SoC PC parameters, and mainline `rocket` hardcodes
+each at the RK3588 value:
 
 | | RK3588 | RK3576 |
 |---|---|---|
@@ -2326,314 +2044,299 @@ hardcodes at the RK3588 value. Only the first is load-bearing:
 | `pc_task_status_offset` | `0x3c` | `0x48` |
 | `pc_dma_ctrl` | 0 | **1** (writes `PC_DATA_ADDR` under the IRQ lock) |
 
-The RK3576 also has a per-SoC `state_init` hook that no other Rockchip NPU in that
-driver has. It runs at every power-on with the PC in slave mode. It seeds CNA `0x1024`
-with bit 31 in both ping-pong register groups, then clears the pointer
-(`S_POINTER = 0x1e`). The `rocket` driver has no analog, and the slave-mode entry cannot
-be replayed from a regcmd the PC is fetching.
+Only `pc_task_number_bits` is required for back-to-back submits to write.
+`pc_task_status_offset` is required to read the completion of a chained stream: the register
+at `0x48` is the live task counter (§"Per-task `PC_DONE` and the `PC_TASK_STATUS` counter"
+below). `pc_dma_ctrl`, the IRQ-locked `PC_DATA_ADDR` write, is not needed.
 
-Placing the hook in `rocket` is easy if it is ever wanted. The driver's
-`rocket_job_hw_submit()` already opens with `PC BASE_ADDRESS = 0x1`, which is slave
-mode, and the vendor's CNA writes drop straight into that window. To match the vendor
-at power-on, the place is the runtime-resume callback.
+The RK3576 also has a per-SoC `state_init` hook that no other Rockchip NPU in that driver
+has. It runs at every power-on with the PC in slave mode. It seeds CNA `0x1024` with bit 31
+in both ping-pong register groups, then clears the pointer (`S_POINTER = 0x1e`). The `rocket`
+driver has no equivalent, and a regcmd the PC is fetching cannot replay the slave-mode entry.
 
-Neither the hook nor `pc_dma_ctrl` is needed, and the two are ruled out jointly. They
-are not needed for correct back-to-back submits, because the task-number width accounts
-for the wall on its own. Nor are they the cause of the wrong answers that two jobs in
-flight on the two cores compute. That workload is the one that would reach the second
-pointer group.
-
-The joint test seeds both groups at every power-on for each core, and holds a
-device-global lock across the whole register-programming sequence. The concurrent cell
-stays at 100% of calls wrong, against a 97.9% control. The seeding is counted, so the
-negative is about the sequence rather than about a knob that never fired. Applying the
-two together is the point. A one-at-a-time pass cannot see a condition of two, and
-since the whole delta does nothing, no subset can. [HW sweep, H96 MAX M9,
-`tests/rk3576_core_pair.c pair`, see [rk3576.md](rk3576.md) for what the mechanism is
-narrowed to instead]
+Neither the hook nor `pc_dma_ctrl` is needed. Back-to-back submits write without them, because
+the task-number width alone causes the cold-start defect. Two jobs in flight on the two cores
+are the workload that can reach the second pointer group. Neither the hook nor `pc_dma_ctrl`
+causes their incorrect output [HW sweep, H96 MAX M9]. The mechanism that output is narrowed to
+is in [rk3576.md](rk3576.md).
 
 ### Working against an unpatched driver
 
-This subsection applies to a `rocket` without `0008`. A probe on a stock module hits all
-of it.
+**Conditions:** a `rocket` module without patch `0008`, which includes the stock module.
 
-**`autosuspend_delay_ms` is the only userspace lever, and it is unreliable.** Writing 0
-to `/sys/.../27700000.npu/power/autosuspend_delay_ms` makes the driver drop the power
-domains straight after each job. A back-to-back loop then climbs from 1 job in N to
-about half: 8 of 16, and 6 of 6 on a shorter run. It is a race, not a fix: a job that
-arrives before the autosuspend work runs gets no power cycle and is walled. Anything
-that must be correct has to check, per task, that its own output landed, and resubmit.
-The `rk3576_first_light` test does this when it runs a row split.
+`autosuspend_delay_ms` is the only setting userspace can change, and it does not remove the
+defect. Writing 0 to `/sys/.../27700000.npu/power/autosuspend_delay_ms` makes the driver drop
+the power domains straight after each job. A back-to-back loop then rises from 1 job in N
+writing to about half. The setting races the autosuspend work. A job that arrives before that
+work runs gets no power cycle and does not execute.
 
-A gap of ~1 s makes results stable and repeatable. At ~0.4 s a probe still occasionally
-comes back with the output BO wholly untouched. Read a single "the DPU did not write at
-all" as the wall, not as a register result, and re-run before believing it.
+> [!CAUTION]
+> With `autosuspend_delay_ms` at 0, a job that arrives before the autosuspend work runs leaves
+> its output untouched. Software must check, per task, that its own output was written. If it
+> was not, software must resubmit the task.
 
-**The wall has two signatures, and the second one is the dangerous one.** Either the
-output BO comes back wholly untouched, or the DPU writes a full surface carrying only
-the bias. In the second case the MAC contribution is missing and the surface reads all
-zero. Both look exactly like a wrong register program. The second is also what a `C=0`
-coefficient buffer produces, so three unrelated causes converge on one appearance.
+A gap of ~1 s between jobs makes results stable and repeatable. At ~0.4 s an output BO still
+occasionally comes back wholly untouched.
 
-The `rk3576_first_light` test retries past the autosuspend on both signatures. It
-treats an all-zero surface as the wall only when the CPU model predicts a non-zero one.
-A sweep that reports its results without that check measures the wall roughly half the
-time at multi-second gaps.
+> [!CAUTION]
+> The cold-start defect has two signatures. Either the output BO comes back wholly untouched,
+> or the DPU writes a full-size output that holds only the bias. In the second case the MAC
+> contribution is missing and the output reads all zero. Both match a wrong register program.
+> The second is the harder to recognize: it also matches a `C=0` coefficient buffer, so three
+> unrelated causes give one result.
+>
+> Software must re-run a job that wrote nothing before reading it as a register result.
+> Software must treat an all-zero output as the defect only where the CPU model predicts a
+> non-zero output.
+
+> [!NOTE]
+> On this driver the second submit of every power session writes nothing, whatever register is
+> under test. A sweep that varies a register between job 1 and job 2 therefore shows no change
+> at any value. Before attributing a result to a configuration difference between two jobs,
+> confirm that the second job can write at all.
+
+> [!CAUTION]
+> A job that writes nothing leaves the previous job's output in the BO, so a repeated
+> configuration reads byte-exact. One configuration then appears byte-exact on every run, and
+> any other appears to write nothing. A fresh BO's zeros cannot separate a job that never ran
+> from one that wrote zeros (see the write guard in [rk3576.md](rk3576.md)). Software must stamp
+> the output BO with a sentinel before each job, through a `PREP_BO`/`FINI_BO` bracket. A bare
+> `memset` leaves dirty cache lines that race the DMA.
 
 ## The per-submit floor is the driver's completion poll
 
-Every cost table on this part is a submit-count table, and the per-submit cost is not
-the silicon's. On this revision `PC_DONE` is read-only in `INTERRUPT_MASK`, so it cannot
-be routed to the GIC. The RK3588 takes an interrupt, and `patches/rk3576/npu/0006`
-polls the bit on an hrtimer instead. The period is the floor.
+**Conditions:** H96 MAX M9, `rocket` with patches `0006`, `0009` and `0012`, from before
+interface version 1.0, measured 2026-07-28. The per-submit time on later modules is in
+[rk3576.md](rk3576.md) §"Per-submit overhead and the completion poll".
 
-`patches/rk3576/npu/0009` makes the period a module parameter. Patch `0012` sets it to
-50 us and changes what the poll retires on. The `rk3576_submit_floor` test submits an
-8×64×32 int8 matmul 300 times, a shape chosen so that dispatch dominates compute. Through
-it the floor is 439 us/submit against 1654 at the stock 1 ms, 3.77x.
-[HW sweep, H96 MAX M9, measured 2026-07-28]
+On the RK3576 the per-submit cost is set by the driver's completion poll, not by the NPU.
+`PC_DONE` is read-only in `INTERRUPT_MASK`, so it cannot be routed to the GIC. The RK3588 takes
+an interrupt, and on the RK3576 `patches/rk3576/npu/0006` polls the bit on an hrtimer instead.
+The poll period sets the minimum cost of a submit, so the cost of RK3576 work follows its
+submit count.
 
-**Do not read a gate's total wall time as the floor.** The conv gate's 102 shapes take
-about 5.9 s, unchanged, at every period from 1000 us down to 150 us. Host packing and
-the gate's CPU model dominate that gate, not submits. It looks like a flat, negative
-result while it measures something else. Time a single small shape, which is what
-`rk3576_submit_floor` is for.
+`patches/rk3576/npu/0009` makes the period a module parameter. Patch `0012` sets it to 50 us
+and changes what the poll retires on. At that period a submit costs about a fifth of its time
+at the stock 1 ms period [host-computed]. The shape is an 8×64×32 int8 matmul, at which
+dispatch dominates compute [HW sweep, H96 MAX M9, 2026-07-31]. The per-submit time on each
+module is in [rk3576.md](rk3576.md) §"Per-submit overhead and the completion poll".
+
+> [!NOTE]
+> A test suite's total wall-clock time does not show the per-submit cost. Host packing and the
+> suite's CPU model dominate it, so it stays flat across poll periods. Time a single small shape
+> instead.
 
 ### Chained row tasks
 
-A drm task carries one PC program, whatever the stream holds. The obvious way to
-amortize the floor is to batch. A row-windowed convolution is one submit per window,
-and a tile's row tasks are independent by construction. Each writes its own rows of the
-same surface from its own window of the same feature cube. The weight and coefficient
-buffers stay unchanged across them. Concatenating their programs into one regcmd stream
-is arithmetically sound.
+A row-windowed convolution is one submit per window, and its row tasks are independent. Each
+writes its own rows of the same output from its own window of the same feature cube. The
+weight and coefficient buffers stay unchanged across them. Chaining them into one kick saves
+one completion poll per row task removed.
 
-**It does not run.** The driver programs `PC_TASK_CON` with `TASK_NUMBER = 1` per drm
-task descriptor, so the program counter executes the first task in the stream and stops.
-A per-task write check names the earliest missing task, not only that one is missing.
-At 3 tasks and at 6, task 0 lands and task 1 is the first missing. That holds on every
-one of eight attempts with the power domain confirmed cycled between them, so it is
-deterministic and not the poisoning. Across the conv gate that is 27 shapes, all
-multi-window or multi-group plans, and no single-task one
-[HW sweep, H96 MAX M9, 2026-07-28].
+> [!CAUTION]
+> Concatenating the row tasks' programs into one regcmd stream is arithmetically sound, but one
+> drm task runs one PC program, whatever the stream holds. The driver programs `PC_TASK_CON`
+> with `TASK_NUMBER = 1` per drm task descriptor, so the PC executes the first task in the
+> stream and stops, deterministically. The rows of every later task are not written
+> [HW sweep, H96 MAX M9, 2026-07-28]. Software must submit each program as its own task.
 
-Collecting the floor takes a kernel patch and a joint layout contract, and both exist.
-Submitting n drm task descriptors is not enough on its own. The driver already runs
-those back to back (`rocket_job_hw_submit()` re-arms on `next_task_idx` from the
-completion path), but each through its own completion poll. The poll is the floor, so
-that form saves the ioctl and the fence round trip and not the thing worth saving. What
-collects the floor is the RK3588 series' `086` arrangement, ported as
-`patches/rk3576/npu/0015` and `0016`:
+Saving the poll needs a kernel patch and a layout that userspace and the driver agree on.
+Submitting n drm task descriptors is not enough on its own. The driver runs them back to back
+(`rocket_job_hw_submit()` re-arms on `next_task_idx` from the completion path), but each
+through its own completion poll. That form saves the ioctl and the fence round trip, and each
+task still waits for a poll. The RK3588 series' `086` arrangement, ported as
+`patches/rk3576/npu/0015` and `0016`, runs all n from one kick:
 
-- Userspace lays the n programs out contiguously at one even-word stride. It rewrites
-  each trailer's inert `OP_NONE` filler into a `PC_BASE_ADDRESS` write pointing at the
-  next (`src/rocket_chain.c`, shared with the RK3588). This part's emitter ends every
-  program with the same `[OP_NONE, PC_REGISTER_AMOUNTS, OP_40, OP_ENABLE]` trailer that
-  the rewrite claims.
+- Userspace lays the n programs out contiguously at one even-word stride. It rewrites each
+  trailer's inert `OP_NONE` filler into a `PC_BASE_ADDRESS` write pointing at the next
+  (`src/rocket_chain.c`, shared with the RK3588). The RK3576 emitter ends every program with
+  the same `[OP_NONE, PC_REGISTER_AMOUNTS, OP_40, OP_ENABLE]` trailer that the rewrite expects.
 - Userspace submits them as n drm tasks with `DRM_ROCKET_JOB_BATCHED`.
 - The driver programs task 0 only, sets `TASK_NUMBER = n`, and advances `next_task_idx`
-  straight to the end. The PC streams all n from one kick, and the job retires on the
-  single completion that `TASK_NUMBER` gates.
+  straight to the end. The PC streams all n from one kick, and the job retires on the single
+  completion that follows the last of the `TASK_NUMBER` tasks.
 
-The `TASK_NUMBER` bound is per-SoC, so `0016` takes it from `rocket_soc_data` (16 bits
-here, 12 on the RK3588) rather than from the RK3588 field mask.
+The `TASK_NUMBER` bound is per SoC, so `0016` takes it from `rocket_soc_data` (16 bits on the
+RK3576, 12 on the RK3588) rather than from the RK3588 field mask.
 
-Chaining meets the correctness bar, and it saves one completion poll per row task
-removed. With chaining on, the convolution library gate reads 156 passed, 7 refused as
-required and 0 failed. That is identical to the one-submit-per-task path. A
-concatenated stream in one drm task fails 27 shapes of the same gate. A 32×32 k3 plane
-forced into 8 row windows goes 2.8 ms -> 1.0 ms, and a 224×224 k3 s1 convolution goes
-21.3 ms -> 19.1 ms. [HW sweep, H96 MAX M9, 2026-07-29]
+Both trailer fields describe the next program. The driver programs `PC_BASE_ADDRESS` and
+`PC_REGISTER_AMOUNTS` from task 0 alone. In a chain of programs that differ in length, software
+must therefore write the successor's register count into each trailer, not the program's own.
+A uniform row-task chain cannot distinguish the two.
 
-**Do not look for this in a gate's total wall time.** Over the whole convolution library
-gate it is 6643 ms -> 6463 ms, about 3%. Forcing `ROCKET_RK3576_MAX_ROWS` down to 8 or 4
-does not enlarge it, because most shapes in that gate plan into one or two row tasks.
-The gate's wall is host packing and the per-call power-cycle guard, not submits. The
-lever is worth `(n-1) * 439 us` per call and nothing else: it pays on the deep planes
-and is invisible on the shallow ones.
+> [!CAUTION]
+> A kernel that does not honor `DRM_ROCKET_JOB_BATCHED` runs a chained layout down the
+> per-task path. It runs task 0 and stalls until the job timeout. Software must confirm
+> support before chaining. It reads `/sys/module/rocket/parameters/rocket_batch_submit`, or
+> else the advertised DRM interface version, which must be >= 1.1.
 
-Chaining is default-on in the int8 convolution path of `librocketnpu`, and
-`ROCKET_RK3576_BATCH_TASKS=0` turns it off. The same layout carries a run of
-cube-linked layers as one kick (see the cross-layer kick in [rk3576.md](rk3576.md)).
+Chained, every shape of the convolution library test gives the same result as one submit per
+task [HW sweep, H96 MAX M9, 2026-07-29]:
 
-Both trailer fields describe the next segment. The driver programs `PC_BASE_ADDRESS`
-and `PC_REGISTER_AMOUNTS` from task 0 alone. So a chain of programs that differ in
-length must write its successor's count, not its own. A uniform row-task chain cannot
-distinguish the two.
+| Convolution | One submit per task | Chained |
+|---|---|---|
+| 32×32 k3 plane, forced into 8 row windows | 2.8 ms | 1.0 ms |
+| 224×224 k3 s1 | 21.3 ms | 19.1 ms |
 
-The `rocket_batched_submit_supported()` check refuses to self-chain against a kernel
-that does not honor the flag. It reads `/sys/module/rocket/parameters/rocket_batch_submit`,
-else the advertised DRM interface version, which must be >= 1.1. That check is
-load-bearing, because a chained layout run down the per-task path runs task 0 and
-stalls to the job timeout.
+Chaining saves one submit's cost per row task removed and nothing else. It shortens a call on
+a deep plane and leaves a shallow one unchanged. Over a whole test suite the saving is small, because most
+shapes plan into one or two row tasks. Host packing and the per-call power-cycle guard
+dominate such a suite, not submits.
 
-The fp16 `ic` split cannot chain this way as the path stands. Its slices repack the
-same weight BO, then read back and accumulate into the host's buffer between submits.
-That host work between them means they are not one stream. Chaining them needs
-per-slice weight buffers, and either per-slice output regions or on-chip accumulation.
-That is the same restructuring the on-chip-accumulation item wants, not a free
-consequence of this patch.
+`librocketnpu` chains by default in its int8 convolution path, and
+`ROCKET_RK3576_BATCH_TASKS=0` turns chaining off. `rocket_batched_submit_supported()` makes
+the support check above, and the library does not self-chain where it fails. The same layout
+runs a sequence of cube-joined layers as one kick (see the cross-layer kick in
+[rk3576.md](rk3576.md)). The fp16 `ic` split does not chain this way. Its slices repack the
+same weight BO, then read back and accumulate into the host's buffer between submits, so they
+are not one stream. Chaining them needs per-slice weight buffers, and either per-slice output
+regions or on-chip accumulation.
+
+A chained stream honors read-after-write between its programs, although `PC_DONE` sets before
+the writes are visible. Two 1×1 int8 convolutions were chained, the second reading the first's
+output. One kick gives the same output as two submits, at planes of 2 KB to 387 KB [HW sweep,
+H96 MAX M9].
 
 ### `PC_DONE` and the DPU completion bits
 
-`PC_DONE` is the wrong retire signal on this part, and the DPU's own completion is the
-right one. `PC_DONE` means the program counter finished issuing, not that the DPU's write
-DMA has drained. The driver tears the IOMMU mapping down and signals the fence as soon as
-it sees `PC_DONE`. A long poll period hides both actions behind its own detection lag,
-and with them two independent failures:
+**Conditions:** H96 MAX M9, `rocket` with patch `0012`, from before interface version 1.0,
+measured 2026-07-28. The `0017` results are on interface 1.2, measured 2026-07-29. On `rocket`
+1.6.0 the wait for the DPU bit has no deadline by default (§"Tasks that raise no DPU
+completion").
 
-- **The per-job IOMMU detach races the write drain.** Detaching on completion faults
-  writes that are still in flight, which leaves a *write* page fault active:
+`PC_DONE` sets when the program counter finishes issuing, before the DPU's write DMA has
+drained. The DPU's own completion bits set once the writes have reached memory, and they are
+the retire signal on the RK3576. A driver that retires on `PC_DONE` tears the IOMMU mapping
+down and signals the fence early. A long poll period hides both actions behind its own
+detection lag, and with them two independent failures:
+
+- **IOMMU detach.** The per-job IOMMU detach races the write drain. Detaching on completion
+  faults writes that are still in flight, which leaves a *write* page fault active:
   `RK_MMU_STATUS` `0x2b` = `PAGING_ENABLED|PAGE_FAULT_ACTIVE|IDLE|PAGE_FAULT_IS_WRITE`.
   The fault blocks the next `enable_stall`, which the IOMMU reports as
-  `Enable stall request timed out`. The companion status `0x1d` carries `STALL_ACTIVE`,
+  `Enable stall request timed out`. The companion status `0x1d` contains `STALL_ACTIVE`,
   so the stall did arrive, just after the poll gave up. The NPU then raises
   `DMA_READ_ERROR|DMA_WRITE_ERROR` and the job comes back short. Patch
-  `patches/rk3576/npu/0011` removes this outright by keeping the domain attached across
-  jobs.
-- **The fence is signaled before the writes are visible.** Patch `0012` closes it.
+  `patches/rk3576/npu/0011` removes this failure by keeping the domain attached across jobs.
+- **Early fence.** The fence is signaled before the writes are visible. Patch `0012` closes
+  it.
 
-`RAW_STATUS` carries a signal that retires when the writes have landed. The RK3588 takes
-`DPU_0` (`0x100`) and `DPU_1` (`0x200`) as its completion interrupt. On this part they
-set tens to hundreds of microseconds after `PC_DONE`. A log line taken at the moment the
-poll retires reads:
+> [!CAUTION]
+> A job retired on `PC_DONE` can return before its last bytes are written, and its output is
+> then missing a contiguous tail. Software must retire a job on the DPU completion bit, with a
+> bounded wait for the tasks that raise none.
+
+`RAW_STATUS` contains a signal that sets once the writes have reached memory. The RK3588 takes
+`DPU_0` (`0x100`) and `DPU_1` (`0x200`) as its completion interrupt. On the RK3576 they set
+tens to hundreds of microseconds after `PC_DONE`. A log line taken at the moment the poll
+retires reads:
 
 ```
 raw@retire=0x20000001 -> 0x30000155 after 82us
 ```
 
-The word first shows `PC_DONE_1` with the CNA feature bit and no DPU bit, then `DPU_0`
-82 us later. Requiring the DPU bit is the fix, and it is what lets the poll period drop:
+The word first shows `PC_DONE_1` with the CNA feature bit and no DPU bit, then `DPU_0` 82 us
+later. Retiring on the DPU bit keeps every result correct at short poll periods, which lets
+the period drop:
 
 | poll period | 500 us | 250 us | 125 us | 50 us | 25 us |
 |---|---|---|---|---|---|
 | us/submit, retire on `PC_DONE` | 1065 | 731* | 535* | 433* | n/a |
 | us/submit, retire on the DPU bit | 1073 | 739 | 558 | 439 | 398 |
-| int8 matmul gate, retire on `PC_DONE` | 43/43 | 42/43* | n/a | 36/43* | n/a |
-| int8 matmul gate, retire on the DPU bit | 43/43 | 43/43 | 43/43 | 43/43 | 43/43 |
+| int8 matmul test, retire on `PC_DONE` | 43/43 | 42/43* | n/a | 36/43* | n/a |
+| int8 matmul test, retire on the DPU bit | 43/43 | 43/43 | 43/43 | 43/43 | 43/43 |
 
-`*` marks an incorrect result. [HW sweep, H96 MAX M9, 3 runs per correctness point,
-measured 2026-07-28]
+`*` marks an incorrect result. [HW sweep, H96 MAX M9, measured 2026-07-28]
 
-The failure is a partial surface, and the missing bytes are a contiguous tail. The
-reproducer is `n-tiled-deep`, the largest output surface in the gate at 32×2048×3072. At
-`poll_interval_us=250`, retiring on `PC_DONE`, it fails 3 runs of 3, with ~95-98k of
-98304 elements exact. A snapshot of the output BO is compared after a settle and a
-re-sync. It shows the last 2048 bytes of the 65536-byte surface arriving after the fence
-retired (`changed=2048 first=63488 last=65535`), so the data is not lost but drains
-late. The drain reaches 343 us for that surface and ~82-98 us for the conv gate's
-smaller ones, so it scales with bytes in flight.
+The data of a failed job is not lost: the missing bytes are a contiguous tail that drains
+after the fence. The drain reaches 343 us for a 32×2048×3072 output, and ~82-98 us for the
+convolution test's smaller ones. It scales with bytes in flight [HW sweep, H96 MAX M9,
+measured 2026-07-28].
 
-Not every task raises a DPU completion, so the wait has to be bounded. A task whose DPU
-output element is wider than one byte completes CNA and CORE and never sets a DPU bit at
-all. The int32 writer and fp16 output are both in that class. Their status word holds at
-`RAW_STATUS = 0x30000055` (`PC_DONE_0|PC_DONE_1|CORE_0|CNA_CSC_0|CNA_WEIGHT_0|CNA_FEATURE_0`)
-for milliseconds, with nothing further arriving. Patch `0012` gives these tasks
-`rocket.dpu_grace_us` and retires them on `PC_DONE`, as the unpatched driver does. That
-grace is load-bearing: those tasks still need a blind settle, and its threshold is the
-same ~250 us the settle experiment found:
+#### Tasks that raise no DPU completion
+
+Not every task raises a DPU completion, so the wait must be bounded. The narrow and wide int32
+writers complete CNA and CORE and never set a DPU bit. Nor does a pool, which enables no DPU
+stage (§"Pool completion"). The fp16 programs, the dense int32 writer and the one-byte int8
+programs raise the DPU completion. [HW sweep, H96 MAX M9, rocket 1.6.0, 2026-09-27 and
+2026-09-30]
+
+The status word of an int32 writer's task holds at `RAW_STATUS = 0x30000055`
+(`PC_DONE_0|PC_DONE_1|CORE_0|CNA_CSC_0|CNA_WEIGHT_0|CNA_FEATURE_0`) for milliseconds, with
+nothing further arriving. Patch `0012` gives these tasks `rocket.dpu_grace_us` and then retires
+them on `PC_DONE`, as the unpatched driver does. The grace is required, because those tasks
+still need a settle. Its threshold is the same ~250 us that the settle measurement found:
 
 | `dpu_grace_us` | 100 | 250 | 500 | 1000 | 2000 |
 |---|---|---|---|---|---|
-| int8 matmul gate | 40/43 | 43/43 | 43/43 | 43/43 | 43/43 |
+| int8 matmul test | 40/43 | 43/43 | 43/43 | 43/43 | 43/43 |
 | through the wide int32 writer | 41/43 | 43/43 | 43/43 | 43/43 | 43/43 |
 
-The grace is a deadline, not a settle, and that is what fixes its default. It bounds the
-wait for a signal most jobs do raise. So it also covers the drain of every ordinary
-narrow-output job. Lowering it retires those jobs on `PC_DONE`, exactly as the unpatched
-driver does. The two roles pull opposite ways, and neither is optional:
+On modules before 1.6.0 the grace is also the deadline on the wait for the DPU bit that most
+jobs raise. That role sets its default. It covers the drain of every ordinary narrow-output job
+too. Lowering it retires those jobs on `PC_DONE`, exactly as the unpatched driver does. The two roles pull in
+opposite directions, and both are required.
 
-| `dpu_grace_us` | 200 | 250 | 300 | 350 | 400 | 500 | 800 |
-|---|---|---|---|---|---|---|---|
-| `n-tiled-deep`, 10 runs | 10 fail | 0 | 0 | 0 | 0 | 0 | 0 |
-| `fc-rgb-224-k7`, 5 runs | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
+With the poll retiring on the DPU bit, the 32×2048×3072 output fails on every run at a grace
+of 200 us. It fails on no run at 250 us and above. The failure point is sharp and
+deterministic, so a grace of 250 us is 1.25x the measured failure point, with no margin above
+it.
 
-The cliff is sharp and deterministic: every run fails at 200 and none at 250. So 250 is
-1.25x the measured failure point, not a margin above it. The gates cannot separate 250
-from 500, because nothing in them drains further. The case for a margin rests on the
-drain itself. The drain is measured per gate, with the poll retiring on the DPU bit and
-the grace set past every wait.
+The longest drain measured is 745 us, for a 392 KiB output: `fc-rgb-224-k7`, the int8 stem at
+224×224 k7 s2, reproducible to within 3 us. The 500 us default is therefore below the worst
+drain measured on the RK3576, and the stem still passes at a grace of 200 us. Only the drain
+of the last submit before the host reads must be covered. The submits that follow
+a row-split job's earlier tasks cover those tasks' drains. That exposed drain is what the
+failure point measures, and it is not separately observable. The raw drain, up to 745 us, is
+therefore the only available bound on it.
 
-The instrument is a module parameter set on the board's out-of-tree debug tree. Its
-`dbg_dpu_wait_max_us` and `dbg_dpu_waits` hold the maximum wait and the count over jobs
-that retired on the DPU bit. Jobs that raise no DPU bit time out into `dbg_grace_hits`
-instead. The instrument is diagnostic and deliberately kept out of the patch series, so a
-reimage removes it along with everything else:
+On those modules the default is 500 us, 2.5x the measured failure point. The drain scales
+with bytes in flight, and `librocketnpu` can emit outputs larger than any tested shape.
 
-| gate | worst drain | jobs reaching the DPU bit | jobs raising none |
-|---|---|---|---|
-| `rk3576_conv_gate all` | 99 us | 15 | 0 |
-| `rk3576_conv_lib_gate` | 745 us | 30 | 31 |
-| `rk3576_matmul_gate` | 290 us | 9 | 58 |
-| through the wide int32 writer | 343 us | 10 | 54 |
-| `rk3576_argb_ic1` | 46 us | 2 | 0 |
+On `rocket` 1.6.0, `dpu_grace_us` defaults to 0, which waits for the writing block's own
+completion with no deadline, and a nonzero value restores the deadline. An unflagged task that
+raises no completion then waits out the driver's 125 ms backstop [HW sweep, H96 MAX M9, rocket
+1.6.0, 2026-09-27]. The measurement is in [rk3576.md](rk3576.md) §"`dpu_grace_us` on
+`rocket` 1.6.0".
 
-The 745 us is one shape, `fc-rgb-224-k7` (the int8 stem at 224×224 k7 s2), and it
-reproduces to within 3 us over five runs. So the shipped 500 us default is already below
-the worst drain on the part, and the stem still passes at 200. A drain has to be covered
-only when it belongs to the last submit before the host reads. The submits that follow a
-row-split job's earlier tasks cover those tasks' drains. That exposed drain is what the
-cliff measures, and it is not separately observable. The raw drain is therefore the only
-available bound on it, and it reaches 745 us at a 392 KiB surface.
+Patch `patches/rk3576/npu/0017` (interface 1.2) separates the two classes at submit time. It
+adds `DRM_ROCKET_JOB_NO_DPU_DONE` to `drm_rocket_job.flags`. A job with the flag waits
+`dpu_blind_us` (default 250) past `PC_DONE` instead of `dpu_grace_us`. A job without it is
+bit-for-bit unaffected. The poll still retires the moment a DPU completion arrives, whatever
+the flag says.
 
-The default is 500 us, 2.5x the measured failure point. The drain scales with bytes in
-flight, and the library can emit surfaces larger than any gate shape. The fp16
-win from lowering the default (1.18x, below) is a cost paid only by the tasks that raise
-no DPU completion. Userspace can name that class, and the driver cannot see it at
-`PC_DONE` time. Collecting that win means separating the two classes at submit time, not
-lowering the one number that also bounds the other class's correctness.
-[HW sweep, H96 MAX M9, measured 2026-07-28]
+A wrong flag still costs correctness. A flagged program that raises its own completion can
+still be writing when the blind settle ends. Its fence then comes at the settle,
+and the output's tail is unwritten ([rk3576.md](rk3576.md) §"Retirement on the DPU
+completion").
 
-Patch `patches/rk3576/npu/0017` makes that separation, and it collects the win without
-touching the deadline. It adds `DRM_ROCKET_JOB_NO_DPU_DONE` to `drm_rocket_job.flags`. A
-job carrying the flag waits `dpu_blind_us` (default 250) past `PC_DONE` instead of
-`dpu_grace_us`. A job without it is bit-for-bit unaffected. The hint is advisory by
-construction: the poll still retires the moment a DPU completion arrives, whatever the
-flag says. A wrong hint therefore costs time and never correctness.
+`librocketnpu` sets the flag on the narrow and wide int32 writers only. The fp16 programs and
+the dense int32 writer go out without it.
 
-`librocketnpu` sets the flag on exactly the classes the poison probe already names wide.
-Those are the fp16 direct conv, the fp16 first conv and the int32 matmul writer. The
-measured shape is an fp16 convolution at `ic=128 oc=32` 28×28 k3, eight wide-output
-slices, where the settle is the dominant cost:
+> [!NOTE]
+> A build in which the flag does not reach the poll shows no effect at any `dpu_blind_us`.
+> Before concluding that the flag does nothing, confirm that the job reaches it: an
+> out-of-range `dpu_blind_us` must move the job's time. If `dpu_grace_us` moves it instead, the
+> job is still waiting out the grace.
 
-| `dpu_blind_us` | 250 | 500 (hint neutralized) | 3000 |
-|---|---|---|---|
-| eight-slice wall | 13.67 ms | 15.20 ms | 36.96 ms |
+#### Completion and the wide-output hazard
 
-The hint takes 10% off that path, and every narrow-output job keeps its full 500 us
-deadline. [HW sweep, H96 MAX M9, measured 2026-07-29]
+The narrow and wide int32 writers raise no DPU completion and also trigger the wide-output
+hazard (erratum RK3576-E2, [rk3576.md](rk3576.md) §"The poisoning is one hazard, and its cost
+is a system setting"). The two are separate. The fp16 programs trigger the hazard and raise
+their completion. With the DPU bit as the retire condition, the hazard's reach is unchanged
+[HW sweep, H96 MAX M9, measured 2026-07-28].
 
-A negative A/B on a knob like this is a claim about the wiring first. One silently failed
-edit is enough to leave the poll comparing against `dpu_grace_us`. The flag then reaches
-the driver and changes nothing. The A/B shows no effect at any `dpu_blind_us`, which
-reads as "the lever is not real".
+On the module before interface 1.0, a submit that the hazard left unwritten raised its DPU
+completion. A missing DPU bit did not detect the hazard there [HW sweep, H96 MAX M9, measured
+2026-07-28]. On `rocket` 1.6.0 it raises none, and the driver retires it at the 125 ms
+backstop [HW sweep, H96 MAX M9, 2026-09-30]. On either module, a sentinel scan of the
+output detects the hazard.
 
-Driving the other knob separates the two readings. In that state, `dpu_grace_us`
-500 -> 3000 moved the same wall 15.31 -> 36.14 ms. The tasks were still paying the grace,
-so the hint was not being applied. Before believing that a per-class knob does nothing,
-show that the class reaches it. An out-of-range value that fails to move the wall is the
-cheap version of that check.
-
-The tasks that raise no DPU completion are the same set of programs that carries the
-poisoning, and the two are separate hazards. With the DPU bit as the retire condition,
-the poison probe's `scope` map is unchanged. The fp16 first conv, the fp16 direct conv
-and both int32 writers poison all seven kinds. The int8 first conv, int8 direct conv and
-int8 depthwise poison none.
-
-**A poisoned submit raises its DPU completion normally while writing nothing.** So the
-missing DPU bit is not a poisoning detector, and the poisoning is not "the DPU never
-ran". The poison probe's `pair A int8d`, at `ROCKET_PP_REPS` of 4 and 8, gives grace hits
-from the A side only, scaling exactly with the rep count.
-
-With A as `fp16fc` the hits are 4 and 8, one submit a rep. With A as `i32` they are 8 and
-16, two submits a rep. The poisoned `int8d` submits on the B side contribute zero at
-every rep count. The sentinel scan is the only way to see a poisoned surface.
-[HW sweep, H96 MAX M9, measured 2026-07-28]
-
-Measured at a long poll period, the DPU bits look redundant: `DPU_0` is already set on
-the same poll tick as `PC_DONE`. At 500 us of detection lag the drain has always finished
-by the time the poll looks, so the two signals cannot be told apart. At 50 us they
-separate cleanly.
+> [!NOTE]
+> At a long poll period the DPU bits appear redundant: `DPU_0` is already set on the same poll
+> tick as `PC_DONE`. At 500 us of detection lag the drain has always finished by the time the
+> poll looks, so the two signals cannot be told apart. At 50 us they separate cleanly.
 
 ### Per-task `PC_DONE` and the `PC_TASK_STATUS` counter
 
@@ -2641,7 +2344,7 @@ separate cleanly.
 `PC_DONE_0` and `PC_DONE_1` are two alternating per-task pulses, not one whole-kick
 completion. On a `TASK_NUMBER = n` kick the two bits swap as the program counter retires
 each program. The first of them appears a few tens of microseconds into a stream that
-can run for milliseconds. It says nothing about the stream being over.
+can run for milliseconds. It does not mean the stream is over.
 
 The bits are also not latched across tasks. Mid-stream the whole `RAW_STATUS` word cycles
 through `0x10000000`, `0x20000000`, `0x30000000` and `0x00000000`. The per-task block
@@ -2649,8 +2352,8 @@ completion bits (`0x155` for one ping-pong group, `0x2aa` for the other) appear 
 briefly and are gone again by the next task. Only the last task's block bits survive,
 because no task follows to clear them. [HW sweep, H96 MAX M9]
 
-`PC_TASK_STATUS` says where the kick is. The register is at `0x48` on this part and at
-`0x3c` on the RK3588. The vendor `rknpu` config carries the delta as
+`PC_TASK_STATUS` gives the position in the kick. The register is at `0x48` on the RK3576 and
+at `0x3c` on the RK3588. The vendor `rknpu` config has the difference as
 `pc_task_status_offset` and reads the register as its "task counter". It holds two 16-bit
 counters, **both modulo the programmed `TASK_NUMBER`**:
 
@@ -2666,10 +2369,10 @@ task starts. The model holds on kicks of 2, 3, 5, 8, 9, 35 and 90 tasks. The RK3
 reported `0x0000f000` at IRQ time fits the same model: `& 0xfff == 0` is the completed
 count having wrapped, meaning the whole job is done. [HW sweep, H96 MAX M9]
 
-Mid-stream at least one of the two halves is non-zero. So **`PC_DONE` set together with a
-zero `PC_TASK_STATUS` means the whole kick is over, and nothing else does.** That is the
-signal a driver needs to place a completion wait on a chained stream. A trace of the
-35-program cross-layer kick of a MobileNetV1-224, at a 10 us poll:
+Mid-stream at least one of the two halves is non-zero. `PC_DONE` set together with a zero
+`PC_TASK_STATUS` therefore means the whole kick is over, and no other state does. Software must
+place the completion wait of a chained stream on that combination. A trace of the 35-program
+cross-layer kick of a MobileNetV1-224, at a 10 us poll:
 
 ```
 t=   12 us   PC_DONE_0,  ts=0x00000001   task 1 of 35 in flight
@@ -2679,74 +2382,77 @@ t= 1911 us   PC_DONE_1,  ts=0x00220000   task 35 of 35 in flight
 t= 1921 us   0x300002aa, ts=0x00000000   the DPU's own completion; the kick is over
 ```
 
-**`PC_OPERATION_ENABLE` is a self-clearing go bit, not a busy flag.** It reads back 0 at
-every poll of a kick that is still running [HW sweep]. The vendor driver writes `1` and
-then `0` to it back to back (`rknpu_job.c`) [source-confirmed]. A completion test of the
-form `OPERATION_ENABLE == 0 || PC_DONE` is therefore vacuously true on this part from the
-first poll onward. Any wait built on that test is anchored to the first poll.
+`PC_OPERATION_ENABLE` is a self-clearing go bit. It reads back 0 at every poll of a kick that
+is still running [HW sweep]. The vendor driver writes `1` and then `0` to it back to back
+(`rknpu_job.c`) [source-confirmed].
+
+> [!CAUTION]
+> A completion test of the form `OPERATION_ENABLE == 0 || PC_DONE` is true on the RK3576 from
+> the first poll onward. Any wait built on that test ends at the first poll. Software must not
+> use `PC_OPERATION_ENABLE` as a busy flag.
 
 ### The half-started job runtime-PM pin
 
-A half-started job pins the NPU runtime-active, and then only the int32 path breaks.
-Patch `patches/rk3576/npu/0010` fixes it. The bug is in mainline `rocket`, so a kernel
-without 0010 has it, on the RK3588 as well. The state it produces is the most misleading
-one the part reaches.
+**Conditions:** mainline `rocket` without patch `0010`. The defect is in mainline code, so a
+kernel without `0010` has it on the RK3588 as well. Measured on H96 MAX M9, 2026-07-27. In the
+RK3576 series `0010` precedes `0015`, the patch that declares interface version 1.0, so a
+module that reports an interface version contains the fix.
+
+A half-started job pins the NPU runtime-active, and then only the int32 path breaks. Patch
+`patches/rk3576/npu/0010` fixes it.
 
 `rocket_job_run()` takes a runtime-PM reference and then attaches the IOMMU group. Both
 of its early returns leave the job half-started. Each of two independent leaks is enough
 on its own to pin the device runtime-`active`, with `power/runtime_suspended_time`
 frozen. The pin holds even with nothing running and `power/control` at `auto`:
 
-- **The usage counter ratchets.** `pm_runtime_get_sync()` keeps its reference when the
-  resume fails, and the IOMMU path has already resumed successfully. At that point
-  `core->in_flight_job` is still `NULL`. The completion path and the timeout path put the
-  reference only when a job is in flight, so neither balances it.
-- **The scheduler never gets its credit back.** Nothing will ever signal the fence handed
-  to the scheduler, so the job stays pending. While a credit is outstanding,
-  `rocket_device_runtime_suspend()` returns `-EBUSY`.
+- **Usage counter.** The usage counter only climbs. `pm_runtime_get_sync()` keeps its
+  reference when the resume fails, and the IOMMU path has already resumed successfully. At
+  that point `core->in_flight_job` is still `NULL`. The completion path and the timeout path
+  put the reference only when a job is in flight, so neither balances it.
+- **Scheduler credit.** Nothing will ever signal the fence handed to the scheduler, so the
+  job stays pending and the scheduler never gets its credit back. While a credit is
+  outstanding, `rocket_device_runtime_suspend()` returns `-EBUSY`.
 
-**The usage-counter half outlives the driver.** The reference is on the platform device,
-which the OF core owns, so `rmmod`/`insmod` does not clear it. A freshly probed device
-comes back `active` and stays there until a reboot.
+The leaked usage-counter reference outlives the driver. The reference is on the platform
+device, which belongs to the OF core, so `rmmod`/`insmod` does not clear it. A freshly probed
+device comes back `active` and stays there until a reboot.
 
-The pin breaks exactly one thing. The power domain's cycling clears the int32 output
-writer's poisoning of the next submit. On a device that cannot suspend, that poisoning
-never clears, and every i32 shape writes nothing (`0/256`, `0/32`, `0/224`). Everything
-else still works perfectly: the conv gate is 102/102, the library gate 111/1, and the
-plain int8 matmul shapes all pass. The signature therefore reads as "the int32 path has
-a bug" rather than "the machine is in a bad state". It will absorb a debugging session.
+> [!CAUTION]
+> On a device pinned runtime-active, every int32-output shape writes nothing, and every other
+> path still works. The power domain's cycling is what clears the int32 output writer's
+> wide-output hazard, and on a device that cannot suspend the hazard never clears. The symptom
+> matches a defect in the int32 path. A matmul measured in this state fails at every poll
+> period, whatever the period. Software must check `power/runtime_status` before trusting any
+> int32 result.
 
-Without 0010 the state is also self-sustaining. One failed attach times out at 500 ms,
-and the timeout path calls `rocket_core_reset()`. That reset takes the IOMMU down, so the
-next attach fails for real. One injected failure produced seven, and leaked seven
-references. With 0010 the injected failure is the only one. The driver retires the job
-with its error, the caller's next submit attaches and computes normally, and the device
-suspends.
-
-**Check `power/runtime_status` before believing any int32 result.** A board in this state
-makes every other experiment lie. A poll-period sweep run through it reports the matmul
-failing at every period. That is the signature of a failure the poll has nothing to do
-with. [HW sweep, H96 MAX M9, measured 2026-07-27]
+Without `0010` the state also sustains itself. One failed attach times out at 500 ms, and the
+timeout path calls `rocket_core_reset()`. That reset takes the IOMMU down, so the next attach
+fails for real. With `0010` the driver retires the failed job with its error, the caller's
+next submit attaches and computes normally, and the device suspends. [HW sweep, H96 MAX M9,
+measured 2026-07-27]
 
 ### A per-job core reset is not the way to clear the poisoning
 
-`rocket_core_reset()` is a `reset_control` bulk assert, `udelay(10)`, then a deassert,
-and the driver runs it on a job timeout. Calling it at job start is not a way to drop the
-power-cycle idle that an int32-output job forces on the next submit. Asserted before
-every job, it takes the IOMMU down with it:
+**Conditions:** H96 MAX M9, a `rocket` from before interface version 1.0, measured
+2026-07-27.
+
+`rocket_core_reset()` is a `reset_control` bulk assert, `udelay(10)`, then a deassert, and the
+driver runs it on a job timeout. Called at job start, it does not replace the power-cycle idle
+that an int32-output job forces on the next submit. Asserted before every job, it takes the
+IOMMU down with it:
 
 ```
 rk_iommu 27702000.iommu: Error during raw reset. MMU_DTE_ADDR is not functioning
 rocket 27700000.npu: NPU job timed out: RAW_STATUS=0x30000000 MASK=0x800fffff OP_EN=0x00000000
 ```
 
-`RAW_STATUS` carries both `PC_DONE` bits, so the job ran, but nothing reached DDR
-because the page-table pointer was gone. The matmul gate falls from 43 shapes passing to
-2, and the conv gate to 0. The damage outlives the setting: the part stays wedged until
-the module is reloaded. The driver's own timeout path resets inside `drm_sched_stop()`,
-an IOMMU detach and a re-attach, and the bare call lacks that surrounding re-init. The
-vendor `rknpu` driver never resets per job either.
-[HW sweep, H96 MAX M9, measured 2026-07-27]
+`RAW_STATUS` contains both `PC_DONE` bits, so the job ran, but nothing reached DDR because the
+page-table pointer was gone. The int8 matmul test falls from 43 shapes passing to 2, and the
+convolution test to 0. The damage outlives the setting: the NPU stays wedged until the module
+is reloaded. The driver's own timeout path resets inside `drm_sched_stop()`, an IOMMU detach
+and a re-attach, and the bare call lacks that surrounding re-initialization. The vendor
+`rknpu` driver never resets per job either. [HW sweep, H96 MAX M9, measured 2026-07-27]
 
 The vendor's recovery reset covers the CBUF, and `rocket`'s does not. `rknpu_soft_reset()`
 runs on a job timeout or on request, never per job. It sleeps 100 ms, then asserts all four
@@ -2755,14 +2461,20 @@ of the node's resets for 10 us: `SRST_A_RKNN0`, `SRST_A_RKNN1`, `SRST_A_RKNN_CBU
 [source-confirmed: BSP `rknpu_reset.c` and `rk3576.dtsi`, unchanged in `develop-6.12`].
 
 `rocket`'s binding names the core's `srst_a` alone, so under `rocket` only a power cycle
-resets the CBUF. Whether a CBUF reset inside the timeout path's detach and re-attach
-clears the poisoning is untested. If the latched state lives in the CBUF, it clears without
-cycling the domain [expected].
+resets the CBUF.
+
+**Not characterized:** whether a CBUF reset inside the timeout path's detach and re-attach
+clears the wide-output hazard. If the latched state is in the CBUF, it clears without cycling
+the domain [expected].
 
 ## The IOMMU wedge
 
-An earlier run can leave the NPU wedged, and it does not recover on its own. The
-signature in `dmesg` is:
+**Conditions:** H96 MAX M9, a `rocket` from before interface version 1.0, measured 2026-07-27.
+The two wedges below were induced independently, one by a 100 us poll period and one by a
+per-job core reset.
+
+A run can leave the NPU wedged, and the NPU does not recover on its own. The signature in
+`dmesg` is:
 
 ```
 rk_iommu 27702000.iommu: Enable stall request timed out, status: 0x0000..
@@ -2770,39 +2482,40 @@ rocket 27700000.npu: NPU job timed out: RAW_STATUS=0x30000000 MASK=0x800fffff OP
 rk_iommu 27702000.iommu: Error during raw reset. MMU_DTE_ADDR is not functioning
 ```
 
-After that sequence, every submit times out and every output BO comes back untouched.
-That reads exactly like "the encoder writes nothing", and it will send a register hunt
-down a false trail. The rail, the clock and the driver binding all still look healthy in this state,
-so they do not discriminate. Check `dmesg` for the stall timeout before trusting any
-negative result on this part. [HW sweep, H96]
+> [!CAUTION]
+> After that sequence, every submit times out and every output BO comes back untouched. The
+> result matches a regcmd encoder that writes nothing. The rail, the clock and the driver binding all
+> still look healthy in this state, so they do not distinguish it. Software must check `dmesg`
+> for the stall timeout before trusting any negative result on the RK3576. [HW sweep, H96]
 
-Reloading the module clears the compute path, and it is worth trying before a reboot.
-The reload `rmmod rocket; sleep 8; insmod rocket.ko` re-runs the IOMMU attach, and the
-conv gates pass again immediately. The settle matters: a reload with a two-second gap
-left the part still failing, where an eight-second one fixed it. This holds for two
-independently induced wedges, one from a 100 us poll period and one from a per-job core
-reset.
+The `Enable stall request timed out` and `MMU_DTE_ADDR is not functioning` sequence above is
+the per-job IOMMU detach racing the DPU's write drain. With patches 0010 and 0011 the wedge is
+much harder to reach. Patch 0011 stops detaching per job. Patch 0010 stops one failed attach
+from cascading through the timeout path's core reset into the next attach.
 
-**On a kernel without `patches/rk3576/npu/0010`, a reload does not clear everything.** A
-leaked runtime-PM reference lives on the platform device, so a reload leaves it in place.
-The part then computes convolutions perfectly while every int32 matmul writes nothing, as
-the half-started job section above describes. Check `power/runtime_status` after a
-reload. If it does not return to `suspended`, reboot.
-[HW sweep, H96 MAX M9, measured 2026-07-27]
+Reloading the module clears the compute path, so try it before a reboot. The reload
+`rmmod rocket; sleep 8; insmod rocket.ko` re-runs the IOMMU attach, and the convolution tests
+pass again immediately. The settle is required: a reload with a two-second gap left the NPU
+still failing, where an eight-second one cleared it. The reload cleared both induced wedges.
 
-With 0010 and 0011 the wedge is much harder to reach in the first place. The
-`Enable stall request timed out` and `MMU_DTE_ADDR is not functioning` sequence above is
-the per-job IOMMU detach racing the DPU's write drain. Patch 0011 stops detaching per
-job. Patch 0010 stops one failed attach from cascading through the timeout path's core
-reset into the next attach.
+On a kernel without `patches/rk3576/npu/0010`, a reload does not clear everything. A leaked
+runtime-PM reference is on the platform device, so a reload leaves it in place. The NPU then
+computes convolutions correctly while every int32 matmul writes nothing, as the half-started
+job section above describes. Check `power/runtime_status` after a reload. If it does not
+return to `suspended`, reboot. [HW sweep, H96 MAX M9, measured 2026-07-27]
 
-## A rejected submit oopses the kernel, and a refusing generator is what emits one
+## Kernel oops on a rejected submit
 
-`rocket_ioctl_submit_job()` allocates its `rocket_job` with `kzalloc`. It assigns
+**Conditions:** mainline `rocket`. The code is identical in a pristine v7.1 tree and present
+since the submit ioctl was added, and the RK3576 series does not introduce it. Mainline
+declares no interface version. Measured on H96 MAX M9, kernel 7.1.3.
+
+Any submit that `rocket_ioctl_submit_job()` rejects before it assigns the job's IOMMU domain
+oopses the kernel. The function allocates its `rocket_job` with `kzalloc`. It assigns
 `rjob->domain` only after the task copy and both BO lookups have succeeded, while
 `rocket_job_cleanup()` puts that domain unconditionally. Every rejection ahead of the
-assignment therefore unwinds into `rocket_iommu_domain_put(NULL)`, which dereferences
-the NULL to reach the kref:
+assignment therefore unwinds into `rocket_iommu_domain_put(NULL)`, which dereferences the NULL
+to reach the kref:
 
 ```
 Unable to handle kernel NULL pointer dereference at virtual address 0000000000000008
@@ -2822,63 +2535,62 @@ Five rejection sites are reachable, all of them ahead of the assignment:
 - `drm_rocket_task.regcmd_count == 0`
 - Either BO handle not resolving
 
-The device node `/dev/accel/accel0` is group `render`, so the trigger is unprivileged.
-**This is mainline code.** It is identical in a pristine v7.1 tree and present since the
-submit ioctl was added, and the RK3576 series does not introduce it. Patch
-`patches/rk3576/npu/0013` fixes it by taking the domain reference at construction, so a
-job owns one from the moment it exists. Patch `patches/rocket/085` carries the
-complementary NULL guard in the put. The two touch different files and compose.
+The device node `/dev/accel/accel0` is group `render`, so the trigger is unprivileged. Patch
+`patches/rk3576/npu/0013` fixes it by taking the domain reference at construction, so a job
+holds one from the moment it exists. With the fix, every site returns to userspace
+[HW sweep, H96 MAX M9, 7.1.3]. Patch `patches/rocket/085` adds the complementary NULL guard in
+the put. The two touch different files and compose.
 
-The test `tests/uapi_submit_errpath_rocket` fires one malformed submit per site from a
-forked child. Before the fix 0 of 5 sites returned to userspace, and after it 5 of 5 did
-[HW sweep, H96 MAX M9, 7.1.3].
+A generator that refuses leaves its output parameters untouched, and a caller that submits
+anyway hands the kernel a malformed job. `gen_matmul_fp16()` emits the RK3588 geometry encoding
+and refuses on the RK3576 by construction. The refusal leaves `matmul_params_t.task_count` at 0,
+and task descriptors built from those unset parameters submit `regcmd_count == 0`. Software
+must check the generate step before building a submit from it.
 
-The client that emitted one on this part was this project's own uAPI selftest, and the
-mechanism is a refusing generator. `gen_matmul_fp16()` emits the RK3588 geometry encoding
-and refuses on this part by construction. That leaves `matmul_params_t.task_count` at 0.
-The selftest's deadline canary built its task descriptors from those unset parameters and
-submitted `regcmd_count == 0`. **A generator that refuses leaves its output parameters
-untouched, and a caller that submits anyway hands the kernel a malformed job.** Check the
-generate step before building a submit from it.
+A single oops does not disable the NPU: an ordinary client and the full 46-shape matmul test
+both still run afterwards. Several oopses do. After three, the file-close path faults again
+inside the IOMMU layer (`iommu_map_nosync`, `iommu_unmap`, `iommu_domain_free` from
+`rocket_postclose`). The process then cannot be killed, and the kernel prints
+`Fixing recursive fault but reboot is needed!`.
 
-A single Oops does not brick the part: an ordinary client and the full 46-shape matmul
-gate both still run afterwards. Several Oopses do. After three, the file-close path
-faults again inside the IOMMU layer (`iommu_map_nosync`, `iommu_unmap`,
-`iommu_domain_free` from `rocket_postclose`). The process then becomes unkillable, and
-the kernel prints `Fixing recursive fault but reboot is needed!`. Do not keep running
-gates on a kernel that has taken an Oops. The results after it are not about the NPU.
+> [!CAUTION]
+> Results measured on a kernel that has taken an oops are not about the NPU. Software must not
+> run tests on such a kernel. Reboot it first.
 
-The warning at `rocket_job.c:639` in `rocket_job_irq_handler()` is a different thing, and
-it is not a driver defect. It is mainline's
+### The DMA write error warning
+
+The warning at `rocket_job.c:639` in `rocket_job_irq_handler()` is a different thing, and it
+is not a driver defect. It is mainline's
 `WARN_ON(raw_status & PC_INTERRUPT_RAW_STATUS_DMA_WRITE_ERROR)`, the driver reporting that
 the NPU raised a DMA write error. Seen on core 1's IRQ during a two-core run, it is the
-kernel-log fingerprint of the concurrent-job corruption, not a separate bug to chase.
+kernel-log sign of the concurrent-job corruption, not a separate defect.
 
-A client-supplied bad address does not reach that `WARN_ON` on this part. The field
-`drm_rocket_task.regcmd` is a raw IOVA. The driver's `rocket_job_hw_submit()` writes it
-into the PC block's `BASE_ADDRESS`, with no check that the job's BOs mapped it. A client
-can therefore aim the instruction fetch at unmapped memory. Through a real program with a
+### Client-supplied addresses
+
+A client-supplied bad address does not reach that `WARN_ON` on the RK3576. The field
+`drm_rocket_task.regcmd` is a raw IOVA. The driver's `rocket_job_hw_submit()` writes it into
+the PC block's `BASE_ADDRESS`, with no check that the job's BOs mapped it. A client can
+therefore aim the instruction fetch at unmapped memory. Through a real program with a
 rewritten output address, it can aim the DPU's write DMA there too.
 
-The probe `tests/uapi_regcmd_fault_rocket` tries both, as its `read` and `write` modes.
-Both surface as `rk_iommu: Enable stall request timed out` and nothing else: 0 WARNINGs,
-taint unchanged, and the matmul gate 46/46 immediately afterwards. The RK3576's IOMMU
-absorbs a bad address as a stall, rather than the NPU's PC raising a DMA-error bit. A
-`WARN_ON` on a hardware error condition taints the kernel, and panics it under
-`panic_on_warn`. So the `WARN_ON`-as-unprivileged-DoS concern is real upstream in
-principle, but it is not demonstrated to be client-triggerable here.
-[HW sweep, H96 MAX M9, 2026-07-28]
+On the RK3576 both cases surface as `rk_iommu: Enable stall request timed out` and nothing
+else. No WARNING is printed, the taint is unchanged, and the matmul test passes all 46 shapes
+immediately afterwards. The RK3576's IOMMU absorbs a bad address as a stall, rather than the
+NPU's PC raising a DMA-error bit [HW sweep, H96 MAX M9, 2026-07-28].
 
-**A job whose program faults still retires cleanly.** The submit returns 0, `PREP_BO`
-returns 0, the output BO is untouched, and the driver tells userspace nothing. That is
-the same "the encoder writes nothing" false trail the IOMMU-wedge section warns about,
-arriving from the driver rather than from the encoder. An untouched output BO is
-therefore not evidence about an encoding.
+A `WARN_ON` on a hardware error condition taints the kernel, and panics it under
+`panic_on_warn`. The `WARN_ON` is therefore an unprivileged denial-of-service concern upstream
+in principle. No client-triggerable path to it is demonstrated on the RK3576.
 
-On the RK3588 the same probe finds a client-triggerable warning somewhere else. So the
-question "can a client taint the kernel through the NPU" has a different answer from the
-one about that particular `WARN_ON`. On the RK3588 both modes end in the job timeout,
-and the reset behind it walks into the IOMMU core:
+> [!CAUTION]
+> A job whose program faults still retires cleanly. The submit returns 0, `PREP_BO` returns 0,
+> the output BO is untouched, and the driver tells userspace nothing. The result matches a regcmd
+> encoder that writes nothing, arriving from the driver rather than from the regcmd encoder. Software
+> must not treat an untouched output BO as evidence about an encoding.
+
+On the RK3588 the same two cases reach a client-triggerable warning other than that `WARN_ON`.
+A client can therefore taint the kernel through the NPU there. Both cases end in the job
+timeout, and the reset behind it walks into the IOMMU core:
 
 ```
 rk_iommu fdaca000.iommu: Enable stall request timed out, status: 0x2b
@@ -2886,28 +2598,29 @@ WARNING: drivers/iommu/iommu.c:157 at __iommu_group_set_core_domain
  iommu_detach_group / rocket_reset.part.0 [rocket] / rocket_job_timedout [rocket]
 ```
 
-The NPU is still faulting when `rocket_reset()` detaches the group, so the IOMMU's stall
-and disable-paging requests time out and the detach WARNs. Patch `patches/rocket/083`
-(keep-the-domain-attached-across-jobs) is applied on that board and does not cover it.
-Keeping the domain attached across jobs says nothing about a reset that detaches
-explicitly. So on both parts the reachable path is the reset, not the IRQ handler. The
-parts differ only in whether the detach WARNs. [HW sweep, Turing RK1, 2026-07-28]
+The NPU is still faulting when `rocket_reset()` detaches the group, so the IOMMU's stall and
+disable-paging requests time out and the detach WARNs. Patch `patches/rocket/083`
+(keep-the-domain-attached-across-jobs) is applied on that board and does not cover it, because
+the reset detaches explicitly. On both SoCs the path a client reaches is the reset, not the
+IRQ handler, and the two differ only in whether the detach WARNs. [HW sweep, Turing RK1,
+2026-07-28]
 
 ## A BO in an in-flight job must survive the file that made it
 
-The per-context IOVA allocator (`drm_mm` + `mm_lock`) lives in `struct rocket_file_priv`,
-and `rocket_postclose()` tears it down and frees it. Only `rocket_gem_bo_free()` removes a
-BO's IOVA node. The drm_sched free worker drops a job's BO references asynchronously, and
-it can run after the owning file has closed. A client that submits and closes without
-waiting therefore leaves `rocket_gem_bo_free()` taking `bo->driver_priv->mm_lock` and
-calling `drm_mm_remove_node()` on memory `rocket_postclose()` already freed. The device
-node `/dev/accel/accel0` is group `render`, so the trigger is unprivileged. The defect is
-in mainline code that the RK3576 enablement does not touch.
+**Conditions:** mainline `rocket`, in code that the RK3576 enablement does not touch, and which
+declares no interface version. Measured on H96 MAX M9, 2026-07-28.
 
-It reproduces on demand. It is rare in ordinary use only because an ordinary caller waits
-for its job and so never sets the race up. The test `tests/uapi_bo_lifetime_rocket` opens
-a fresh fd per iteration, submits, and closes immediately. It warns on 16 of 16
-iterations, and left running longer, the same client reaches the dereference:
+The per-context IOVA allocator (`drm_mm` + `mm_lock`) is in `struct rocket_file_priv`, and
+`rocket_postclose()` tears it down and frees it. Only `rocket_gem_bo_free()` removes a BO's
+IOVA node. The drm_sched free worker drops a job's BO references asynchronously, and it can run
+after the owning file has closed. A client that submits and closes without waiting therefore
+leaves `rocket_gem_bo_free()` taking `bo->driver_priv->mm_lock` and calling
+`drm_mm_remove_node()` on memory `rocket_postclose()` already freed. The device node
+`/dev/accel/accel0` is group `render`, so the trigger is unprivileged.
+
+The defect reproduces on demand. A client that opens a fresh fd, submits and closes it
+immediately triggers the warning on every iteration. Left running longer, the same client
+reaches the dereference:
 
 ```
 Internal error: Oops: 0000000096000004 [#1]  SMP
@@ -2918,38 +2631,37 @@ lr : drm_mm_remove_node+0x1e8/0x380
  rocket_job_free [rocket] / drm_sched_free_job_work
 ```
 
-Patch `patches/rk3576/npu/0014` anchors the allocator to `struct rocket_iommu_domain`,
-which is refcounted and outlives the file, every mapped BO and the attached core. With it,
-0 of 16 iterations warn, on the same kernel with only that patch changed. It is the RK3588
-series' `084` ported, and it applies to this series with offsets only.
-[HW sweep, H96 MAX M9, 2026-07-28]
+The defect is rare in ordinary use only because an ordinary caller waits for its job, and so
+never sets the race up.
 
-**Match the symbol, not drm_mm's message text.** A 7.1 kernel prints
-`warning: drivers/gpu/drm/drm_mm.c:965 at drm_mm_takedown+0x28/0x38`. The older
-"allocator still has nodes" wording does not appear at all. A detector keyed on the
-message therefore reads clean while the defect fires on every iteration.
+Patch `patches/rk3576/npu/0014` anchors the allocator to `struct rocket_iommu_domain`, which is
+refcounted and outlives the file, every mapped BO and the attached core. With it, no iteration
+warns. It is the RK3588 series' `084` ported, and it applies to the RK3576 series with offsets
+only. [HW sweep, H96 MAX M9, 2026-07-28]
 
-**The verdict is the kernel log, not the exit status.** This defect fails no syscall. A
-run can pass every ioctl and still be the failing side of the A/B.
+> [!CAUTION]
+> This defect fails no syscall, so a run can pass every ioctl while the defect fires on every
+> iteration. A 7.1 kernel prints
+> `warning: drivers/gpu/drm/drm_mm.c:965 at drm_mm_takedown+0x28/0x38`, and the older
+> "allocator still has nodes" wording does not appear at all. A detector keyed on that message
+> therefore reads clean. Software must detect the defect in the kernel log, and match the
+> symbol, not drm_mm's message text.
 
 ## The matmul as a 1×1 convolution
 
-A matmul is a 1×1 convolution over these blocks, exactly as it is on the RK3588. The A
-rows are the conv's spatial pixels, K is the input-channel axis, and N is the
-output-channel axis. The register program is the convolution's, unchanged. The conv gate
-runs a real matmul shape without calling it one. Its `w-e4608-k1` is `ic=4608`, `oc=128`
-on a 4×2 VALID plane, which is M=8, K=4608, N=128 in one submit. The whole of the matmul
-work is therefore in the userspace layer:
+A matmul is a 1×1 convolution over these blocks, exactly as it is on the RK3588. The A rows
+are the convolution's spatial pixels, K is the input-channel axis, and N is the output-channel
+axis. The register program is the convolution's, unchanged: `ic=4608`, `oc=128` on a 4×2 VALID
+plane is M=8, K=4608, N=128 in one submit. The matmul work is therefore all in userspace:
 
 - The operand scatter
-- The de-scatter
+- The de-tile
 - A tiling planner
 - A dispatch point
 
-The entry is `rocket_matmul_int8_rk3576()`, and the gate is `tests/rk3576_matmul_gate.c`.
-The probe `tests/rk3576_matmul_probe.c` is the instrument that read the envelope below.
+The `librocketnpu` entry is `rocket_matmul_int8_rk3576()`.
 
-The mapping, for anything driving the emitter directly:
+The mapping, for software that drives the emitter directly:
 
 | operand | layout |
 |---|---|
@@ -2957,29 +2669,31 @@ The mapping, for anything driving the emitter directly:
 | B[N,K] | `weight_conv_int8(N, K, 1, 1, n+1, k+1, 1, 1)` |
 | C[M,N] | the int8 output cube, `(n/16)*surf_elems*16 + 16*(y*iw + x) + n%16` |
 
-The plane is free. Any `(iw, ih)` with `iw*ih == M` carries the M rows, and all of them
-compute, so the choice is a tiling one. The plane costs granules: a feature row takes
-`ceil(iw*K/64)` of them against the task's 4096. The pixels one task holds therefore come
-out at `262144/K` however the plane is cut, provided `iw*K` is a whole number of
-granules. When it is not, every row rounds up and the waste is real. Take the widest
-divisor of M that divides evenly.
+The plane is free. Any `(iw, ih)` with `iw*ih == M` holds the M rows, and every such plane
+gives the correct result, so the choice is a tiling one. The plane costs granules: a feature
+row takes `ceil(iw*K/64)` of them against the task's 4096. One task therefore holds
+`262144/K` pixels however the plane is cut, provided `iw*K` is a whole number of granules.
+When it is not, every row rounds up and the waste is real. Take the widest divisor of M that
+divides evenly.
 
 ### The M axis
 
-The M axis carries no constraint. Every M tried (1, 2, 3, 4, 5, 6, 7, 8, 12, 15, 16, 17,
-31, 32 and 64) is bit-exact at every factorization into a plane, from `1xM` through
-`Mx1`. Here `M=1` is simply correct, which inverts the RK3588's answer. There, rows are
-the conv's spatial height, a height under 4 mis-computes, `M%4` is the real bound, and
-software pads `M==1` to 4. Whether it is worth running at M=1 is a separate question,
-which the dispatch floor answers. [HW sweep, H96 MAX M9]
+The RK3576 places no constraint on M. Every M tried (1, 2, 3, 4, 5, 6, 7, 8, 12, 15, 16, 17,
+31, 32 and 64) is bit-exact at every factorization into a plane, from `1xM` through `Mx1`.
+`M=1` needs no padding here, the opposite of the RK3588. There, rows are the convolution's
+spatial height, a height under 4 produces incorrect output, `M%4` must be 0, and software pads
+`M==1` to 4. The per-submit cost, not correctness, decides whether a matmul runs at M=1.
+[HW sweep, H96 MAX M9]
 
 ### Matmul precision
 
-int8 is the matmul precision, and the margin is large. The two precisions contract at
-very different rates. One int8 task takes `ic*kh*kw <= 4608`, so K = 4608 lands in one
-submit. One fp16 task contracts exactly sixteen input channels, so the same K costs 288
-submits. The table measures each shape at both precisions, with the pacing outside the
-timing:
+**Conditions:** H96 MAX M9, measured 2026-07-27. Both precisions run as 1×1 convolutions
+through the convolution programs.
+
+Through the convolution programs, int8 is the faster matmul precision by a large margin. The
+two programs contract at very different rates. One int8 task takes `ic*kh*kw <= 4608`, so
+K = 4608 fits in one submit. One task of the fp16 convolution program contracts exactly
+sixteen input channels, so the same K costs 288 submits [HW sweep]:
 
 | shape | int8 submits | int8 ms | fp16 submits | fp16 ms | ratio |
 |---|---|---|---|---|---|
@@ -2988,332 +2702,110 @@ timing:
 | 128×2048×128 | 1 | 1.2 | 128 | 171.3 | 142x |
 | 56×4608×128 | 1 | 1.3 | 288 | 386.1 | 299x |
 
-On the RK3588 fp16 wins and int8 buys only RAM. Here it is the other way round. The
-reason is the contraction width, not the arithmetic: the fp16 one is 16, while the int8
-one is 4608. [HW sweep, H96 MAX M9, measured 2026-07-27]
+On the RK3588, fp16 is the faster precision and int8 reduces only memory use. On the RK3576
+the order is reversed.
+
+The ratios above come from the contraction width, not the arithmetic.
+The fp16 convolution program contracts 16 input channels a task, and the int8 program 4608
+[HW sweep]. The 16 belongs to that program, not to the SoC. The matmul-form fp16 program
+contracts the whole of K in one task. Its cost against the int8 matmul is in
+[rk3576.md](rk3576.md) §"The precision fork: what the op library should be founded on here".
 
 ### Throughput and the N axis
 
-Throughput is MACs per submit, and N is the only free axis. A submit costs about 0.44 ms
-whatever it carries. The feature budget caps `M*K` and the resident weight slice caps K,
-so N is the only axis left to spend. At the feature-budget cap, N buys throughput almost
-linearly:
+**Conditions:** H96 MAX M9, `M*K = 262144`, measured 2026-07-27.
+
+Matmul throughput on the RK3576 is set by the MACs per submit. A submit costs the same
+whatever work it contains (§"The per-submit floor is the driver's completion poll"). The feature budget caps `M*K`, and the resident weight slice caps K,
+so N is the only free axis. At the feature-budget cap, throughput scales almost linearly with N
+[HW sweep]:
 
 | N | 32 | 64 | 128 | 256 | 512 | 1024 | 2048 | 2560 |
 |---|---|---|---|---|---|---|---|---|
 | GOP/s | 12 | 24 | 47 | 93 | 190 | 367 | 719 | 1000 |
 
-The table is at `M*K = 262144`. The figure is flat in how that product is split:
-1024×256, 256×1024 and 64×4096 all land within a few percent of each other.
-[HW sweep, H96 MAX M9, measured 2026-07-27]
+Throughput does not depend on how `M*K` is split: 1024×256, 256×1024 and 64×4096 measure
+within a few percent of each other. [HW sweep]
 
 ### Output-channel bounds
 
-Two output-channel bounds apply, and neither is a convolution's problem. Past either one,
-the trailing output channels do not reach DDR. The surface is full and correctly sized,
-its leading channels are bit-exact, and nothing faults. The planner `r76_plan_cbuf`
-refuses a shape past either bound:
+A matmul task on the RK3576 has two output-channel bounds [HW sweep, H96 MAX M9]:
 
-- **Output channels <= 2944.** 2944 computes 3/3 at every K tried. 3072 is intermittent
-  (1/3 at K=256, 2/3 at K=1024), and 4096 never computes.
-- **The whole weight cube <= 6 MiB.** The cube at `ic=4096, oc=1536` is 6 MiB and
-  computes 3/3. At `ic=4608, oc=1536` it is 6.75 MiB and computes 0/3. At
-  `ic=4096, oc=2048` it is 8 MiB and loses about a quarter of its channels.
+| Bound | Limit | Past the limit |
+|---|---|---|
+| Output channels | 2944 | Intermittent at 3072, and never correct at 4096 |
+| Whole weight cube | 6 MiB, as at `ic=4096, oc=1536` | Never correct at `ic=4608, oc=1536` (6.75 MiB). About a quarter of the channels lost at `ic=4096, oc=2048` (8 MiB) |
 
-The second bound is stated over the whole cube rather than per kernel tap, on purpose. It
-was measured at `k=1`, the matmul's own kernel. Stated this way, it refuses earlier at
-`k>1` than anything measured there, which is the safe direction. No convolution shape in
-the gate comes near either bound: the largest is 516 KiB at oc=128.
+> [!CAUTION]
+> Past either bound, the trailing output channels do not reach DDR. The output is full and
+> correctly sized, its leading channels are bit-exact, and nothing faults. Software must keep
+> every matmul task within both bounds.
 
-**Repeat before believing a boundary here.** A single pass per point produced a
-clean-looking N ceiling that moved when the same points were re-run. The shape
-`1024x256x3072` failed in one pass and passed in the next. Three repeats plus a
-classification of the failure (all-sentinel is a dead submit, a clean prefix is a
-capacity bound, wrong values in a fully written surface are arithmetic) separate the
-bound from the noise. [HW sweep, H96 MAX M9]
+The weight-cube bound was measured at `k=1`, the matmul's own kernel. It is stated over the
+whole cube rather than per kernel tap. A `k>1` convolution is therefore refused earlier than
+any failure measured there, which is the safe direction. No convolution shape in the convolution
+test suite comes near either bound: the largest weight cube is 516 KiB, at oc=128.
+
+In `librocketnpu`, the planner `r76_plan_cbuf` refuses a shape past either bound.
+
+> [!NOTE]
+> A single run per point does not locate these bounds, because failures near them are
+> intermittent. Repeat each point three times and classify each failure. An all-sentinel
+> output is a dead submit, a clean prefix is a capacity bound, and wrong values in a fully
+> written output are arithmetic.
 
 ### The int32 output
 
-On an integer program the DPU emits its raw 32-bit accumulator, but only the first eight
-channels of every thirty-two reach DDR. The generator `gen_conv2d_int8_rk3576_i32out()`
-puts `precision_int32` in DPU `0x4010`'s output-width field and pins OUT_CVT to exact
-unity. The words that come back are genuine accumulators, laid out on the RK3588's int32
-cube map in 32-bit words:
+With DPU `0x4010`'s output-width field at `precision_int32` and OUT_CVT at exact unity, the DPU
+writes the raw 32-bit accumulators of an int8 program. The words are the accumulators
+themselves, laid out on the RK3588's int32 cube map in 32-bit words:
 
 ```
 word = (c/4) * ow*oh_full * 4 + 4 * (y*ow + x) + (c%4)
 ```
 
-The map is decoded, not assumed. The probe gives every accumulator a distinct value, so
-each value names exactly one word. Every position read that way fits the map with no
-misses. The decode covers `oc` 4, 8, 16, 32, 64 and 96, `K` 16 through 256, and `M` 4
-and 8.
+> [!CAUTION]
+> With the int32 output width, only the first eight output channels of every thirty-two reach
+> DDR. The other channels are not written. Software must place every real output channel in a
+> delivered slot through the weight cube, as described below.
 
-The writer keeps the int8 surface's byte budget whatever the element width is. It writes
-`ceil(oc/16)` contiguous blocks of `ow*oh_full` 16-byte atoms, exactly the int8 surface.
-At four bytes an element, each block carries four channels where an int8 block carries
-sixteen. Block `j` holds channels `32*(j/2) + 4*(j%2) .. +3`. What reaches DDR is
-therefore the first eight output channels of every thirty-two, and nothing else is
-touched.
+The map is decoded at `oc` 4, 8, 16, 32, 64 and 96, `K` 16 through 256, and `M` 4 and 8. Every
+position fits it with no misses.
 
-That is one fact, not two. At `oc <= 8` every channel is delivered and the surface is
-complete (`oc = 4` and `oc = 8` decode 32/32 and 64/64 with no waste). Past it the yield
-is `oc/4`. A sweep run only at `oc = 32` cannot tell the block count from the
-delivered-channel rule, and it reads as "the extent is `ceil(oc/16)` groups". The shapes
-at `oc = 16` and `oc = 8` separate them, and both write two blocks.
+The writer keeps the int8 output's byte budget whatever the element width. It writes
+`2*ceil(oc/32)` contiguous blocks of `ow*oh_full` 16-byte atoms, exactly the int8 output of
+`oc` rounded up to 32 channels. `oc` 8 and `oc` 16 both write two blocks [HW sweep, H96 MAX
+M9]. At four bytes an element, each block holds four channels where an int8 block holds sixteen. Block `j`
+holds channels `32*(j/2) + 4*(j%2) .. +3`.
 
-The way round it is the weight cube, not a register. Program a multiple of the output
-channels, and put real channel `n` in a slot the writer delivers, leaving the rest zero.
-Every real channel then lands in a delivered slot, and the surface reads back as a plain
-cube. The entry `rocket_matmul_int8_rk3576_i32()` does that, and it is bit-exact against
-a CPU int32 model. On this narrow writer the multiple is four and the slot is
-`32*(n/8) + n%8`, which collapses the map above to the plain int32 cube.
+The first eight output channels of every thirty-two therefore reach DDR, and nothing else is
+written. At `oc <= 8` every channel is delivered and the output is complete. At a multiple of
+32, the number of channels delivered is `oc/4`.
 
-The cost is the output-channel axis, spent over. The bytes are not wasted: the budget
-comes out at exactly the int32 surface. But the resident weight slice, the N tile and the
-2944-channel bound are all functions of the programmed `oc`. The multiple is therefore
-paid in MACs per submit. That cost follows from the measured budget rather than from the
-encoding, so no register buys it back. Setting `PROC_PRECISION` halves the multiple, and
-that is the writer the library uses.
+The weight cube works around the rule, and no register changes it (§"Output-channel
+registers"). Software must program a multiple of the output channels and put real channel `n`
+in a slot the writer delivers, with the other slots zero. Every real channel is then placed in
+a delivered slot, and the output reads back as a plain cube. On this writer, the narrow
+writer, the multiple is four and the slot is `32*(n/8) + n%8`. That placement reduces the map
+above to the plain int32 cube.
 
-### The wide writer
+The workaround costs output channels, not bytes: the byte budget comes out at exactly the
+int32 output. But the resident weight slice, the N tile and the 2944-channel bound are all
+functions of the programmed `oc`. The multiple therefore costs MACs per submit. The cost
+follows from the measured budget rather than from the encoding, so no register removes it.
+Setting `PROC_PRECISION` halves the multiple (§"The wide writer").
 
-The wide writer delivers the first eight output channels of every sixteen, at half the
-cost. A real channel costs two programmed ones rather than four.
+The regcmd encoder's `gen_conv2d_int8_rk3576_i32out()` emits this program. The entry
+`rocket_matmul_int8_rk3576_i32()` places the channels this way when its dense writer is off
+(`ROCKET_RK3576_I32_DENSE=0`, or a writer forced with `ROCKET_RK3576_I32_OC_MULT`), and it is
+bit-exact against a CPU int32 model. By default the entry writes through the dense writer
+(§"The dense writer: every accumulator as an int32, and no poisoning").
 
-`PROC_PRECISION` doubles the byte budget. DPU `0x4010`'s low field (`[2:0]`) is the DPU's
-own operand width. Driving it from int8 to int32 makes the writer emit two 16-byte atoms
-per (16-channel block, pixel) instead of one. Nothing else moves: the operands stay int8
-everywhere, the arithmetic is bit-identical, and the CNA and CORE programs are
-byte-unchanged. The generator `gen_conv2d_int8_rk3576_i32out_wide()` emits it.
+#### Output-channel registers
 
-Two atoms is the ceiling, swept across all eight values of the field at
-`M=8, K=32, N=32`:
-
-| `0x4010[2:0]` | extent | what came back |
-|---|---|---|
-| 0 int8, 6 int4 | 64 words | one atom per (block, pixel), the 4x rule |
-| 1 int16, 4 int32 | 128 words | two atoms, the 2x rule, values correct |
-| 2 fp16, 3 bf16, 5 | 128 words | two atoms, and the operands reinterpreted: no accumulator survives |
-| 7 tf32 | n/a | every attempt was a dead submit |
-
-The map works in 32-channel super-groups, each `4*A` atoms long, where `A` is the
-surface's pixel count `ow*oh_full`. Inside one super-group the writer emits a single
-linear stream indexed by `s = 2*p + j`. In that index `p` is the pixel and `j` the
-16-channel block. The writer cuts the stream into runs of `A` atoms. The run also carries
-the lane group `L = (c%16)/4`, which is the slower axis:
-
-```
-atom = 4*A*(c/32) + A*(2*(s/A) + L) + s%A       s = 2*p + j
-word = 4*atom + c%4                             delivered iff c%16 < 8
-```
-
-Because it is a stream, nothing rounds: an odd `A` simply cuts it at an odd place, and
-`A = 1` works as readily as `A = 16`. The map is decoded, not fitted. The operands were
-drawn so that every accumulator in the tile is distinct. Each written word therefore names
-exactly one (channel, pixel), or the map is not a map. It was read off at `oc`
-8/16/24/32/40/48/64/96/128/192 and at pixel counts 4/5/6/7/8/12/13/16/21/33.
-
-**Two bounds apply, and both fail silently.** The bounds, and the zero atoms found
-inside them:
-
-- **`oc` must be a multiple of 32**, because a partial super-group is not a truncated
-  one. At `oc = 16 (mod 32)` the trailing group holds one 16-channel block instead of
-  two, and packs at one atom per pixel with no stream. At an `oc` that is not a multiple
-  of 16 at all, the delivered channel set rotates with the pixel. It then has no block
-  form to write down. The case read off is 24. Take the count from
-  `rocket_rk3576_pad_oc()`, and leave the padding zero.
-- **A task's surface is bounded at 8 KiB, and the bound is over the plane.** Stated in
-  the programmed channel count, a row task is correct while
-  `iw * oh_full * oc_prog < 4096`. A wide task writes `oc_prog/8` atoms a pixel at
-  16 bytes each. That product is therefore the output surface in half-bytes, and the
-  bound is 8192 bytes, or 512 atoms, per task. The entry
-  `rocket_matmul_int8_rk3576_i32()` enforces it by splitting the row plan until every task
-  fits. A row task here is a standalone 1×1 convolution with its own surface, so honoring
-  the bound costs submits and nothing else.
-
-  **`iw` is in it, and leaving it out is a wrong answer rather than a lost bound.** A row
-  split can only shorten `oh_full`. It cannot narrow `iw`, and the plane chooser takes the
-  widest divisor of M it can. On a shape whose plane comes out `Mx1`, every task then
-  satisfies a cap that divides only by `oc_prog`. The surface is still M times over the
-  bound.
-
-  Forced onto eleven shapes whose planner plane is `Mx1`, the wide writer was wrong
-  on ten. At `iw = 1`, where the two readings coincide, all eleven are exact and every
-  zero run disappears. A plane too wide for even a one-row task cannot be split into one.
-  Such a shape cannot use the wide writer at all, and the entry refuses it.
-  [HW sweep, H96 MAX M9]
-
-  The cap was lifted (`ROCKET_RK3576_I32_WIDE_SURF`, `tests/rk3576_i32_height_bound.c`)
-  for a sweep at `K = 32` and `ow = 1`. At every one of the eight programmed counts, the
-  first wrong height is the smallest `oh_full` with `oh_full * oc_prog >= 4096`:
-
-  | `oc_prog` | 64 | 128 | 192 | 256 | 320 | 384 | 448 | 512 |
-  |---|---|---|---|---|---|---|---|---|
-  | first wrong `oh_full` | 64 | 32 | 22 | 16 | 13 | 11 | 10 | 8 |
-
-  Predicted and observed agree in all eight. [HW sweep, H96 MAX M9]
-
-- **K relaxes the bound, and only ever outward.** The same `oc = 128` that is wrong from
-  `oh_full = 16` at `K <= 128` is wrong at only 31, 32 and 40 at `K = 512`. It is exact
-  to `oh_full = 40` at `K = 1024` and `K = 2048`. The 8 KiB bound is therefore the
-  worst-case floor, reached once the contraction is short enough. Enforcing it
-  unconditionally is what makes the path correct at every K.
-
-  **That is also what hides `iw`.** A sweep of the plane width at `K = 512` finds `ow = 2`
-  and `ow = 4` exact across the whole range in which `ow = 1` fails. That reads as "the
-  plane width is not in the bound". The correct reading is "at this K the bound is far
-  outside the geometries tried". At `K = 256` the same doubling breaks it:
-  `oc_prog = 512`, `oh = 7` is exact at `ow = 1` and wrong at `ow = 2`. Sweep the width at
-  a short contraction, or the axis is invisible.
-
-- **Both writers drop atoms, and the drop tracks the memory system.** Inside the bound the
-  failure is rare rather than gone. A row task comes back with a few atoms holding zero
-  while the rest of the surface is exact. It is not the wide writer's alone. The narrow
-  writer does it too, and without a per-atom check it does so silently. At
-  `M=128 K=256 N=2048` it returned a handful of elements out of 262144 reading zero on six
-  calls in twelve.
-
-  The rate is a property of the memory system rather than of the program. Specifically,
-  it tracks host DDR traffic, not the host merely being busy. Four load threads at
-  `M=128 K=256 N=2048`, 30 reps and 120 row tasks per cell:
-
-  | host load                          | row tasks that dropped an atom |
-  |------------------------------------|-------------------------------|
-  | quiet                              | 5.8%   (7/120)                |
-  | integer spin, no memory traffic    | 11.7%  (14/120)               |
-  | memcpy over 16 KiB, L1-resident    | 9.2%   (11/120)               |
-  | streaming memcpy over 32 MiB, DDR  | **51.7%** (62/120)            |
-
-  The two controls hold the CPUs equally busy and the cache hierarchy equally hot while
-  leaving DDR alone. At this sample size they are not distinguishable from quiet
-  (7, 11 and 14 of 120, against a binomial sd of about 3). Streaming to DDR is 5-9x all
-  three and far outside that. The effect is therefore specific to traffic reaching DDR,
-  and CPU occupancy and scheduling latency are ruled out as the mechanism. The count of
-  atoms never emitted at all, the wide-output poisoning, barely moves across the same
-  contrast, which makes the two hazards separate. [HW sweep, H96 MAX M9,
-  2026-07-28, `tests/rk3576_i32_zero_run.c load`]
-
-  The drop does not reach the conv entries or the narrow int8 matmul. At the load that
-  takes the int32 writers to 51.7%, `rk3576_conv_lib_gate` is 156 passed / 7 refused /
-  0 failed. It reads the same under DDR pressure, under the L1 control and quiet. Under
-  DDR pressure `rk3576_matmul_gate` is 46/46. [HW sweep, H96 MAX M9, 2026-07-28,
-  `tests/hostload.c`]
-
-  One 155/156 flake appeared under the *spin* control, which touches no memory. The same
-  single-case flake also appears with no load at all. It is therefore a pre-existing
-  intermittent in that gate, not a load effect, and it is not pinned to a case. The conv
-  entries' own "did it write" check is per row task, and cannot see a task that wrote all
-  but a few atoms. This is therefore a measured negative rather than a covered one.
-  [HW sweep, H96 MAX M9, 2026-07-28, `tests/hostload.c`]
-
-- **Every wrong element comes back zero**, past the bound and inside it alike. Over the
-  whole map, eight channel counts, 57 heights each, not one wrong element aliases
-  another element's correct value and not one holds anything else. The writer emits empty
-  atoms rather than misplacing full ones.
-
-- **A dropped atom cannot be told from a zero accumulator by looking at the surface**, so
-  do not try. The bytes are identical, and repetition does not separate them either. The
-  drop is correlated with the memory system. It repeats often enough to leak a wrong
-  answer through a "came back the same twice, so it is data" rule. What separates them is
-  the arithmetic.
-
-  The library stamps a sentinel, so "never emitted" is a fact per atom. It redoes the
-  task once, which clears most drops. From the second attempt it computes the zero atoms'
-  accumulators on the CPU over that K slice. It keeps the surface only if they really are
-  zero. At the worst shape all 240 reps were exact, 120 of them under host load. The
-  all-zero-data case (every row of A zeroed) passed on both writers.
-
-**A probe that drives every output channel finds a boundary the library never meets.**
-With all sixteen channels of a group live the map stops fitting well before the bound
-above, at `oc = 192` from `A = 48` on a flat plane. Under the scatter, the undelivered
-half of each sixteen is zero. The same geometries are then bit-exact through the library
-at `A` 48, 64 and 128. A boundary found with every channel live is therefore a boundary of
-the probe. Setting `ROCKET_MP_SCATTER=1` drives the probe the way the library drives the
-part.
-
-#### Cost and the writer choice
-
-The N tile is bounded by the programmed output channels, so halving the multiplier
-doubles the tile and halves the submits. On this path a submit costs an idle rather than
-1.4 ms. Measured through `rk3576_matmul_gate`:
-
-| shape | 4x writer | 2x writer |
-|---|---|---|
-| M=64 K=1024 N=2048 | 4 submits, 686 ms | 2 submits, 339 ms |
-| M=32 K=1024 N=4096 | 8 submits, 1319 ms | 4 submits, 675 ms |
-
-Below the tile cap the two cost the same, so a shape whose N fits one tile shows no gain.
-
-The planner picks the writer per shape, and `ROCKET_RK3576_I32_OC_MULT` forces either.
-The whole benefit is submits and the whole cost is submits, and both are computable
-before anything is submitted. The function `r76_i32_submit_count()` counts K slices x
-N tiles x row tasks for each writer. The surface cap splits the wide writer's tasks
-further. The cheaper writer wins, and a tie goes to the narrow one.
-
-**With the bound stated over the plane, the wide writer does not win.** The cap costs it
-exactly the submits its wider N tile was reached for. It costs them on the N-heavy shapes
-where the tile would have paid. Over 315 natural shapes, M 4-256, K 64-2048 and
-N 32-2048, the chooser took the narrow writer on every one. [HW sweep, H96 MAX M9]
-
-Figures that show the wide writer ahead (8 submits to 4 at `i32-n4096`, 4 to 2 at
-`i32-n2048`) were measured against the rows-only cap. That cap let those shapes run one
-task per tile at many times the surface the writer can hold. The wide path is kept for two
-reasons. It is the instrument that decoded the 32-bit writer's map, and a shape outside
-that sweep can still reach it. The default path does not use it. [HW sweep, H96 MAX M9]
-
-#### Zero atoms and their detection
-
-Sparse data does not cost either writer its retry budget. With every row of `A` zero and
-the bias zero with them (`ROCKET_MG_ZERO_ROWS=1`), both writers pass the whole int32
-gate. A whole-task check, "did this task write anything at all", answers "no" on every
-legitimately zero surface. The narrow path asks a per-atom question against a sentinel
-instead. A zero atom that survives one redo is settled against the operands rather than
-against the surface.
-
-**Both writers intermittently emit zeros**, which is what the detector exists for. On the
-wide writer the block is contiguous and one super-group wide. On the narrow writer it is a
-handful of atoms. It is the same defect, and it is not rare: see the memory-pressure
-measurement above.
-
-**It does not drop writes.** With the output BO stamped with a sentinel before the tasks
-run, the bad atoms come back zero rather than holding the sentinel. The stamp is
-bracketed by `PREP_BO` and `FINI_BO`, so no dirty line is left to race the DPU's DMA. It
-is verified to reach DDR before any submit. The writer reaches the bad atoms, and the data
-in them is wrong. On a fresh BO, which arrives zeroed, an unwritten atom and a zeroed one
-are indistinguishable, and a wrong zero reads as a dropped write.
-
-Two other causes are excluded. It is not a readback race: a second fence and a second
-read return byte-identical contents. It is not the poisoning below either. The
-poisoning's signature is an *empty* region, and cycling the power domain clears it. This
-defect is indifferent to the idle ahead of it, and host memory traffic moves its rate
-fourfold while leaving the poisoning's count alone.
-
-The corrupt block reads most clearly in the wide writer's own coordinates. The writer
-emits two atoms per stream position `s`, one per lane group, so its emission order is
-`(s, L)` ascending. The corrupt block is contiguous in *that* order and in no other. In
-address order it shows up as two separate holes, and it lies inside a single super-group.
-
-**Its extent does not generalize across shapes**, which is why no detector keys on it. On
-one shape, every failure over 40 runs ended at `s = 2A-2`, two emissions short of that
-group's last. Other shapes break that pattern: logged at debug level across shapes
-(`r76_i32_run_log()`), `i32-tall-m` and `i32-m100` corrupt three emissions in mid-stream.
-They sit at `s = 1039..1040` of 0..2047 and at `s = 15..16` of 0..199. Both recur at a
-fixed address, so a tail-keyed detector would miss all of it. [HW sweep, H96 MAX M9,
-25 runs per shape]
-
-The library therefore detects and settles the defect rather than avoiding it, and the
-settling is exact rather than heuristic. The signal is two adjacent zero emissions on the
-wide path, or any zero atom on the narrow one. The library redoes the task once, which
-clears most of it. From the second attempt it computes the zero atoms' accumulators on the
-CPU over that K slice. It keeps the surface only if they really are zero. The functions
-are `r76_i32_wide_suspect()` and `r76_i32_zeros_are_data()` in `rocket_matmul_rk3576.c`.
-
-The redo needs no idle in front of it, which is further evidence this is not the
-poisoning. The sentinel's other reading, an atom that still holds it, *is* the poisoning,
-and that redo keeps its idle.
-
-#### Registers eliminated
+No output-channel register on the RK3576 changes the delivered-channel rule. Scaling the five
+output-channel registers in the table together increases the address extent and nothing else.
+The rule is therefore in the datapath rather than in a geometry field. [HW sweep, H96 MAX M9, measured 2026-07-27]
 
 At `M=8, N=32` on an 8×1 plane the baseline is 64 words:
 
@@ -3328,19 +2820,173 @@ At `M=8, N=32` on an 8×1 plane the baseline is 64 words:
 | `0x4030` low half -> 0xF10 | 64, last at 63 | corrupted the values without moving the extent |
 | CNA `0x1024` (kernel word \| oc-1) x4 | 64, last at 63 | nothing |
 | DPU_RDMA `0x5014` (CUBE_CHANNEL) x4 | 64, last at 63 | nothing |
-| CORE `0x3020` (dataout_channel) x4 alone | **0 words** | killed the write outright. It is coupled to the others, not inert |
-| all five oc carriers x4 together | **256**, the full surface | the byte budget scales, the delivered channels do not, still 8 |
+| CORE `0x3020` (dataout_channel) x4 alone | **0 words** | the DPU wrote nothing. It is coupled to the others, not inert |
+| all five oc registers x4 together | **256**, the full output | the byte budget scales, the delivered channels do not, still 8 |
 
-The delivered-channel rule therefore survives every oc register on the part. Scaling them
-together buys address extent and nothing else, which places the rule in the datapath
-rather than in a geometry field. [HW sweep, H96 MAX M9, measured 2026-07-27]
+### The wide writer
+
+The wide writer delivers the first eight output channels of every sixteen, so a real channel
+costs two programmed channels rather than four. `PROC_PRECISION`, DPU `0x4010`'s low field
+(`[2:0]`), is the DPU's own operand width. Set from int8 to int32, it doubles the byte budget:
+the writer emits two 16-byte atoms per (16-channel block, pixel) instead of one. Nothing else
+changes. The operands stay int8 everywhere, the arithmetic is bit-identical, and the CNA and
+CORE programs are byte-unchanged.
+
+The regcmd encoder's `gen_conv2d_int8_rk3576_i32out_wide()` emits the wide writer.
+
+Two atoms is the maximum. The field's eight values at `M=8, K=32, N=32` give:
+
+| `0x4010[2:0]` | extent | what came back |
+|---|---|---|
+| 0 int8, 6 int4 | 64 words | one atom per (block, pixel), the 4x rule |
+| 1 int16, 4 int32 | 128 words | two atoms, the 2x rule, values correct |
+| 2 fp16, 3 bf16, 5 | 128 words | two atoms, and the operands reinterpreted: no accumulator survives |
+| 7 tf32 | n/a | a dead submit, nothing written |
+
+The map works in 32-channel super-groups, each `4*A` atoms long, where `A` is the output's
+pixel count `ow*oh_full`. Inside one super-group the writer emits a single linear stream
+indexed by `s = 2*p + j`. In that index `p` is the pixel and `j` the 16-channel block. The
+writer cuts the stream into segments of `A` atoms. The segment index also contains the lane
+group `L = (c%16)/4`, which is the slower axis:
+
+```
+atom = 4*A*(c/32) + A*(2*(s/A) + L) + s%A       s = 2*p + j
+word = 4*atom + c%4                             delivered iff c%16 < 8
+```
+
+Because the map is a stream, nothing rounds: an odd `A` cuts it at an odd place, and `A = 1`
+works as readily as `A = 16`. The map is decoded at `oc` 8, 16, 24, 32, 40, 48, 64, 96, 128
+and 192. The pixel counts decoded are 4, 5, 6, 7, 8, 12, 13, 16, 21 and 33.
+
+#### Wide-writer bounds
+
+The wide writer has two bounds, and past either one its output is incorrect with no error.
+
+> [!CAUTION]
+> On the wide writer, an `oc` that is not a multiple of 32 produces incorrect output. A partial
+> super-group is not a truncated one. At `oc = 16 (mod 32)` the trailing group holds
+> one 16-channel block instead of two, and packs at one atom per pixel with no stream. At an
+> `oc` that is not a multiple of 16, the delivered channel set rotates with the pixel and has no
+> block form. The case read off is 24. Software must program `oc` as a multiple of 32 and leave
+> the padding channels zero.
+
+`librocketnpu`'s `rocket_rk3576_pad_oc()` gives the padded count.
+
+> [!CAUTION]
+> A wide-writer task whose output exceeds 8 KiB produces incorrect output, and the bound is over
+> the whole plane. Stated in the programmed channel count, a row task is correct while
+> `iw * oh_full * oc_prog < 4096`. Software must keep every task within that bound, including
+> its `iw` term.
+
+A wide task writes `oc_prog/8` atoms a pixel at 16 bytes each. The product
+`iw * oh_full * oc_prog` is therefore the output in two-byte units, and the bound is 8192
+bytes, or 512 atoms, per task [host-computed].
+
+A row split can shorten `oh_full` but cannot narrow `iw`, and the plane chooser takes the
+widest divisor of M it can. On a shape whose plane is `Mx1`, a cap that divides only by
+`oc_prog` passes every task. The output is then still M times over the bound, and incorrect. At
+`iw = 1`, where the two forms coincide, the same shapes are exact. A plane too wide for even a
+one-row task cannot be split into one, so such a shape cannot use the wide writer.
+[HW sweep, H96 MAX M9]
+
+On the wide writer, the entry `rocket_matmul_int8_rk3576_i32()` splits the row plan until
+every task fits the bound. It refuses a plane too wide for a one-row task. A row task here is a
+standalone 1×1 convolution with its own output, so the bound costs submits and nothing else.
+
+A longer contraction moves the bound outward, and never inward. The same `oc = 128` that is
+wrong from `oh_full = 16` at `K <= 128` is wrong at only 31, 32 and 40 at `K = 512`. It is exact
+to `oh_full = 40` at `K = 1024` and `K = 2048`. The 8 KiB bound is therefore the worst case,
+reached once the contraction is short enough. Software must enforce it at every K.
+
+The bound holds for a weight cube whose undelivered channels are zero. With all sixteen
+channels of a group driven, the map stops fitting well before the bound, at `oc = 192` from
+`A = 48` on a flat plane. With the undelivered half of each sixteen zero, the same geometries
+are bit-exact at `A` 48, 64 and 128.
+
+#### Zero atoms and their detection
+
+Both int32 writers intermittently write a few atoms as zero inside the bound, while the rest
+of the output is exact. On the wide writer the zeroed block is contiguous and one super-group
+wide. On the narrow writer it is a handful of atoms. Both writers show the same defect.
+
+> [!CAUTION]
+> A zero atom cannot be told from a zero accumulator by its bytes. The defect also repeats often
+> enough to pass a "same result twice, so it is data" rule. Only the arithmetic separates the
+> two. Software must check every atom of an int32 writer's output against a sentinel, and must
+> verify each zero atom against the operands.
+
+A whole-task check, "did this task write anything at all", answers "no" on every legitimately
+zero output, so it cannot serve as the detector.
+
+The rate tracks host DDR traffic rather than CPU load. At `M=128 K=256 N=2048`, 5.8% of row
+tasks return a zero atom on a quiet host, and 51.7% under a streaming host `memcpy` to DDR. Host
+load that keeps the CPUs busy and the caches hot without reaching DDR does not raise the rate
+measurably. Across the same contrast, the count of atoms never emitted at all barely moves. That
+count is the wide-output hazard (§"The wide-output hazard after an int32-output job"), so the
+two hazards are separate. [HW sweep, H96 MAX M9, 2026-07-28]
+
+The defect does not reach the conv entries or the narrow int8 matmul: under the same DDR load,
+neither fails a case. The conv entries' own write check is per row task, so it cannot see a
+task that wrote all but a few atoms. [HW sweep, H96 MAX M9, 2026-07-28]
+
+Every wrong element comes back zero, past the bound and inside it alike. No wrong element holds
+another element's correct value, or anything else. The writer emits empty atoms rather than
+misplacing full ones.
+
+The writer writes the zero atoms. With the output BO stamped with a sentinel before the tasks
+run, the bad atoms come back zero rather than holding the sentinel. On a fresh BO, which arrives
+zeroed, an unwritten atom and a zeroed one are indistinguishable.
+
+The zeroed block reads most clearly in the wide writer's own coordinates. The writer emits two
+atoms per stream position `s`, one per lane group, so its emission order is `(s, L)` ascending.
+The zeroed block is contiguous in *that* order and in no other. In address order it shows up as
+two separate holes, and it lies inside a single super-group.
+
+The block's extent varies by shape, so a detector cannot key on it. On one shape it always ends
+two emissions short of the group's last. On others it is three emissions in mid-stream, at a
+fixed address. [HW sweep, H96 MAX M9]
+
+A redo for a zero atom needs no idle in front of it. An atom that still holds the sentinel is
+the wide-output hazard instead, and that redo keeps its clearing idle.
+
+`librocketnpu` detects the defect and verifies it exactly rather than avoiding it. The signal is
+two adjacent zero emissions on the wide writer, or any zero atom on the narrow one. The library
+stamps a sentinel, so "never emitted" is known per atom, and redoes the task once, which clears
+most zero atoms. From the second attempt it computes the zero atoms' accumulators on the CPU
+over that K slice. It keeps the output only if they really are zero. The functions are
+`r76_i32_wide_suspect()` and `r76_i32_zeros_are_data()` in `rocket_matmul_rk3576.c`.
+
+Sparse data does not cost either writer its retry budget: with every row of `A` zero, both
+writers pass.
+
+#### Cost and the writer choice
+
+The N tile is bounded by the programmed output channels, so halving the multiplier doubles the
+tile and halves the submits. On this path a submit costs a clearing idle rather than 1.4 ms. Below the
+tile cap the two writers cost the same, so a shape whose N fits one tile gains nothing.
+
+With the bound stated over the plane, the wide writer saves no submits. The bound costs it
+exactly the submits its wider N tile saves, on the N-heavy shapes where the tile would save
+them. Over 315 natural shapes, M 4-256, K 64-2048 and N 32-2048, the chooser takes the narrow
+writer for every one. [HW sweep, H96 MAX M9]
+
+With the dense writer off (`ROCKET_RK3576_I32_DENSE=0`), the `librocketnpu` planner picks
+the narrow or the wide writer per shape by submit count. The count is known before anything is
+submitted. The function `r76_i32_submit_count()` counts K slices x N tiles x row
+tasks for each writer, and the output cap splits the wide writer's tasks further. The cheaper
+writer is selected, and a tie goes to the narrow one. `ROCKET_RK3576_I32_OC_MULT` forces either.
+
+On that path the wide writer is not chosen for any shape in the sweep, and a shape outside it
+can still reach it. [HW sweep, H96 MAX M9]
 
 ### The dense writer: every accumulator as an int32, and no poisoning
 
-Eight DPU words make the int8 direct program write every accumulator as a raw int32.
-Emitted together over it, one task delivers all `M*N` accumulators exactly, in `M*N` words,
-with no bias added. Seven are the `charsiu` project's wide output stage, read from vendor
-streams (`src/job.c`), and its `0x40B8` is theirs too, fitted there at one row:
+**Conditions:** H96 MAX M9, `rocket` 1.6.0, measured 2026-09-30.
+
+Eight DPU words make the int8 direct program write every accumulator as a raw int32. Emitted
+together over it, one task delivers all `M*N` accumulators exactly, in `M*N` words, with no bias
+added. Seven are the `charsiu` project's wide output stage, read from vendor streams
+(`src/job.c`), and its `0x40B8` is theirs too, fitted there at one row:
 
 | register | int8 direct | dense int32 |
 |---|---|---|
@@ -3352,11 +2998,10 @@ streams (`src/job.c`), and its `0x40B8` is theirs too, fitted there at one row:
 | `0x40AC` / `0x40B0` / `0x40B4` | the requant | `0` / `1` / `0` |
 | `0x40B8` | `2*S - ow*oh_task` | `3*S` |
 
-`S` is the task's pixel count `ow*oh`, and `0x401C` stays at `S`. [HW sweep, H96 MAX M9,
-rocket 1.6.0, `tests/rk3576_matmul_probe out32`, 2026-09-30]
+`S` is the task's pixel count `ow*oh`, and `0x401C` stays at `S`. [HW sweep]
 
-The map is the wide writer's stream with all four lane groups delivered. With `A` the
-pixel count, `g = c/32`, `j = (c%32)/16`, `L = (c%16)/4` and `s = 2p + j`:
+The map is the wide writer's stream with all four lane groups delivered. With `A` the pixel
+count, `g = c/32`, `j = (c%32)/16`, `L = (c%16)/4` and `s = 2p + j`:
 
 ```
 atom = 8A*g + 4A*(s/A) + A*L + s%A
@@ -3364,300 +3009,215 @@ word = 4*atom + c%4
 ```
 
 It decodes as a bijection, every accumulator distinct, at `N` 32, 64, 96 and 128. The planes
-run from 3×2 to 12×10, `M` 4-120, and `K` 32-4096 on random operands. The programmed `oc` is
-a whole number of 32-channel groups, the int8 program's own rule. A 16-channel trailing group
-computes wrong past `K` 32. One task writes a 38 KiB surface exactly at `K` 32, so the wide
-writer's 8 KiB bound does not hold there. A row window's `0x40B8` is not measured.
+run from 3×2 to 12×10, `M` 4-120, and `K` 32-4096 on random operands. One task writes a 38 KiB
+output exactly at `K` 32, so the wide writer's 8 KiB bound does not hold for this writer there.
 
-**Doubling `0x401C` and `0x40B8` instead is exact at 32 channels and overlaps past them.** The
-four quad planes then sit twice as far apart, so one 32-channel group lands whole, and the next
-group's start lands one plane in. A count read off an overlapping map is a write race: the same
-registers read 160 and 224 of 256 in two runs.
+> [!CAUTION]
+> The programmed `oc` must be a whole number of 32-channel groups, the int8 program's own rule.
+> A 16-channel trailing group produces incorrect output past `K` 32. Software must pad `oc` to
+> a multiple of 32.
 
-It does not poison: see [rk3576.md](rk3576.md) §"The poisoning is one hazard".
+> [!CAUTION]
+> Doubling `0x401C` and `0x40B8`, instead of the values in the table, is exact at 32 channels
+> and overlaps past them. The four quad planes then sit twice as far apart. One 32-channel group is placed whole, and the
+> next group's start falls one plane in. The overlapping writes race, and the result differs
+> from run to run. Software must program `0x401C` at `S` and `0x40B8` at `3*S`.
 
-### Poisoning after an i32out job
+**Not characterized:** `0x40B8` for a row window.
 
-**After an i32out job, the next submit of any kind writes nothing, until a power cycle
-clears the state.** The job that does not write **completes normally**. It raises no
-fault, no IOMMU error and no timeout, takes the usual per-submit time, and leaves its
-output buffer untouched.
+The dense writer does not leave the next submit unwritten: see [rk3576.md](rk3576.md) §"The
+poisoning is one hazard".
 
-If the caller zeroed that buffer, it reads as an all-zero surface. If the caller reused
-one, it reads as the previous result, byte for byte. Either way it looks like an
-arithmetic failure, and it is not one. It crosses processes: the plain int8 matmul in
-another program is as exposed as the path that caused it. The state lives in the NPU and
-not in the fd.
+### The wide-output hazard after an int32-output job
 
-**What clears it is the driver's runtime-PM autosuspend cycling the NPU power domain,
-not elapsed time.** Three measurements say so, and together they close it:
+**Conditions:** H96 MAX M9, measured 2026-07-27 and 2026-07-28, on a `rocket` from before
+interface version 1.0.
 
-- With `on` written to the device's `power/control`, runtime suspend never fires. No gap
-  then clears the state: 100 ms, 300 ms and 600 ms each write nothing.
-- The working gap tracks `power/autosuspend_delay_ms` one for one. At a 5 ms delay a
-  5 ms gap already gives 12 writes of 12. At 50 ms it takes 80-120 ms for the same.
-- `power/runtime_suspended_time` advances across the gap, so a suspend did happen.
+An int32-output job through the narrow or the wide writer leaves the next submit unwritten
+until the NPU power domain cycles. This is erratum RK3576-E2, the wide-output hazard. The
+hazard, the idle that clears it and the workaround are in [rk3576.md](rk3576.md) §"The
+poisoning is one hazard, and its cost is a system setting". The dense writer does not
+trigger it (§"The dense writer: every accumulator as an int32, and no poisoning"). This
+section gives the register conditions under which the int32 programs trigger it.
 
-At stock settings, 50 to 100 ms of idle clears the state. That is the file's stock value
-of 50 plus the suspend/resume round trip, and nothing about the silicon. The cost of the
-workaround is therefore settable: lowering the delay shortens the path proportionally.
-The matmul gate's int32 half runs in 553 ms at the stock 50 and in 195 ms at 5. A
-kernel-side reset of the DPU at job start would remove it outright.
+On the narrow and wide writers, the entry `rocket_matmul_int8_rk3576_i32()` sizes its idle
+from the driver's autosuspend delay, at twice the delay plus 20 ms. It idles between its own
+submits and once more on the way out, and retries any submit whose own region came back
+untouched.
 
-**It is one hazard and every wide output carries it.** It is measured with a canary
-(`tests/rk3576_poison_probe.c`). The probe submits the program under test, then a program
-known to write and known not to poison, and scores the canary. A dead program and a
-poisoning one therefore stay distinguishable.
+#### Register conditions
 
-Over seven program kinds the split is exact. The fp16 first conv, the fp16 direct conv
-and both int32 writers each poison every one of the seven. The int8 first conv, the int8
-direct conv and the int8 depthwise poison none. Every program under test wrote its own
-surface in every cell, so no cell is a dead program reading as a clean one. One output
-byte never carries it, and a wider output always does.
+DPU `0x4010` (the DATA_FORMAT word, `out<<29 | in<<26 | proc`) triggers the hazard on the int32
+path, and no single register triggers it in general. The int32-output program differs from the
+int8 direct conv in only four registers: `0x4010`, `0x40AC`, `0x40B0` and `0x40B4`. Zeroing
+`0x4010` alone stops the hazard with the program still writing, and zeroing any of the other
+three does not. The sufficient condition is joint, not one register:
 
-**A sacrificial submit does not absorb it.** After one int32 job, six consecutive int8
-jobs at a zero gap all wrote nothing. The state persists until the domain cycles, so the
-guard cannot be a cheap dummy job.
-
-**The cycle clears it about 87% of the time, so the number of redos makes the guard
-reliable, not a better cycle.** Over twelve fp16 conv gate runs the redo fired on 358 row
-tasks. The attempt that failed *next* was attempt 2 for 45 of them, 3 for 10, 4 for 2,
-5 for 1 and 6 for none. Every one recovered. Every cycle in between was confirmed to have
-taken the domain to `suspended` first, so the guard was never merely unobserved.
-[HW sweep, H96 MAX M9, 2026-07-28]
-
-A cap of four attempts leaves about 0.6% of retried tasks failing outright. That is
-exactly the rate the conv gate saw as a "1-in-156 intermittent". At eight the failure is
-unobservable (15 of 15 fp16 runs and 3 of 3 full runs clean, deepest retry attempt 4).
-Cap the redos at eight. [HW sweep, H96 MAX M9, 2026-07-28]
-
-**A task that reads unwritten really is unwritten**: the fence is not signaling ahead
-of the writes on this path. Asking again after a 2 ms settle before the redo rescued
-0 of 67 such tasks, while the power cycle behind it recovered all 67. The re-check
-costs 14% of the fp16 wall and buys nothing (`ROCKET_RK3576_DRAIN_US`, default 0).
-
-#### Registers that carry it
-
-DPU `0x4010` (the DATA_FORMAT word, `out<<29 | in<<26 | proc`) carries it on the int32
-path, and no single register carries it in general. The i32out program differs from the
-int8 direct conv in only four registers: `0x4010`, `0x40AC`, `0x40B0` and `0x40B4`.
-Zeroing `0x4010` alone stops the poisoning with the program still writing, where the
-other three leave it. But the sufficient condition is joint, not one register:
-
-| program | `0x4010` forced to | poisons? |
+| program | `0x4010` forced to | triggers the hazard? |
 |---|---|---|
 | int8 direct | `0` (its own) | no |
 | int8 direct | `out`=1, 2 or 3, any `proc` | no |
 | int8 direct | `out`=4 or 5 | yes |
-| i32out | `0` | no |
-| i32out | any non-zero, including `out`=1..3 and `proc` alone | yes |
+| int32 output | `0` | no |
+| int32 output | any non-zero, including `out`=1..3 and `proc` alone | yes |
 | fp16 first conv | each of its 19-register delta, one at a time | yes, all 19 |
 
-The same `out` value is therefore clean on one program and poisoning on another, and a
-leave-one-out over the whole fp16 first-conv delta revives nothing. The mechanism is
-undecoded. Its scope and its price are decoded. The next job programs `0x4010` back to
-all-int8 and still comes back empty, so this is latched datapath state rather than a
-stale register.
+The same `out` value is therefore clean on one program and triggers the hazard on another. A
+leave-one-out over the whole fp16 first-conv delta clears nothing, because either of
+`0x4038[4]` and `0x4050[17]` triggers it on the fp16 programs. The dense writer's whole output
+stage sets both bits and does not trigger it ([rk3576.md](rk3576.md) §"The register
+conditions").
 
-Nothing about the program or the buffers changes it. Each of these was tried, and none
-helps:
+The mechanism is undecoded. The next job programs `0x4010` back to all-int8 and still comes back empty. The state is
+therefore latched in the datapath rather than held in a stale register. Changing the buffers or
+their addresses does not clear it.
 
-- Fresh buffers per submit
-- A different feature address
-- A different output address
-- Packing every K slice up front, so no buffer is rewritten between submits
+#### Driver completion poll
 
-The entry `rocket_matmul_int8_rk3576_i32()` sizes its idle from the driver's autosuspend
-delay (twice it plus 20 ms). It idles between its own submits and once more on the way
-out, and retries any submit whose own region came back untouched.
+`patches/rk3576/npu/0012` closes the completion-visibility race. It retires the poll on the
+DPU's own completion bit rather than on `PC_DONE`. The reproducer and the fix are under "The
+per-submit floor is the driver's completion poll" above. The module parameter
+`poll_interval_us` is live, so the poll period can be swept from sysfs with no rebuild.
 
-**Check that a job wrote per task, not per tile.** A row-split tile issues several
-submits into one output buffer. One poisoned submit among them leaves its own rows empty
-while its siblings are full. A check over the whole tile then reads "something was
-written" and hands the hole to the caller.
+The per-submit cost on the RK3576 is set by the driver's poll, not by the silicon. PC_DONE is
+not routable to the GIC on the RK3576, so `patches/rk3576/npu/0006` polls it where the RK3588
+takes an interrupt. Every RK3576 cost table is therefore a submit-count table.
 
-The hole shows up as a result that is exactly one row task short, intermittently, with no
-fault and normal timing. Both writers need the per-task check. It was found on the
-narrow writer, which ran clean for a session under gate shapes that never split a tile
-into row tasks.
+#### Related hazards
 
-#### The guard's cost
+The wide-output hazard also reaches the plain int8 matmul, whose first submit can then come back
+untouched. The entry `rocket_matmul_int8_rk3576()` stamps its output and redoes any row task
+whose region is still the stamp. [HW sweep, H96 MAX M9, measured 2026-07-27]
 
-The cost is settable from the driver, and the law is twice the delay. A 5×7 sweep sets
-`power/autosuspend_delay_ms` against the inter-submit gap. It drives a chain of 20 fp16
-first-conv submits and counts how many wrote:
+> [!CAUTION]
+> A bare `memset` of an output buffer from the CPU before a submit leaves dirty cache lines.
+> They race the DPU's DMA, and the writeback overwrites the result. The output then comes back
+> all zeros, intermittently, on the first submit as readily as a later one. Software must bracket
+> any CPU fill of an output BO with `PREP_BO` and `FINI_BO`.
 
-| `autosuspend_delay_ms` \ gap ms | 0 | 5 | 10 | 20 | 40 | 60 | 100 |
-|---|---|---|---|---|---|---|---|
-| 50 (stock) | 1 | 1 | 1 | 1 | 1 | 9 | **20** |
-| 20 | 1 | 1 | 1 | 9 | 19 | 18 | **20** |
-| 10 | 1 | 1 | 11 | 18 | **20** | 20 | 19 |
-| 5 | 1 | 7 | **20** | 18 | 20 | 19 | 20 |
-| 1 | 1 | 19 | 19 | 18 | 19 | **20** | 20 |
+A fill bracketed by `PREP_BO` and `FINI_BO` is written back before the submit and leaves nothing
+dirty. Such a stamp makes "this was never written" a property of the output instead of an
+inference from its value. A freshly allocated BO arrives zeroed, which cannot distinguish an
+unwritten word from a legitimate zero. A guard band past the output needs 64-byte alignment, so
+that no line it dirties is shared with an output byte. Both matmul entries use a bracketed
+stamp.
 
-So `rocket_rk3576_power_idle()` reads the delay and sizes the guard at twice it plus a
-small margin.
-
-**Lowering the driver's delay system-wide is not free, and a back-to-back chain cannot
-see the cost.** A resume is about 230 us. Lowering the delay makes every job whose
-inter-job gap falls between the new delay and the old one pay it. Measured with
-`ROCKET_SF_GAP_MS` on `rk3576_submit_floor`, us/submit:
-
-| inter-submit gap | 0 | 5 | 10 | 16 | 20 | 33 | 60 | 100 |
-|---|---|---|---|---|---|---|---|---|
-| delay 50 ms | 1062 | 1123 | 1130 | 1124 | 1136 | 1139 | 1283 | 1399 |
-| delay 1 ms | 1059 | 1319 | 1334 | **1372** | 1352 | 1368 | 1366 | 1378 |
-
-At a zero gap the two are identical, because the autosuspend timer never fires. That is
-why the plain floor probe reads the change as free. They converge again past 60 ms, where
-both suspend anyway. In between, the low delay costs ~20% a job. **A 60 Hz frame interval
-of 16.7 ms sits squarely in that window**, and that is exactly the pipeline mainline's
-50 ms was chosen for.
-
-So drive the transition rather than waiting for it. The library's
-`rocket_rk3576_power_idle()` writes a zero delay, polls `runtime_status` until it reads
-`suspended`, and puts the caller's delay back. The guard then costs one real power cycle
-instead of a worst-case idle. The steady-state policy every other consumer of the NPU
-sees is unchanged.
-
-The call needs write access to the sysfs file. It is probed once, and without that access
-the call falls back to the plain idle. Setting `ROCKET_RK3576_PM_KICK=0` turns it off. A
-kill during the few milliseconds in which the delay sits at zero leaves it at zero. That
-state is self-healing. Zero is not a value a system sets deliberately, so it is read as an
-interrupted forced transition and restored to mainline's 50.
-
-Measured at the stock 50 ms delay, every gate stays bit-exact (conv 102, conv-lib 154 + 8
-refusals, matmul 43 on both writers, refusal 15, regcmd 194, both fp16 sweeps). The fp16
-first conv's 224×224 k3 s2 runs in 13.75 ms against 226. Its whole gate group runs in
-2.3-15.6 ms against 107-334, and the int32 matmul gate in 9.9 s against 16.2. That beats
-lowering the global delay to 1 ms, which reached only 21.6 ms on the same shape and taxed
-every gapped workload to get there. [HW sweep, H96 MAX M9, measured 2026-07-27]
-
-#### The driver side
-
-The completion-visibility race is closed by `patches/rk3576/npu/0012`, which retires the
-poll on the DPU's own completion bit rather than on `PC_DONE`. The reproducer that found
-it, and the shape of the fix, are under "The per-submit floor is the driver's completion
-poll" above. The module parameter `poll_interval_us` is live, so the period still sweeps
-from sysfs with no rebuild. That is how the sweep against correctness rather than wall
-time was run, and how a candidate fix is tested.
-
-The kernel-side fix that would remove the poisoning idle entirely is identified but not
-built. The driver already has `rocket_core_reset()` (a `reset_control` assert,
-`udelay(10)`, deassert), and calling it at job start is the shape of the fix. The vendor
-`rknpu` driver is not the model here. It soft-resets only on a timeout or an abort, never
-per job.
-
-The per-submit floor on this part is the driver's poll, not the silicon. PC_DONE is not
-routable to the GIC on the RK3576, so `patches/rk3576/npu/0006` polls it where the RK3588
-takes an interrupt. Every RK3576 cost table is a submit-count table because of that.
-
-#### Related traps
-
-**The hazard reaches the plain int8 matmul too.** The poisoning is not confined to the
-int32 entry that creates it. It outlives the call and the process, so
-`rocket_matmul_int8_rk3576()` inherits it from whatever ran before. Its first submit then
-comes back untouched while the caller reads a correctly sized, entirely stale tile.
+An int32 sweep wedged the IOMMU once, with a stall timeout and a `rocket_job_irq_handler` warn
+at `rocket_job.c:528`. A reboot cleared it. Whether the module reload that clears the IOMMU
+wedge (§"The IOMMU wedge") clears it is not characterized. The measured extent sits well inside the BO that was
+allocated, so the wedge is not a buffer-size problem, and its mechanism is not established.
 [HW sweep, H96 MAX M9, measured 2026-07-27]
 
-Without the stamp, one full matmul-gate run in twenty failed its very first shape this way
-in a soak, at 1 element of 256 correct. The entry stamps its output surface and redoes any
-row task whose region is still the stamp. With the stamp, 20 further gate runs were clean.
-[HW sweep, H96 MAX M9, measured 2026-07-27]
+### Timing a matmul
 
-**Do not zero an output buffer from the CPU before a submit.** A bracketed stamp is a
-different thing, and is worth having. A bare `memset` leaves dirty cache lines that race
-the DPU's DMA, and the writeback lands on top of the result. The surface then comes back
-all zeros, intermittently, and on the first submit as readily as a later one.
+> [!NOTE]
+> `rocket_submit_matmul()` returns before the job does. Timing it without a fence on the output
+> BO reports 0.0 ms.
 
-A fill bracketed by `PREP_BO` and `FINI_BO` is written back before the submit and leaves
-nothing dirty. Both matmul entries use one. It makes "this was never written" a property
-of the surface instead of an inference from its value. A freshly allocated BO arrives
-zeroed, which cannot distinguish an unwritten word from a legitimate zero. A guard band
-past the surface needs 64-byte alignment, so that no line it dirties is shared with a
-surface byte.
-
-The int32 sweep also **wedged the IOMMU** once (stall timeout plus a
-`rocket_job_irq_handler` warn at `rocket_job.c:528`), and only a reboot cleared it. Do not
-read that as an overrun. The measured extent sits well inside the BO that was allocated,
-so the mechanism is unestablished. Treating it as a buffer-size problem is a false trail.
-[HW sweep, H96 MAX M9, measured 2026-07-27]
-
-### The instrument
-
-The probe `tests/rk3576_matmul_probe.c` has these modes:
-
-- `shape`: the mapping against a CPU model
-- `m`: the M axis, every factorization
-- `cost`: both precisions on one shape
-- `peak`: MACs per submit by N
-- `ncap`: the N boundary, with repeats and a failure classification
-- `out32`: the 32-bit output width, decoded
-
-Its knobs are `ROCKET_MP_I32`, `ROCKET_MP_IW`, `ROCKET_MP_KS` / `_NS` (comma lists),
-`ROCKET_MP_REPS`, `ROCKET_MP_GAP_MS`, `ROCKET_MP_OSLACK` and `ROCKET_MP_VERBOSE`.
-
-Two traps apply to measuring with it. **`rocket_submit_matmul()` returns before the job
-does**,
-so timing it without fencing on the output BO reports 0.0 ms. **Pace between runs, not
-just between tasks, and keep the pacing outside the measurement.** An unpaced job
-completes without writing at all, which reads as an arithmetic failure and not as a
-scheduling one.
+> [!CAUTION]
+> An unpaced job completes without writing at all, which reads as an arithmetic failure and not
+> as a scheduling one. Software that measures this path must pace between runs as well as
+> between tasks, and keep the pacing outside the measurement.
 
 ## The DPU LUT
 
-The LUT's table is reachable on this part: a manufactured capture drives it. Every convolution
-capture leaves the LUT bank (`0x4100`-`0x4194`) zero, which is why `npu_regcmd_rk3576.c`
-writes the whole bank as zeros. That zero bank is a property of the captures, not of the
-silicon. An ONNX model carrying a nonlinear activation, compiled for `rk3576`, emits the
-table load verbatim (`tests/data/rk3576-vendor-capture/lut/mklut.py`, decoded by
-`decode_lut.py`).
+The DPU's LUT evaluates a nonlinear activation per element, from two tables held in the LUT
+RAM. On the RK3576 its registers are the bank `0x4100`-`0x4194`, and `EW_CFG` (`0x407C`)
+selects it as the EW stage. A DPU-only program loads the tables, and the convolution that
+follows reads them.
 
-A nonlinear activation is a separate program, not a fused epilogue. The compiler emits two
-programs per conv-plus-activation: one that is DPU + DPU_RDMA only, with no CNA and no CORE,
-and one ordinary convolution. The DPU-only program drives a 1×1×16 dummy cube
-(`0x401C = 1`, `0x4030 = 0x000f0f00`, `0x40B0 = 0x00010001`). Its work is loading the table,
-not computing. The convolution that follows it computes, and it is configured to use the
-table. Against a bare-conv control, whose whole LUT bank is zero, it writes
-`LUT_CFG 0x4108 = 0x02000006`, `LUT_INFO 0x410C = 0x00050500` and all four of
-`LE_START`/`LE_END`/`LO_START`/`LO_END` (`0x4110`-`0x411C`) = `0xffffc000`.
+### Table load program
+
+A nonlinear activation is a separate program, not a fused epilogue. The vendor compiler emits
+two programs for each convolution plus activation [Manufactured capture]. The first is DPU + DPU_RDMA only, with no
+CNA and no CORE. It drives a 1×1×16 dummy cube (`0x401C = 1`, `0x4030 = 0x000f0f00`,
+`0x40B0 = 0x00010001`), and its work is loading the table, not computing. The second is an
+ordinary convolution, configured to read the table.
 
 The table is written through a two-register window that auto-increments. The
 `LUT_ACCESS_CFG` register (`0x4100`) selects the table and the start offset. Every
 subsequent write to `LUT_ACCESS_DATA` (`0x4104`) stores one entry and advances. The load
 program writes `0x4108 = 0x00ff0000` first, then:
 
-| `0x4100` | entries | what |
+| `0x4100` | Entries | Table |
 |---|---|---|
-| `0x00020000` | 513 | one table |
-| `0x00030000` | 513 | the other |
+| `0x00020000` | 513 | LE |
+| `0x00030000` | 513 | LO |
 
-Each table holds 513 = 2^9 + 1 entries, so it is 512 intervals with both endpoints, the
-shape a linear-interpolating LUT wants. The two tables are the same LE/LO pair the NVDLA
-SDP documents.
+Each table holds 513 = 2^9 + 1 entries: 512 intervals with both endpoints, the layout a
+linearly interpolating LUT needs. The two tables are the same LE/LO pair the NVDLA SDP
+documents.
 
-The two tables are the lower and upper halves of one monotone curve, joined at the value
+The vendor's load program is 1121 words:
+
+- The 1×1×16 dummy cube.
+- The `0x4100 = 0` / `0x4104 = 0` / `0x4108 = 0x00ff0000` preamble.
+- The two 513-entry bursts.
+- The four-word trailer.
+
+The trailer's `PC_OPERATION_ENABLE` is `0x18`, DPU and DPU_RDMA, neither the convolution's
+`0x1D` nor the pool's `0x60`.
+
+> [!NOTE]
+> The load program's dummy cube writes nothing at any address, so the load program cannot
+> show that the table loaded. A convolution that reads the table shows it: its output follows
+> the table.
+
+> [!CAUTION]
+> The table is held in the LUT RAM, and a separate submit can take a runtime-PM cycle between
+> the load and the use. Software must put the table load and the program that reads it in one
+> job.
+
+### Table contents
+
+The two tables are the lower and upper halves of one monotone curve, meeting at the value
 the function takes at the split. The entries are Q15 of the function's output. For
 `Sigmoid` the entries run `0x3b -> 0x4000` in the `0x00020000` table and `0x4000 -> 0x7fc4`
 in the `0x00030000` one, and `0x4000/0x8000` is exactly 0.5. For `Tanh` they run
-`-0x7f63 -> 0` and `0 -> 0x7f63`, symmetric about zero as it must be.
+`-0x7f63 -> 0` and `0 -> 0x7f63`, symmetric about zero.
 
 The table is uniform in the input, and each function's span in its own units is the
-compiler's choice. The span is recoverable from the first difference and the function's
-own derivative at the join. Sigmoid's `d = 100` at the join with `sigmoid' = 0.25` gives a
-step of 0.0122 and a half-span of 6.25. Tanh's `d = 193` with `tanh' = 1` gives a step of
-0.00589 and a half-span of 3.02. Both agree with the endpoint values to three digits.
+compiler's choice. The compiler puts the table where each function saturates
+[Manufactured capture]:
 
-The two spans differ because the compiler puts the table where each function saturates.
-It expresses that choice by scaling the value the datapath hands the LUT, not by moving
-the LUT's own window.
+| Function | Step | Half-span |
+|---|---|---|
+| sigmoid | 0.0122 | 6.25 |
+| tanh | 0.00589 | 3.02 |
+
+The compiler sets the span by scaling the value the datapath hands the
+LUT, and leaves the LUT's own window fixed.
+
+### Registers
+
+The registers that enable the LUT, against a bare convolution from the same capture set
+[Manufactured capture]:
+
+| Register | Bare convolution | LUT program | Function |
+|---|---|---|---|
+| `0x407C` | `0x010041C1` | `0x01004140` | EW_CFG: `EW_LUT_BYPASS` (bit 7) and `EW_BYPASS` (bit 0) clear, so the LUT is the EW stage |
+| `0x4108` | 0 | `0x02000006` | LUT_CFG |
+| `0x410C` | 0 | `0x00050500` | LUT_INFO |
+| `0x4110`-`0x411C` | 0 | `0xffffc000` | LE_START |
+| `0x4140`-`0x414C` | 0 | `0x00004000` | LO_END |
+| `0x4188`-`0x4194` | 0 | the tails | the two clamps |
+| `0x5028` | 0 | `0x1A` | DPU_RDMA NRDMA_CFG |
+| `0x1004`/`0x3004`/`0x4004`/`0x5004` | `0x0E` | `0x30` | every block's S_POINTER |
+| `0x4060` | `0x903` | `0x20` | BN_CFG. Do not transcribe the vendor's value (Caution below) |
+
+The `EW_CFG` field layout is the RK3588's and transfers unchanged (`EW_LUT_BYPASS` at bit 7,
+`EW_BYPASS` at bit 0), and the two values above decode by it. The register offset does not
+transfer: `0x4070` on the RK3588, `0x407C` on the RK3576.
 
 The register pairs `0x4188`/`0x418C` and `0x4190`/`0x4194` are the output clamps: the value
-used below the table and the value used above it. Each is replicated across 16-bit lanes
-and equals the table's first or last entry. Four functions verify it at once, each
-matching its own table's endpoints exactly:
+used below the table and the value used above it. Each equals the table's first or last
+entry. In the vendor's packing, the first register of each pair holds the value alone in its
+high half. The second holds it doubled across both halves. For the low clamp, `0x4188` =
+`lo << 16` and `0x418C` = `(lo << 16) | lo`, and the high clamp takes the same form at `0x4190`/`0x4194`. In four
+captured functions, each clamp matches its own table's endpoint exactly
+[Manufactured capture]:
 
-| function | below the table | above the table |
+| Function | Below the table | Above the table |
 |---|---|---|
 | sigmoid | `0x003b` | `0x7fc4` |
 | tanh | `0x809d` | `0x7f63` |
@@ -3665,33 +3225,28 @@ matching its own table's endpoints exactly:
 | swish | `0xff9d` | `0x7fff` |
 
 Two register groups, `0x4150`/`0x4154` with `0x4160` and `0x4170`/`0x4174` with `0x4184`,
-are the underflow and overflow linear-extrapolation slopes (a scale and a shift each). The
-four functions' tails predict their own values:
+are the underflow and overflow linear-extrapolation slopes (a scale and a shift each). In
+the four captured functions, the slopes are the pair of tails each function has
+[Manufactured capture]:
 
-- `tanh` saturates both ends and carries zero in all four.
-- `sigmoid` carries a small lower slope and zero above.
-- `swish` carries zero below and about 1.0 above.
-- `softplus` carries a small lower slope and about 1.0 above.
+- `tanh` saturates both ends and has zero in all four.
+- `sigmoid` has a small lower slope and zero above.
+- `swish` has zero below and about 1.0 above.
+- `softplus` has a small lower slope and about 1.0 above.
 
-That is exactly the pair of tails each function has. [Manufactured capture]
+In a LUT program, `0x40AC`/`0x40B0`/`0x40B4` are the LUT's output requant: the DPU's
+ordinary output converter, which the piecewise activations and the bare conv write too. On a
+fused nonlinear activation they convert Q15 to the op's own quantization exactly. They do not
+select which interval an input falls in [Manufactured capture]. Sigmoid's output is
+`[0, 1]` at zero point -128, so its gain is `255/32768 = 7.7820e-3`, and the registers hold
+`0x7f81 >> 22 = 7.7815e-3`. Tanh's output is `[-1, 1]` at zero point 0, so its gain is
+`127.5/32768 = 3.8910e-3`, against `0x7f81 >> 23 = 3.8907e-3`. The multiplier is the same
+with one more shift, and `0x40AC` is -128 for sigmoid and 0 for tanh.
 
-On a LUT case, `0x40AC`/`0x40B0`/`0x40B4` are the LUT's output requant, not its input map.
-They are the DPU's ordinary output converter, which the piecewise activations and the bare
-conv write too. On a fused nonlinear activation they carry Q15 to the op's own
-quantization exactly. [Manufactured capture]
+### Input map
 
-Sigmoid's output is `[0, 1]` at zero point -128, so its gain is `255/32768 = 7.7820e-3`,
-and the registers read `0x7f81 >> 22 = 7.7815e-3`. Tanh's output is `[-1, 1]` at zero
-point 0, so its gain is `127.5/32768 = 3.8910e-3`, against `0x7f81 >> 23 = 3.8907e-3`.
-The multiplier is the same with one more shift, and `0x40AC` is -128 for sigmoid and 0 for
-tanh. Five digits on two functions is not a coincidence, and it means these three
-registers say nothing about which interval an input lands on. [Manufactured capture]
-
-The input map is `index = (value - LE_START) / 2^sel`. The probe
-`tests/rk3576_lut_probe.c` reads it off the part with this project's own table-load
-program and a table whose entries encode their own index. A convolution drives the table.
-Its accumulator is one feature byte, and its per-output-channel `A` and `C` place that
-byte anywhere in the datapath:
+The input map is `index = (value - LE_START) / 2^sel` [HW sweep, H96 MAX M9]. Three
+registers set it:
 
 | register | field | value the vendor writes | what it does |
 |---|---|---|---|
@@ -3702,107 +3257,66 @@ byte anywhere in the datapath:
 The `0x00020000` table (LE) covers `[LE_START, 0]` and the `0x00030000` table (LO)
 covers `[0, LO_END)`, 512 intervals each. All three registers are live. The map is
 bit-explained at `sel` 4, 5 and 6, and at an asymmetric `LE_START = -8192` with
-`LO_END = +16384`. Each case runs 8192 samples per span, with a maximum disagreement of one
-output count (`rk3576_lut_probe gate`, 4 of 4).
+`LO_END = +16384`. The maximum disagreement is one output count [HW sweep, H96 MAX M9].
 
-The vendor never moves these registers, because it places the value inside the fixed
-window with the BS stage's own per-channel `C` instead. That is why no diff of vendor
-programs can produce this map. At fp16 the scale rides the coefficient buffer rather than
-a register. That is also why sigmoid and tanh emit identical programs there, with tables
+The vendor never moves these registers. It places the value inside the fixed window with the
+BS stage's own per-channel `C` instead. At fp16 the scale is in the coefficient buffer rather
+than in a register. Sigmoid and tanh therefore compile to identical fp16 programs, with tables
 spanning 6.25 and 3.02.
 
-The hardware interpolates linearly between entries, at the full resolution of the step.
-The probe walks a step table one datapath unit at a time across the interval it steps in.
-That gives 33 distinct output runs over 32 units, rising linearly, not two.
-[HW sweep, H96 MAX M9]
+The hardware interpolates linearly between entries, at the full resolution of the step
+[HW sweep, H96 MAX M9].
 
 The domain is half-open at the top. An input of `value == LO_END` takes the overflow
 clamp, not the last table entry. An input of `value == LE_START` is in the domain and
-reads `LE[0]`. Every disagreement in the first run of the gate, at four different `C` and
-all four spans, sat on that one value and nowhere else.
+reads `LE[0]` [HW sweep, H96 MAX M9].
 
-**BN_CFG `0x4060` is a trap: the vendor's value hides the input map.** Every vendor
-activation carries `0x20` there, the BN stage active, against `0x903` in its own
-bare-conv control. Transcribed, that value makes the LUT return the value at the table
-join for every input from -2^21 to +2^21. The surface is perfectly constant and tracks
-the table faithfully as the table changes. It therefore reads as a working LUT with an
-input map that is nowhere in the registers.
+> [!CAUTION]
+> Every vendor activation program writes `BN_CFG` (`0x4060`) = `0x20`, which makes the BN
+> stage active. Transcribed, that value makes the LUT return the value at the table boundary for
+> every input from -2^21 to +2^21. The output is constant and tracks the table as the table
+> changes. It looks like a working LUT whose input map is nowhere in the registers.
+> Software must program `BN_CFG` to `0x903`, the bare-convolution value, in a LUT program.
 
-The cause is that BN then multiplies by an operand register no vendor program writes, and
-this register file is not cleared between jobs. Left at the generator's own `0x903`, the
-BN stage is bypassed, the LUT reads the BS output directly, and the map appears.
+With `0x20`, the BN stage multiplies by an operand register that no vendor program writes,
+and the register file is not cleared between jobs. At `0x903` the BN stage is bypassed, the
+LUT reads the BS output directly, and the input map takes effect. A LUT program does not
+need the BN operand. The BS stage's per-output-channel `C` is a per-channel scale, where a BN
+multiply would be one global one.
 
-The four registers the vendor's own programs leave alone (`0x4040`, `0x4054`, `0x4064`,
-`0x4068`) were each driven, and none of them moves it. Where this part keeps
-`BN_MUL_OPERAND` is therefore open. It does not need to be found: the BS stage's
-per-output-channel `C` is a per-channel scale, where a BN multiply would be one global
-one.
+**Not characterized:** where the RK3576 keeps `BN_MUL_OPERAND`.
 
-The registers that turn the LUT on come from a diff against the bare-conv control of the
-same capture set. A diff across activations hides them:
+> [!CAUTION]
+> The DPU register file is not cleared between jobs. A program that leaves the LUT bank
+> unwritten can run with the previous job's LUT window. Software must write the whole bank,
+> `0x4100`-`0x4194`, in every program, with zeros where no LUT is used.
 
-| register | control | LUT | |
-|---|---|---|---|
-| `0x407C` | `0x010041C1` | `0x01004140` | EW_CFG: `EW_LUT_BYPASS` (bit 7) and `EW_BYPASS` (bit 0) clear, so the LUT is the EW stage |
-| `0x4108` | 0 | `0x02000006` | LUT_CFG |
-| `0x410C` | 0 | `0x00050500` | LUT_INFO |
-| `0x4110`-`0x411C` | 0 | `0xffffc000` | LE_START |
-| `0x4140`-`0x414C` | 0 | `0x00004000` | LO_END |
-| `0x4188`-`0x4194` | 0 | the tails | the two clamps |
-| `0x5028` | 0 | `0x1A` | DPU_RDMA NRDMA_CFG |
-| `0x1004`/`0x3004`/`0x4004`/`0x5004` | `0x0E` | `0x30` | every block's S_POINTER |
-| `0x4060` | `0x903` | `0x20` | BN_CFG, **do not transcribe this one** |
+### Software support
 
-That table is what `gen_conv2d_int8_rk3576()` emits from `conv_params_t.lut`
-(`lut_rk3576_t`: `le_start`, `lo_end`, `sel`, and the two clamps). The generator writes
-the whole bank either way, with zeros when the field is NULL. This register file is not
-cleared between jobs, so the full write keeps a stale window from the previous job out of
-this one. With `lut` NULL, every program is byte-identical to the ones emitted before the
-field existed, which `regcmd_rk3576_gate` asserts.
-
-The generator packs the two clamps as the vendor packs them. The first register of each
-pair carries the value alone in its high half, and the second carries it doubled across
-both halves. For the low clamp, `0x4188` = `lo << 16` and `0x418C` = `(lo << 16) | lo`.
-The high clamp takes the same form at `0x4190`/`0x4194`. The generator leaves `0x4184` at
-zero.
-
-The EW field layout is the RK3588's and transfers unchanged (`EW_LUT_BYPASS` at bit 7,
-`EW_BYPASS` at bit 0), which is what the two values decode to. The register offset does
-not transfer: `0x4070` on the RK3588, `0x407C` here.
-
-`gen_lut_load_rk3576()` emits the table-load program, 1121 words as the vendor's is:
-
-- The 1×1×16 dummy cube.
-- The `0x4100 = 0` / `0x4104 = 0` / `0x4108 = 0x00ff0000` preamble.
-- The two 513-entry bursts.
-- The four-word trailer.
-
-The trailer's `PC_OPERATION_ENABLE` is **`0x18`**, DPU and DPU_RDMA, neither the
-convolution's `0x1D` nor the pool's `0x60`. Its dummy cube writes nothing at any address,
-so the load program is not its own positive control. What says the table loaded is that a
-consuming convolution's readout tracks the table.
-
-Put the load and the use in one job. The table lives in the LUT RAM, and a separate
-submit can take a runtime-PM cycle in between.
+`gen_conv2d_int8_rk3576()` emits the enabling registers above from `conv_params_t.lut`
+(`lut_rk3576_t`: `le_start`, `lo_end`, `sel`, and the two clamps). The generator writes the
+whole bank either way. When the field is NULL, it writes zeros. It packs the two clamps as the
+vendor packs them, and leaves `0x4184` at zero. `gen_lut_load_rk3576()` emits the table-load
+program, 1121 words as the vendor's is.
 
 ## The PPU pooling program
 
-Pooling on this part is its own NPU program: an independent 31-write program, 23 PPU
-writes and 8 PPU_RDMA. Nothing in any found capture drives the pooling engine. Manufactured
-captures do (`tests/data/rk3576-vendor-capture/pool/mkpool.py`). A `MaxPool` or
-`AveragePool` behind a convolution emits that program, and a bare pool emits exactly the
-same program with no convolution beside it. It works in the same NC1HWC2 cube the
-convolution path already packs, so it needs no new host packing.
+On the RK3576, pooling is its own NPU program: an independent 31-write program, with 23 PPU
+writes and 8 PPU_RDMA writes. A `MaxPool` or `AveragePool` behind a convolution emits that
+program [Manufactured capture]. A bare pool emits exactly the same program, with no
+convolution beside it. It works in the same NC1HWC2 cube the convolution path already packs,
+so it needs no new host packing.
 
 The vendor compiler lowers `GlobalAveragePool` to convolutions, not to pooling. Every
 program in that capture is CNA + CORE + DPU, the same lowering the RK3588 uses for a
 reduce. The compiler lowers `GlobalMaxPool` to pooling, in two cascaded PPU passes (k7 s7,
 then k3 s3 over what is left).
 
-A sweep over method, kernel, stride, plane, channel count and padding gives the meaning of
-the 23 PPU writes:
+### PPU registers
 
-| reg | meaning |
+The 23 PPU writes [Manufactured capture]:
+
+| Offset | Function |
 |---|---|
 | `0x6004` | `0x0e`, constant (the same enable word CNA/CORE/DPU take at their `+4`) |
 | `0x600C` | input width consumed, minus 1 |
@@ -3814,20 +3328,37 @@ the 23 PPU writes:
 | `0x6024` | mode: `0x11` max, `0x10` average, `0x18` average with the pad excluded from the divisor |
 | `0x6034` | `(sy-1)<<20 \| (sx-1)<<16 \| (kh-1)<<8 \| (kw-1)` |
 | `0x6038` / `0x603C` | `1/kw`, `1/kh` in Q16, `0x8000` at k2, `0x5555` at k3, zero for max |
-| `0x6040` | four pad nibbles, `right\|left\|bottom\|top` |
+| `0x6040` | four pad nibbles: left [3:0], top [7:4], trailing pair [15:8] |
 | `0x6044`-`0x6050` | pad values: `-128` (as `0x0007ff80`, sign-extended in a 19-bit field) for max, and the input zero point times 1, 2, 3, 4 for average |
 | `0x607C`, `0x6084` | `round4(ow*oh) * 16`, the destination surface stride per 16-channel group, the same round-to-four the convolution's `0x401C` takes |
-| `0x6054`, `0x6058`, `0x605C`, `0x6070`, `0x60DC` | zero in every capture |
+| `0x6054`, `0x6058`, `0x605C`, `0x6070`, `0x60DC` | zero in every capture. `0x6070` is the destination base address (below) |
 
 The input extent is what the windows consume, not the plane. The registers
-`0x600C`/`0x6010` carry `(ow-1)*sx + kw` and `(oh-1)*sy + kh`, clamped to the plane. A
+`0x600C`/`0x6010` hold `(ow-1)*sx + kw` and `(oh-1)*sy + kh`, clamped to the plane. A
 15×18 plane pooled k2 s2 therefore programs 18×14 and not 18×15: the last row, which no
-window reaches, is not described. Every non-square and odd-plane case in the sweep agrees,
-and a plane-height reading does not.
+window reaches, is not described.
 
-The eight PPU_RDMA writes are the source side, fitted over the same sweep:
+The consumed extent excludes the leading pad, so it is
+`min(plane, (ow-1)*stride + k - pad_start)` and not the windows' raw span. A VALID k3 s2
+over 16 programs 15. A SAME k3 s2 over the same 16 programs 16, where its windows span 17.
 
-| reg | meaning |
+The leading pads sit in the low nibbles of `0x6040`: left [3:0], top [7:4] [HW sweep, H96 MAX
+M9]. A symmetric pad cannot tell this map from its transpose. Every capture's pool declares a
+symmetric pad. The SAME k3 s2 capture over 16 declares one on every edge, and its last window
+consumes no trailing pad. It programs `0x0011`, the leading pads alone, which agrees with this
+map [Manufactured capture].
+
+**Not characterized:** which of the high pair is right and which is bottom.
+
+The destination base address is `0x6070` [HW sweep, H96 MAX M9]. No capture can show it.
+Like every other base on the RK3576, the vendor runtime patches it at load time, and the
+stored program holds zero.
+
+### PPU_RDMA registers
+
+The eight PPU_RDMA writes are the source side [Manufactured capture]:
+
+| Offset | Function |
 |---|---|
 | `0x7004` | `0x0e`, the same enable word |
 | `0x700C` / `0x7010` | input width / height consumed, minus 1, the PPU's own `0x600C`/`0x6010` again |
@@ -3837,132 +3368,147 @@ The eight PPU_RDMA writes are the source side, fitted over the same sweep:
 | `0x7028` | channel-group surface stride, `round4(iw*ih)*16` |
 | `0x7030` | `0x40` in every capture |
 
-The strides are the only place the full plane appears. The line stride `0x7024` is what
+The strides are the only fields that hold the full plane. The line stride `0x7024` is what
 separates them from the consumed extent: a 19-wide plane pooled k2 s2 consumes 18 and
 strides 19.
 
-The consumed extent excludes the leading pad, so it is
-`min(plane, (ow-1)*stride + k - pad_start)` and not the windows' raw span. A VALID k3 s2
-over 16 programs 15. A SAME k3 s2 over the same 16 programs 16, where its windows span 17.
+PPU_RDMA honors its source surface stride as programmed, including a value that is not a
+multiple of four [HW sweep, H96 MAX M9, 2026-07-31]. Every vendor pooling program stores
+`round4(iw*ih) * 16` in `R76_PPUR_SRC_SURF` (`0x7028`). A direct convolution's output surface
+stride is `ow*oh` exactly, 49 against 52 at a 7×7 plane. A pool can therefore read a
+convolution's output as its feature cube without a copy. The PPU takes the unpadded stride
+bit-exactly at 49, 25 and 9 elements per channel group. The result holds over max and
+average, at zero points either side of zero.
 
-The end pads sit in the low nibbles of `0x6040`. A SAME k3 s2 over 16 needs
-`pad_right = pad_bottom = 1` and nothing on the leading edges. The capture carries
-`0x0011`, so the low half is right and bottom. Every other captured pad is symmetric and
-cannot tell the two orders apart. Which of the low pair is right and which is bottom is
-open, and the two are equal in every shape emitted so far.
+> [!CAUTION]
+> A source surface stride that does not match the input cube's layout raises no fault. It can
+> produce output of the correct size with incorrect values. Software must program the stride
+> of the cube the PPU reads.
 
-The destination base address is `0x6070`, and no capture can show it. Like every other base
-on this part, the vendor runtime patches it at load time, and the stored program carries
-zero. The address was read off the part by driving, in turn, each PPU register that reads
-zero in every capture. Those five are 0x6054, 0x6058, 0x605C, 0x6070, 0x60DC. Each run
-asked only whether the output BO moved off its sentinel, and only 0x6070 writes.
+### Operation enable
 
-**`PC_OPERATION_ENABLE` is a per-block bitmap, and this is the trap.** A convolution
-enables its blocks with `0x1D`. The vendor's pooling program enables PPU and PPU_RDMA with
-`0x60`, and the two bit sets are disjoint. A pool carrying the convolution's trailer is a
-fully configured PPU that is never started. The job completes in the usual per-submit
-time, faults nothing and writes nothing. By inspection, that is indistinguishable from a
-wrong destination address.
+`PC_OPERATION_ENABLE` is a per-block bitmap. A convolution enables its blocks with `0x1D`.
+The vendor's pooling program enables PPU and PPU_RDMA with `0x60`, and the two bit sets are
+disjoint.
 
-One whole register sweep came back empty on this fault. Reading the raw capture word by
-word, not through the block classifier, is what found it. **Transcribe the whole program,
-trailer included.**
+> [!CAUTION]
+> A pool program with the convolution's trailer is a fully configured PPU that is never
+> started. The job completes in the usual per-submit time, faults nothing and writes nothing.
+> Its result cannot be told apart from a wrong destination address. Software must
+> transcribe the whole program, trailer included.
 
-The average rounds half to even, the same rule the DPU's `OUT_CVT` was measured to use.
-Against round-half-away-from-zero, a k2 average disagrees on one output in eight. The
-divisor is the window (`0x6038`/`0x603C` are `1/kw` and `1/kh`), not the tap count. Mode
-`0x18` excludes the pad from the divisor.
+The bitmap does not partition a chained stream. A `conv -> pool -> conv` kick gives the same
+outputs as three submits [HW sweep, H96 MAX M9, 2026-08-02]. The planes measured are 16 to
+110, at 32 and 64 channels.
 
-With those fields, `gen_pool_rk3576()` computes bit-exactly against a CPU model over 11
-shapes in `tests/rk3576_pool_probe.c`. The shapes cover max and average, kernel 2/3/5,
-stride 1/2/3, non-square and odd planes, 8/32/64 channels, and padded and unpadded input.
-[HW sweep, manufactured capture, H96 MAX M9, 2026-07-29]
+### Average rounding
 
-`rocket_pool_int8_rk3576()` is the library entry over it. It takes row-major `[C][IH][IW]`
-in and out, and owns the cube, the sentinel, the submit and the de-scatter, the same shape
-the convolution entries have. It is a separate entry rather than a dispatch from the
-RK3588's `rocket_pool_int8()`. The RK3588 entry truncates the average toward zero and this
-one rounds half to even, and two roundings are two functions. It takes an input zero
-point, which the RK3588 entry does not, because the average path pads with it.
+The average rounds half to even, the same rule as the DPU's `OUT_CVT`. Against
+round-half-away-from-zero, a k2 average disagrees on one output in eight. The divisor is the
+window (`0x6038`/`0x603C` are `1/kw` and `1/kh`), not the tap count. Mode `0x18` excludes
+the pad from the divisor.
 
-Whether the average is exactly rounded is a function of the window size. The function
-`rocket_pool_int8_rk3576_exact()` answers that for a descriptor without running it. The
-reciprocals are truncated, `0x10000/kw` and `0x10000/kh`, so the computed quotient is low
-by `|sum| * (1/n - rw*rh)`. The closest a quotient of an integer by `n` comes to a half is
+With those fields, the pooling program is bit-exact against a CPU model over 11 shapes
+[HW sweep, manufactured capture, H96 MAX M9, 2026-07-29]. The shapes cover:
+
+- Max and average
+- Kernel 2/3/5 and stride 1/2/3
+- Non-square and odd planes
+- 8/32/64 channels
+- Padded and unpadded input
+
+Whether the average is exactly rounded is a function of the window size. The reciprocals are
+truncated, `0x10000/kw` and `0x10000/kh`, so the computed quotient is low by
+`|sum| * (1/n - rw*rh)`. The closest a quotient of an integer by `n` comes to a half is
 `1/(2n)`. The error is far under that boundary at k2/k3/k5, and is not guaranteed to be
 under it at larger windows.
 
-A global 7×7 average over 1024 channels, a MobileNet's pooling layer, measures exact
-anyway. It also matches TFLite's `AveragePool` exactly there. An odd window has no tie, so
-half-to-even and TFLite's half-up cannot differ. The int8 rebase is exact because `128*49`
-is an integer multiple of the divisor. [HW sweep, H96 MAX M9]
+A global 7×7 average over 1024 channels, a MobileNet's pooling layer, is exact even so. It
+also matches TFLite's `AveragePool` exactly there [HW sweep, H96 MAX M9]. An odd window has
+no tie, so half-to-even and TFLite's half-up cannot differ. The int8 rebase is exact because
+`128*49` is an integer multiple of the divisor.
 
-PPU_RDMA honors its source surface stride verbatim, including a value that is not a
-multiple of four. Every vendor pooling program stores `round4(iw*ih) * 16` in
-`R76_PPUR_SRC_SURF`. A direct convolution's output surface stride is `ow*oh` exactly, 49
-against 52 at a 7×7 plane. Whether the PPU takes the unpadded stride therefore decides
-whether a pool can read a convolution's surface as its feature cube without a copy. The
-PPU does take it, bit-exactly at 49, 25 and 9 elements per channel group
-(`rk3576_pool_probe lib`, both strides, `ROCKET_RK3576_POOL_PACK_SRC=1` forcing the packed
-one). The result holds over max and average, at zero points either side of zero
-[HW sweep, H96 MAX M9, 2026-07-31].
+### Pool completion
 
-A wrong stride there would compute a full and plausible surface rather than faulting.
-That is why the stride is a gate rather than an assumption. The field
-`pool_params_rk3576_t.src_surf_elems` carries it, and 0 keeps the vendor's `round4`.
-
-**A pooling job raises no DPU completion, and the driver has to be told.** A pool enables
-PPU and PPU_RDMA and no DPU stage at all, the same per-block bitmap that makes
-`PC_OPERATION_ENABLE` a trap. The `DPU_0`/`DPU_1` bits that `patches/rk3576/npu/0012`
-retires a job on can never set for it. The job falls through to the `dpu_grace_us`
-deadline, paid in full on every submit. Measured through the library entry, the wait
-tracks the parameter count for count, 641 us at 500, 389 at 250 and 213 at 100. That
-tracking is what says the job is not retiring on a completion at all
-[HW sweep, H96 MAX M9, 2026-07-31].
+A pool enables PPU and PPU_RDMA and no DPU stage at all, so it raises no DPU completion. The
+`DPU_0`/`DPU_1` bits that `patches/rk3576/npu/0012` retires a job on can never set for it.
+On a module before 1.6.0, the job falls through to the `dpu_grace_us` deadline. It waits that
+out in full on every submit [HW sweep, H96 MAX M9, 2026-07-31]. The wait tracks the parameter
+count for count: 641 us at 500, 389 at 250 and 213 at 100. On `rocket` 1.6.0, where
+`dpu_grace_us` 0 waits for the writing block, a pool submitted without the PPU flag below waits
+the 125 ms backstop instead ([rk3576.md](rk3576.md) §"Pool completion").
 
 The PPU's own bits are two positions over in the same register: `PPU_0` at `0x400` and
 `PPU_1` at `0x800`, against the DPU's `0x100`/`0x200`. The patch `patches/rk3576/npu/0021`
-adds `DRM_ROCKET_JOB_PPU_DONE` to select them per job, and the wait becomes 71 us. The
-selection is per job rather than per driver. A job's class is invisible at `PC_DONE` time,
-and obvious to the userspace that wrote `PC_OPERATION_ENABLE`.
-[HW sweep, H96 MAX M9, 2026-07-31]
+adds `DRM_ROCKET_JOB_PPU_DONE` to select them per job, and the wait is then 71 us
+[HW sweep, H96 MAX M9, 2026-07-31]. The selection is per job rather than per driver. A
+job's class is invisible at `PC_DONE` time, and known to the userspace that wrote
+`PC_OPERATION_ENABLE`.
 
-**Gate the flag on the interface version (>= 1.3).** The submit ioctl rejects a flag word
-it does not recognize, so an older kernel fails the submit rather than ignoring the bit.
-Do not set the flag on a stream that mixes DPU and PPU programs. There, an interior
-program's PPU bit would retire the job while a later DPU write was still draining.
+Software must set `DRM_ROCKET_JOB_PPU_DONE` only on an interface version >= 1.3. The submit
+ioctl rejects a flag word it does not recognize, so an older kernel fails the submit rather
+than ignoring the bit.
 
-### The unprivileged double free, and the crashes it was mistaken for
+> [!CAUTION]
+> Below interface 1.4, in a stream that mixes DPU and PPU programs, an interior program's PPU
+> bit can retire the job early. A later DPU write can then still be draining.
+> Software must not set `DRM_ROCKET_JOB_PPU_DONE` on such a stream there.
 
-**`rocket_copy_tasks()` frees the submit job's task array twice.** It allocates
+From interface 1.4 the driver reads the completion bits only once `PC_TASK_STATUS` says the
+whole kick has retired, which closes that window [source-confirmed: patch
+`patches/rk3576/npu/0022`].
+
+**Not characterized:** a mixed stream under `DRM_ROCKET_JOB_PPU_DONE` on interface 1.4 or later.
+
+### Software support
+
+`rocket_pool_int8_rk3576()` is the library entry over the pooling program. It takes
+row-major `[C][IH][IW]` in and out, and handles the cube, the sentinel, the submit and the
+de-tile, the same shape the convolution entries have. It is a separate entry rather than a
+dispatch from the RK3588's `rocket_pool_int8()`. The RK3588 entry truncates the average
+toward zero and this one rounds half to even, and two roundings are two functions. It takes
+an input zero point, which the RK3588 entry does not, because the average path pads with it.
+
+The function `rocket_pool_int8_rk3576_exact()` reports whether a descriptor's average is
+exactly rounded, without running it. The field `pool_params_rk3576_t.src_surf_elems` holds
+the source surface stride, and 0 keeps the vendor's `round4`.
+
+## The unprivileged double free, and the crashes it was mistaken for
+
+**Conditions:** mainline `rocket` at v7.1, unchanged by the RK3576 series. The RK3588 reaches
+the same path. Measured on H96 MAX M9 and Turing RK1, 2026-07-29. In the RK3576 series the fix,
+`0020`, precedes `0021`, the patch that declares interface version 1.3.
+
+`rocket_copy_tasks()` frees the submit job's task array twice. It allocates
 `rjob->tasks`, and on any failure inside its copy loop takes a `fail:` path that
 `kvfree()`s it and returns, without clearing the pointer. Its only caller,
 `rocket_ioctl_submit_job()`, then unwinds through `rocket_job_put()` ->
 `rocket_job_cleanup()`, which frees `job->tasks` unconditionally. The same allocation
-goes back to the allocator twice. The defect is in mainline v7.1, unchanged by this
-series, and the RK3588 reaches the same path. [source-confirmed:
+goes back to the allocator twice. [source-confirmed:
 `drivers/accel/rocket/rocket_job.c` at v7.1]
 
 Two failures reach it, and both are ordinary userspace input:
 
-| failure | how a client gets there |
+| Failure | Trigger |
 |---|---|
 | `copy_struct_from_user()` fails | a bad task pointer, or a trailing field this kernel does not know (`-E2BIG`) |
 | `task.regcmd_count == 0` | a task that asks for no registers |
 
-The second is the one that matters in practice. **A generator that refuses leaves its
-output parameters untouched.** A caller that submits anyway hands the kernel a task with
-`regcmd_count` still at its zeroed value. That is the exact shape `librocketnpu`'s own
-deadline canary once submitted.
+The second is the one that matters in practice. A generator that refuses leaves its output
+parameters untouched. A caller that submits anyway hands the kernel a task with
+`regcmd_count` still at its zeroed value.
 
 `/dev/accel/accel0` is group `render`, so this is an unprivileged double free of a
 kmalloc-16 object (a `struct rocket_task` is 16 bytes), one of the hottest caches in the
-kernel. The freelist then hands one object to two owners, and **the damage surfaces far
-from the double free**.
+kernel. The freelist then hands one object to two owners.
 
-**Two faults look like defects in their own subsystems, and neither is.** They were chased
-as subsystem defects for a session and a half. Both are this corruption landing
-downstream:
+> [!CAUTION]
+> On a `rocket` without the fix, any submit the kernel rejects for its task array corrupts
+> the kmalloc-16 freelist. The damage surfaces far from the double free, as two faults that
+> look like defects in their own subsystems (below). Software must not submit a task the
+> kernel rejects. Check a generator's result before building a submit from it.
+
+The two faults are this corruption reaching other code:
 
 ```
 dma_direct_unmap_sg <- dma_unmap_sg_attrs <- drm_gem_shmem_release
@@ -3977,65 +3523,40 @@ __pi_memcpy_generic <- swiotlb_bounce <- swiotlb_tbl_map_single <- swiotlb_map
 The first walks a scatter-gather list whose entries are garbage. The second bounces
 through swiotlb only because a corrupt `sg_phys()` exceeds the DMA mask, and then
 `phys_to_virt()`s a wild address. A corrupt sg table on the free side and a corrupt one on
-the map side are the same event seen twice. The free-side fault reads as "an sgt torn
-down while still published", and it is not one. Instrumenting `rocket_gem_bo_free()`
-caught two live BOs naming one `sg_table`: two owners of one slab object, not a lifetime
-race.
+the map side are the same event seen twice. The free-side fault looks like an sgt torn down
+while still published. Two live BOs naming one `sg_table` identify it as two owners of one
+slab object, not a lifetime race.
 
-`slub_debug=FZPU slab_nomerge` on the kernel command line settles it in one run, and the
-result is deterministic. It gives six "BUG kmalloc-16: Object already free" reports over
-three runs of `uapi_submit_errpath_rocket`, and zero on the fixed module. The reports name
-`rocket_ioctl_submit()` as the allocation site and `rocket_job_cleanup()` as the second
-free. The fix is `patches/rk3576/npu/0020`, which gives the array a single owner and
-deletes the `fail:` free. That free can go because `rocket_job_cleanup()` already runs on
-every path out of the ioctl.
-[HW sweep, H96 MAX M9, 2026-07-29]
+The crash surfaces roughly once per few minutes of heavy BO churn, whichever workload is
+running, and the churn does not cause it. One rejected submit plants the corruption, and
+whichever workload runs next collects it.
 
-The defect is in mainline, and the RK3588 reaches it identically. The same instrument
-reproduces it on a Turing RK1 at 7.1.1. A module carrying `patches/rocket/081`-`086` gives
-six "Object already free" reports over three runs of `uapi_submit_errpath_rocket`. The
-same module plus `087` gives zero over three runs. That is two reports per run on both
-parts, at the same allocation and second-free sites. [HW sweep, Turing RK1, 2026-07-29]
+`slub_debug=FZPU slab_nomerge` on the kernel command line detects the double free in one
+run, and the result is deterministic [HW sweep, H96 MAX M9, 2026-07-29]. The allocator
+reports "BUG kmalloc-16: Object already free". The report names `rocket_ioctl_submit()` as
+the allocation site and `rocket_job_cleanup()` as the second free.
 
-On the fixed module, 83 of 83 `ctest` entries pass under `slub_debug` with the taint word
-unmoved. Patch `087` is `0020`'s one-line deletion against the RK3588 series.
-[HW sweep, Turing RK1, 2026-07-29]
+The fix is `patches/rk3576/npu/0020`, which gives the array a single owner and deletes the
+`fail:` free. The `fail:` free can go because `rocket_job_cleanup()` already runs on every
+path out of the ioctl. [HW sweep, H96 MAX M9, 2026-07-29]
 
-A board whose image ships no kernel headers can still take an A/B comparison. The RK1's
-`linux-image` deb carries no build tree, so `make -C /lib/modules/$(uname -r)/build` has
-nothing to use. The only thing a `modules_prepare` tree lacks is `CONFIG_MODVERSIONS=y`,
-and the CRCs it needs are already on the board. A module built by that kernel carries them
-in its own `__versions` section, 64-byte entries of an 8-byte CRC and a 56-byte name.
+The RK3588 reaches the defect identically [HW sweep, Turing RK1, 2026-07-29]. On a Turing
+RK1 at 7.1.1 the same detector reports it at the same allocation and second-free sites, and
+`087` removes it. Patch `087` is `0020`'s one-line deletion against the
+RK3588 series.
 
-Read the CRCs back off the shipped `rocket.ko` and write them out as a `Module.symvers`.
-The owning module per symbol comes from `/proc/kallsyms`, which an unprivileged reader gets
-with the addresses zeroed and the `[module]` tags intact. An out-of-tree build against a
-stock kernel.org tarball at the same version then loads with a matching vermagic. The
-script is `tools/mksymvers.py`. The tree needs the running `/boot/config-*` and a
-`localversion` file carrying the Debian suffix, so that `UTS_RELEASE` comes out identical.
+> [!CAUTION]
+> A rejected submit returns its errno normally while it corrupts the slab, so a test of the
+> rejection paths exits 0. An exit status cannot see the corruption. Software that tests
+> rejection paths must read the kernel log, and run under `slub_debug` at least once.
 
-**The gate that triggers it exits 0.** The test `uapi_submit_errpath_rocket` asserts that
-five rejection sites return an errno, and they do. An exit status cannot see the slab
-corruption on the way. Every gate ran green over it for two sessions. **A test that
-drives rejection paths can be corrupting the kernel while it passes.** Read the kernel
-log, and run the rejection tests under `slub_debug` at least once.
-
-**A reproducer that never reproduces is evidence about the reproducer.** Neither 300
-iterations of `uapi_bo_lifetime_rocket` nor eighteen rounds of the convolution, matmul and
-pooling gates fired, with core 1 bound and unbound. They stay silent because not one of
-them submits a job the kernel rejects. The crash tracked the presence of
-`uapi_submit_errpath_rocket` in the sequence, not the volume of BO churn. It fired in
-round 1 on both runs that included it, and in no round of the two that did not.
-
-The crash does surface roughly once per few minutes of heavy BO churn, whichever gate is
-running. That timing is right, and it does not make the churn the cause. The cause runs the
-other way: one gate plants the corruption, and whichever gate runs next collects it.
+### The scheduler-array leak
 
 A second, smaller mainline defect in the same source is a leak rather than a crash. The
 function `rocket_job_open()` allocates the `drm_gpu_scheduler` array, and
 `rocket_job_close()` frees `entity->sched_list`. But `drm_sched_entity_init()` stores that
 pointer only for `num_sched_list > 1`, and `drm_sched_entity_select_rq()` clears it again
-once the entity has settled on a runqueue. On a single-core device, which is the supported
+once the entity has chosen a runqueue. On a single-core device, which is the supported
 RK3576 configuration, the close is `kfree(NULL)`. The array then leaks on every
 open/close, unprivileged and unbounded. [source-confirmed, HW sweep, H96 MAX M9]
 
@@ -4047,34 +3568,32 @@ mainline leaves unchecked, and frees it on the init-failure path too.
 ## The DPU's elementwise stage
 
 The DPU's elementwise stage computes on one operand and requantizes the result. An
-elementwise op on this part is a program of its own: DPU + DPU_RDMA only, no CNA and no
+elementwise op on the RK3576 is a program of its own: DPU + DPU_RDMA only, no CNA and no
 CORE, 89 writes, `PC_OPERATION_ENABLE` `0x18`. It has the same shape as the LUT table
-load, but this one computes. It is not fused into the producing convolution's epilogue, so
-in the vendor's hands a residual block pays a program for its add. The lowering this
-driver ships does not pay it, as the residual-add section below describes.
+load, but it computes a result. The vendor compiler does not fuse it into the producing
+convolution's epilogue, so a vendor residual block costs one more program for its add.
+`librocketnpu` lowers the add onto the convolution datapath instead ("The residual add on the
+convolution datapath", below).
 
-What it computes, measured on silicon:
+What it computes [HW sweep, H96 MAX M9]:
 
 ```
 out = sat8( ( ((ew + EW_CVT_OFFSET) * EW_CVT_SCALE >> EW_CVT_SHIFT)
                                     * OUT_CVT_SCALE >> OUT_CVT_SHIFT ) + OUT_CVT_OFFSET )
 ```
 
-The hardware adds `OUT_CVT_OFFSET` after the final shift, in output counts. The vendor's
-own Add program carries an offset of -1. Replayed verbatim, it is exact on 8192 of 8192
-elements under that placement. With the offset added before the scale, every element is
-off by one [HW sweep, H96 MAX M9, 2026-09-26, `tests/rk3576_add_probe.c ga54b`].
+The hardware adds `OUT_CVT_OFFSET` after the final shift, in output counts
+[HW sweep, H96 MAX M9, 2026-09-26]. The vendor's own Add program has an offset of -1. With
+the offset added before the scale, every element of it is off by one.
 
 The one-operand model is bit-exact over channel counts 16-320 and planes 1×1 to 28×28
-(`tests/rk3576_add_probe.c gate`, 10 shapes). The operand is the NC1HWC2 cube the
-convolution path already packs. The final shift rounds half to even, the same rule the
-direct path's OUT_CVT uses, established here independently. Against a round-half-up
-reference, every disagreement was an exact tie: 25% of elements at a gain of one half,
-and none at unity. [HW sweep, H96 MAX M9, 2026-07-31]
+[HW sweep, H96 MAX M9, 2026-07-31]. The operand is the NC1HWC2 cube the convolution path
+already packs. The final shift rounds half to even, the same rule the direct path's OUT_CVT
+uses.
 
 The registers that differ from a convolution's DPU half:
 
-| register | add | conv | what it is |
+| Register | Add | Convolution | Function |
 |---|---|---|---|
 | DPU `0x400C` | `0x00000005` | `0x40000004` | FEATURE_MODE |
 | DPU `0x4030` | `(c-1)<<16 \| 0x0F00` | `… \| 0x0710` | WDMA_SIZE0 |
@@ -4088,167 +3607,142 @@ The registers that differ from a convolution's DPU half:
 | DPU_RDMA `0x5040` | `w*h` | 0 | the operand's channel-group stride |
 | DPU_RDMA `0x5044` | `0x9` | `0x40000010` | FEATURE_MODE |
 
-`MUL` is the same program, differing in four registers: `0x407C` `0x810F4094`, `0x4044`
-`0x2`, `0x4050` `0x00020000` and `0x501C` `0x2`. No gate covers its arithmetic.
+DPU `0x400C` bit 0 is the NVDLA feature-mode flying bit, and the add sets it. DPU_RDMA
+`0x5044` bit 4 is `MRDMA_DISABLE` in the same lineage's map, and the add clears it. The
+program is therefore configured to read a main DMA feed [HW sweep, H96 MAX M9]. That feed
+contributes exactly zero at every output gain from 2^14 down to 2^-31.
 
-### The search for a second operand
+`MUL` is the same program, differing in four registers:
 
-The elementwise stage takes exactly one operand through this register set, and the
-negative is closed. Six sweeps cover the whole interface:
+| Register | `MUL` |
+|---|---|
+| `0x407C` | `0x810F4094` |
+| `0x4044` | `0x2` |
+| `0x4050` | `0x00020000` |
+| `0x501C` | `0x2` |
 
-- **Every register the program leaves at zero, tried as a second base at every output
-  gain.** Of seventeen candidates crossed with the full 32-rung OUT_CVT ladder, nothing
-  reaches the output except `0x5024`, which injects a constant. That register is the DPU
-  shift word, a live per-task operand and not a spare. Crossing the two axes is what makes
-  this conclusive. A placement sweep at one gain is blind to an operand that sits
-  somewhere unexpected and enters the accumulator unscaled. So is a gain sweep at one
-  placement.
-- **Every register the program never writes at all, appended to the program one at a
-  time.** This is the complement of every other sweep here, and it is not an empty set.
-  The register file is not cleared between jobs on this part, so a base the vendor
-  programs in an earlier task would still be standing. Twenty-nine candidates over the
-  DPU and DPU_RDMA blocks, at two gains, show that nothing carries an operand.
+**Not characterized:** the arithmetic of `MUL`.
 
-  One register stops the write: `0x5068`, the RK3588's `RDMA_WEIGHT`, which holds the
-  four read DMAs' arbiter weights. At any value that is not a weight, the job writes
-  nothing and retires at the driver's 125 ms backstop. **Its value then stands**: the
-  shipped program stalled on 8 of 8 jobs after it, until the NPU's power domains had been
-  off for minutes. Written alone behind a power cycle, `0x5070` and `0x5074` write
-  exactly, so their stalls were `0x5068`'s standing value [inferred].
-- **The main DMA feed at every gain from 2^14 down to 2^-31.** The program is configured
-  to read one. DPU `0x400C` bit 0 is the NVDLA feature-mode flying bit, and the add sets
-  it. DPU_RDMA `0x5044` bit 4 is `MRDMA_DISABLE` in the same lineage's map, and the add
-  clears it. The feed contributes exactly zero at all 64 rungs, with the elementwise
-  operand live as a control at every one.
-- **A joint grid over `EW_CFG` and `BRDMA_CFG`, and a second over `FEATURE_MODE` and
-  `ERDMA_CFG`.** The second drives the `COMB_USE` field that the RK3588's own
-  K-accumulation uses to combine two feeds. In both grids, only the captured word writes
-  at all, and every other combination leaves the surface untouched.
-- **Destination accumulation, with DPU `0x40C0` swept over the captured word and 28
-  single-bit variants of it.** Each variant ran twice over differently pre-filled
-  destinations, which classifies it. It always overwrites. Two bits (`0x00010000`,
-  `0x00020000`) saturate the output, and none accumulates. The RK3588's map puts
-  `SURFACE_ADD` at this offset, and on this part it is not an accumulate mode.
-- **What the program reads, rather than what it was handed.** The probe walks a single
-  non-zero 16-byte atom over an operand buffer eight cubes long, with the base pointed at
-  the middle. The addressed cube's 32 atoms map one to one onto the output, and nothing
-  outside it moves anything. So the two operands are not one allocation at a fixed offset
-  either, which is how the RK3588's K-accumulation feeds its pair.
-- **The candidates written together, with the main feed at a second operand.** A condition
-  of two has no sufficient singleton, so all three went in at once, with a second operand,
-  B, at DPU_RDMA `0x5018`. Register `0x5068` took the RK3588's weight word `0x01010101`.
-  The other two took B's address, 0, or the plane's area and width. One arm adds the
-  RV1106 vendor Add's `0x5044` word, and each arm ran over one A and two non-periodic B
-  fills at two gains. Every arm that writes moves 0 elements between the B fills and
-  matches the one-operand model [HW sweep, H96 MAX M9, 2026-09-26, `ga54`].
-- **The vendor's own program, fed the way its container says.** Each `.rknn` carries a
-  relocation table naming the program words the runtime patches with each tensor's
-  address. In `bare_add_c32_16` the first operand goes to DPU_RDMA `0x5018`, the second to
-  `0x5038` and the output to DPU `0x4018`, and `subrev` swaps the two operands. The probe
-  replayed it verbatim with both bases patched, as one task and as its two slots. It wrote
-  the one-operand surface on 8192 of 8192 elements and ignored B [HW sweep, same]. This
-  replay cannot see anything else the vendor runtime patches or submits, and the vendor's
-  Add has not been run on this silicon.
+### Operands
 
-The manufactured captures say what the vendor's program does have, which is what makes
-the negative worth stating precisely. A `Sub` compiles to this same program with the
-operand converter's scale negated, and a `Sub` with its operands swapped negates it too.
-The subtrahend is therefore always the elementwise cube. The other operand rides a feed
-whose weight is fixed at +1, since no register carries a second scale.
+The elementwise stage takes exactly one operand through this register set
+[HW sweep, H96 MAX M9, 2026-09-26]. The search covered these:
+
+- Every register the program leaves at zero, and every register it never writes
+- The main feed and the mode fields
+- Destination accumulation, and the addresses the program reads
+
+The search also found these register facts:
+
+- The program reads exactly the cube its operand base addresses, and nothing outside it
+  affects the output. The two operands are therefore not one allocation at a fixed offset,
+  which is how the RK3588's K-accumulation feeds its pair.
+- DPU `0x40C0`, `SURFACE_ADD` in the RK3588's map, is not an accumulate mode on the RK3576.
+  The captured word and its 28 single-bit variants always overwrite the destination. Two bits,
+  `0x00010000` and `0x00020000`, saturate the output.
+- The vendor's `.rknn` relocation table sends the first operand to DPU_RDMA `0x5018`, the
+  second to `0x5038` and the output to DPU `0x4018`. Replayed with both bases patched, the
+  vendor's program writes the one-operand result and ignores the operand at `0x5018`.
+
+> [!CAUTION]
+> DPU_RDMA `0x5068`, the RK3588's `RDMA_WEIGHT`, holds the four read DMAs' arbiter weights.
+> At any value that is not a weight, the job writes nothing and retires at the driver's
+> 125 ms backstop. The value then persists, and later jobs stall until the NPU's power domains
+> have been off for minutes. Software must write `0x5068` only with arbiter weights.
+
+The vendor's program has one operand converter. A `Sub` compiles to this same program with
+the operand converter's scale negated, and a `Sub` with its operands swapped negates it too.
+The subtrahend is therefore always the elementwise cube. The other operand is on a feed
+whose weight is fixed at +1, since no register holds a second scale [Manufactured capture].
 
 Both operands also share one quantization scale. Two graph inputs calibrated 64x apart
 still compile to one converter. Its OUT_CVT gain comes out as the ratio of a single shared
 input scale to the output's.
 
+**Not characterized:** anything else the vendor runtime patches or submits for an Add.
+
 ### The residual add on the convolution datapath
 
-This driver lowers the residual add onto the convolution datapath instead. The lowering
-concatenates the two operands along the channel axis. It convolves the result with a 1×1
-kernel of two diagonal blocks, `W[o][o] = w1` and `W[o][C+o] = w2`, zero elsewhere:
+The elementwise stage has one operand, so a residual add runs on the convolution datapath
+instead. `librocketnpu` lowers it as a direct 1×1 convolution over the two operands,
+concatenated along the channel axis. The kernel is two diagonal blocks, `W[o][o] = w1` and
+`W[o][C+o] = w2`, zero elsewhere:
 
 ```
 out[o] = requant( w1 * (a[o] - a_zp) + w2 * (b[o] - b_zp) )
 ```
 
-The lowering is bit-exact against a CPU model of the part's own arithmetic over nine
-MobileNetV2 and ResNet-18 residual shapes (channels 24-512, planes 7×7 to 56×56). At every
-one it is within one count of an exact float residual add (`tests/rk3576_residual_add.c`).
-Two of its properties are better than the vendor's elementwise program, not merely equal
-to it:
+The register program is the direct int8 convolution's, at `ic = 2C` and `oc = C`. The
+datapath has one input zero point, so the bias holds the per-output-channel constant
+`w2 * (a_zp - b_zp)`. The weight-slice rule, `ic*kh*kw <= 4608`, caps a standalone add at
+`C = 2304`.
 
-- **The two operands can carry different scales.** The ratio rides in the weights as
-  `w2/w1`, so the pair only has to be representable as two int8s, about one part in 127.
-  The vendor's one operand converter forces its compiler to quantize both operands to a
-  common scale.
-- **The two zero points ride in the bias, exactly.** The datapath has one input zero
-  point, but `w2 * (a_zp - b_zp)` is a per-output-channel constant, which is what the
-  bias is.
+A block's last convolution can also absorb its own skip. It takes `C` more input channels and
+an identity block at the center tap of its kernel. The datapath computes that form bit-exactly
+[HW sweep, H96 MAX M9, 2026-07-31], and the vendor compiler folds `Add(Conv(x), x)` into
+exactly this shape. In every real residual block measured, the quantization needs an
+identity weight that does not fit int8, so a network uses the standalone add.
 
-The lowering also fuses, measured rather than argued. A block's last convolution takes `C`
-more input channels and an identity block at the center tap of its kernel. The skip is
-then part of a convolution the network was already paying for. The add therefore costs no
-program at all, against the one program the vendor pays.
-
-This fusion is the hardware's own idiom: the vendor compiler folds `Add(Conv(x), x)` into
-exactly this shape. That folding is why the graph is useless as a capture of an add. The
-fused form is bit-exact at MobileNetV2's project convolution for every residual width
-(1×1, `ic` 168 to 1120) and at ResNet-18's second convolution (3×3, `ic` 128 to 512).
-
-**The fusion stops at the weight-slice rule**, `ic*kh*kw <= 4608`. A 1×1 project
-convolution is nowhere near it, and a 3×3 reaches it exactly at `C = 256`
-(`512*9 = 4608`) and is refused at `C = 512`. ResNet-18's widest stage therefore keeps
-its add as a standalone program, which the same rule caps at `C = 2304`. The standalone form's weight cube is
-`2C*C` bytes, 512 KiB at that stage, paid once as resident weights rather than per
-inference. Transiently, a standalone add measures 0.6-3.3 ms across the shape table.
-[HW sweep, H96 MAX M9, 2026-07-31]
+[rk3576.md](rk3576.md) §"The residual add on the convolution datapath" gives the lowering's
+accuracy and its advantages over the vendor's program. It also gives the fusion's weight limit
+and a standalone add's cost.
 
 ### Traps in the elementwise program
 
-**Every base left at the capture's stored zero reads IOVA 0, which is a real buffer.**
-Per-fd IOVA starts at zero on this stack, so the first BO a probe allocates is what those
-bases read. With the operands allocated first, the surface comes back a constant and the
-arithmetic looks broken. Allocate a guard BO first, so that no operand or output buffer
-sits at IOVA 0, and the operand passes through exactly. A zero base is not a disabled
-one.
+> [!CAUTION]
+> Every base left at the capture's stored zero reads IOVA 0, which is a real buffer. Per-fd
+> IOVA starts at zero under `rocket`, so the first BO the fd allocates is what those bases
+> read. With the operands allocated first, the output comes back a constant and the
+> arithmetic looks broken. A zero base is not a disabled one. Software must allocate a guard
+> BO first, so that no operand or output buffer is at IOVA 0.
 
-**DPU `0x40D0` must be the captured `0x0040FFFF` verbatim.** Read as a clamp pair and
-written as `0x00407F80`, it leaves exactly half of every 16-channel group unwritten,
-silently. That is a write-coverage failure, not a wrong value, and it reads like a
-channel-budget property of the writer. The clamps are `OUT_CLAMP_MIN`/`MAX`
-(`0x40A4`/`0x40A8`), and the no-clamp pair is `INT32_MIN`/`INT32_MAX`.
+> [!CAUTION]
+> Read as a clamp pair and written as `0x00407F80`, DPU `0x40D0` leaves exactly half of every
+> 16-channel group unwritten, with no error. It is a write-coverage failure, not a wrong
+> value, and it looks like a channel-budget limit of the writer. Software must write DPU
+> `0x40D0` as the captured `0x0040FFFF` verbatim.
 
-`OUT_CVT_SCALE` is a **signed** 16-bit field on both parts: `32768` reads back as `-32768`
-and flips the output's sign. The usable maximum is 32767
-([../encodings/out-cvt-converter.md](../encodings/out-cvt-converter.md)).
+The clamps are `OUT_CLAMP_MIN`/`MAX` (`0x40A4`/`0x40A8`), and the no-clamp pair is
+`INT32_MIN`/`INT32_MAX`.
 
-### Manufacturing the capture
+> [!CAUTION]
+> `OUT_CVT_SCALE` is a signed 16-bit field on both SoCs: `32768` reads back as `-32768` and
+> flips the output's sign. Software must keep the scale at or below the usable maximum, 32767
+> ([../encodings/out-cvt-converter.md](../encodings/out-cvt-converter.md)).
 
-The script `tests/data/rk3576-vendor-capture/add/mkadd.py` builds the captures, and
-`decode_add.py` reads them. **`Add(Conv(x), x)` is not a capture of an add.** The vendor
-compiler folds an identity skip into the convolution's own kernel, at the center tap of the
-diagonal. Six such ONNX graphs, over four channel counts and three planes, compiled to a
-register program indistinguishable from a plain convolution.
+### Vendor lowering of an elementwise add
 
-The graph `Add(Conv_a(x), Conv_b(x))` folds too, and so does a per-channel broadcast
-operand. A graph `Add(Conv(x), k)` with `k` of shape `[1, C, 1, 1]` compiles to a plain
-convolution with `k` in its bias. A capture of the op needs an operand the compiler cannot
-reach. Each of these three emits it, identically:
+The vendor compiler emits the elementwise program only for an operand it cannot fold into a
+convolution [Manufactured capture]. Besides `Add(Conv(x), x)`, the graph
+`Add(Conv_a(x), Conv_b(x))` folds too, and so does a per-channel broadcast operand. A graph
+`Add(Conv(x), k)` with `k` of shape `[1, C, 1, 1]` compiles to a plain convolution with `k`
+in its bias. Each of these three emits the elementwise program, identically:
 
 - A second graph input.
 - A constant tensor of the same shape.
 - A real MobileNetV2 bottleneck whose skip crosses three convolutions.
 
-**Two operands at the same scale are unattributable.** When both operands calibrate to the
-same range, every register that scales an operand looks the same for both. The two
-converters then cannot be assigned. Give the inputs deliberately asymmetric calibration
-amplitudes, and the assignment falls out. That method, with `Sub` compiled in both operand
-orders, is what names the elementwise cube as the *second* operand. It also pins the
-first's weight at unity.
+## Uncharacterized registers and functions
 
-A capture's container says how many tasks an op costs. Each `.rknn` carries a table of
-40-byte task records,
-`[index][PC_OPERATION_ENABLE][slot size][int mask][int clear] [write count][…][program offset]`.
-Matching `write count` against the program stream is what identifies them. Read the table
-before concluding anything about an op's structure from the program list alone. A single
-`Conv` emits four task records over four distinct program slots at two different row
-geometries, so program count is not op count.
+These registers and functions are not characterized on the RK3576:
+
+- On-chip accumulation across the fp16 `ic` split is not characterized. The fp16 section's "An
+  arbitrary `ic` via a 16-channel split" states what it would remove.
+- The vendor's epilogue and float BS arrangements are not decoded. Register `0x501C` is the BS
+  operand-source register, and with `0x4044` it selects a BS operand arrangement that
+  `librocketnpu`'s coefficient group is not packed for. The library's arrangement is bit-exact
+  and the vendor's is not, so the regcmd encoder programs the library's. What the vendor's two
+  arrangements read, and what they give its epilogue, is not known. Under the epilogue
+  arrangement, one output in four survives. "The vendor's float BS arrangement" and "The BS
+  operand source" have the measurements.
+- Register `0x1060` is probably `CVT_OFFSET3`. Registers `0x1054`-`0x105C` are the first three
+  CVT offsets and there are four CVT scales, so the fourth offset almost certainly sits here.
+  Every capture leaves it zero, including the ARGB ones, which use only three channels, and
+  nothing confirms it.
+- Register `0x1064` is the offset the RK3588 calls `CNA_FC_CON1`. A live vendor dump, an
+  `rknpu` kernel capture taken at submit, has `0x777` here. Every stored program has 0, so
+  the vendor runtime patches this register at load time, the way it patches the addresses.
+  Forcing it to `0x777` on `librocketnpu`'s path changes nothing (nor does forcing `0x1060` or
+  `0x1074`).
+  The RK3588 runs its own matmul with this register at 0, so it is not required for the
+  direct-conv datapath. Its function in a fully-connected mode is not characterized.

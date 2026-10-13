@@ -15,16 +15,19 @@
           DV=128), so the FLASH_ATTN_EXT primitive is bit-faithful for MLA. The DeepSeek DL-backend
           FA path is not yet exercised on-device, so in this bench attention ran on the CPU -- the
           FA engagement diagnostic below shows no "ROCKET FA total" line under -fa auto or -fa 1.
-       2. MoE routed FFN: GGML_OP_MUL_MAT_ID has an opt-in handler (ROCKET_MOE=1), but offloading
-          quantized experts is dequant-bound and a net loss, so the 6 active routed experts'
-          gate/up/down matmuls stay on the (faster) CPU by default.
+       2. MoE routed FFN: at this build (b9568, 2026-07-03) GGML_OP_MUL_MAT_ID had an opt-in
+          handler (ROCKET_MOE=1). Offloading quantized experts was dequant-bound and a net loss,
+          so the 6 active routed experts' matmuls stayed on the (faster) CPU by default. The
+          current default claims an expert op where the offload is measured to win (ggml-rocket
+          API.md, ROCKET_MOE).
      What does reach the NPU: the large MLA projections (q_a/q_b/kv_a/kv_b), the 2 always-on shared
      experts' gate/up/down, and lm_head -- all ordinary static-weight MUL_MAT. Those dense GEMMs are
      substantial (bigger than gpt-oss's GQA projections + no shared expert), so the NPU prefill win
-     is modest-but-real (1.18-1.26x) and larger than gpt-oss's ~1.04x, even with attention and the
-     routed experts on the CPU. Unlike the instruct/reasoning models in this record,
-     the absolute wikitext PPL (~8.2) is in the normal range (base model); the NPU-CPU delta is the
-     faithfulness measure. See ../benchmarks.md Method. Generator: run_sweep_deepseek.sh, 2026-07-03. -->
+     is modest-but-real (1.18-1.26x), even with attention and the routed experts on the CPU.
+     ../benchmarks.md "DeepSeek-V2-Lite (MLA + MoE, Q4_K_M)" compares it with gpt-oss-20b's
+     experts-on-CPU speedup, measured at -ub 2048 on 2026-08-27. Unlike the instruct/reasoning
+     models in this record, the absolute wikitext PPL (~8.2) is in the normal range (base model);
+     the NPU-CPU delta is the faithfulness measure. See ../benchmarks.md Method. Generator: run_sweep_deepseek.sh, 2026-07-03. -->
 
 == FA engagement diagnostic (pp2048, r1; a "ROCKET FA total" line == FA offloaded to the NPU) ==
 --- -fa auto ---
@@ -60,10 +63,10 @@ build: 7d2b45b4f (9568)
 build: 7d2b45b4f (9568)
 
 Prefill CPU->NPU: pp512 1.18x / pp1024 1.25x / pp2048 1.26x. The NPU prefill is flat ~24 t/s across
-the curve; the CPU baseline declines with M (20.4->19.0), so the win rises modestly. Larger than
-gpt-oss's ~1.04x (the MLA projections + 2 shared experts are substantial dense MUL_MAT that offload),
-far below the dense models' 3x+ (attention and the routed experts -- the bulk of the graph -- stay on
-the CPU). Decode NPU ~= CPU (7.73/7.77 t/s, off-NPU, MoE ~2.4B active). The combined pp2048+tg128
+the curve; the CPU baseline declines with M (20.4->19.0), so the win rises modestly. The MLA
+projections + 2 shared experts are substantial dense MUL_MAT that offload; the win is far below the
+dense models' 3x+ (attention and the routed experts -- the bulk of the graph -- stay on the CPU).
+Decode NPU ~= CPU (7.73/7.77 t/s, off-NPU, MoE ~2.4B active). The combined pp2048+tg128
 point (CPU 15.25, NPU 18.12) implies the 128 tokens decoded after a 2048-tok prompt stream at ~3.7 t/s
 on both backends -- about half the tg64-from-empty rate, MLA decode cost growing with the filled latent
 KV cache -- so a long-prompt turn's stream is slower than tg64.

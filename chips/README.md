@@ -1,7 +1,17 @@
 # Per-SoC parameter sheets
 
-The rest of `rockchip-npu-notes` describes the RK3588 NPU. Most of it is **IP-inherent**, meaning
-true of the rknpu and NVDLA-derived block on any Rockchip SoC that carries it:
+| SoC | NPU cores | Status | Sheet |
+|---|---|---|---|
+| RK3588 | 3 | Hardware-validated. The reference target | [rk3588.md](rk3588.md) |
+| RK3576 | 2 | Bit-exact on hardware on `rocket` 1.6.0: int8 direct, depthwise and packed-image convolution, fp16 convolution, int8, fp16 and bf16 matmul, PPU pooling, and the DPU LUT. Five ImageNet classifiers and two COCO detectors run at CPU-parity accuracy through `tflite-rocket` | [rk3576.md](rk3576.md), [rk3576-regcmd.md](rk3576-regcmd.md) |
+| RK3566 | 1 | Not characterized | [rk3566.md](rk3566.md) |
+
+Unless a note states otherwise, the notes outside this directory describe the RK3588.
+
+## Common to every RKNPU
+
+Most of what the other notes describe is common to every [RKNPU](../GLOSSARY.md), the
+NVDLA-derived NPU on every Rockchip SoC that integrates it:
 
 - The matmul-as-1×1-convolution model.
 - The CNA→CORE→DPU sequence.
@@ -10,44 +20,38 @@ true of the rknpu and NVDLA-derived block on any Rockchip SoC that carries it:
 - The tile-layout algebra.
 - The "no on-chip layout conversion" and "no hardware gather" facts.
 
-Those do not change from chip to chip, and are stated once in the subsystem docs.
+These do not change from SoC to SoC, and each is stated once, in its subsystem note.
 
-What **does** change per SoC lives here, one sheet per chip:
+## Per-SoC differences
+
+Each sheet in this directory covers what changes per SoC:
 
 - **Machine parameters**: CBUF banks and bank size, the matmul tile cap, the
   weight tile-group sizes, the usable-datatype menu, the core count. These are the
   values `rocket-userspace`'s `rocket_hw_profile` collects.
-- **The register offset map**: the numeric CNA/CORE/DPU register offsets. These are
-  IP-**revision**-specific rather than shared across every Rockchip NPU. The RK3576 NPU re-packs
-  the CNA block relative to the RK3588, in [rk3576.md](rk3576.md). The *block bases*, CNA at
-  core+0x1000 and CORE at +0x3000, and the register *semantics* are shared. The within-block
-  offsets are not.
+- **The register offset map**: the numeric CNA/CORE/DPU register offsets. These are specific
+  to the RKNPU **revision**. The RK3576 NPU re-packs the CNA block relative to the RK3588, in
+  [rk3576.md](rk3576.md). The *block bases*, CNA at core+0x1000 and CORE at +0x3000, and the
+  register *semantics* are common to every RKNPU. The offsets within a block are not.
 - **SoC integration**: physical base addresses, clocks, resets, power domains,
-  IRQs, IOMMU wiring. Pure device-map facts.
+  IRQs, IOMMU wiring. These are device-map facts.
 
-| SoC | NPU cores | Status | Sheet |
-|---|---|---|---|
-| RK3588 | 3 | Hardware-validated (the reference target) | [rk3588.md](rk3588.md) |
-| RK3576 | 2 | Runs on hardware. int8 direct, depthwise and packed-image convolution, fp16 convolution, int8, fp16 and bf16 matmul, PPU pooling and the DPU LUT all compute bit-exactly on `rocket` 1.6.0. Five ImageNet classifiers and two COCO detectors run at CPU-parity accuracy through `tflite-rocket` | [rk3576.md](rk3576.md), [rk3576-regcmd.md](rk3576-regcmd.md) |
-| RK3566 | 1 | Planned (hardware incoming) | [rk3566.md](rk3566.md) |
+The RK3576 has two sheets. The first, [rk3576.md](rk3576.md), gives the machine parameters,
+SoC integration, the programming model, the errata, and the performance of the library entries
+and networks. Its register encoding, implemented as an emitter with its own test, is in
+[rk3576-regcmd.md](rk3576-regcmd.md). [rk3576-validation.md](rk3576-validation.md) records how
+both sheets' facts were established. The llama.cpp W8A8 port built on the RK3576's int8 matmul is
+in [../perf/rk3576-w8a8-llm.md](../perf/rk3576-w8a8-llm.md).
 
-A chip can need two sheets. The RK3576's parameter sheet covers identity, SoC integration and the
-state of the port. Its register encoding lives separately in
-[rk3576-regcmd.md](rk3576-regcmd.md), being large enough, and concrete enough as an implemented
-emitter with a gate, to warrant its own file.
+## Porting to another SoC
 
-[porting-patterns.md](porting-patterns.md) is the cross-chip sheet. It states what the RK3588 and
-RK3576 pair establishes about porting to a third part:
+[porting-patterns.md](porting-patterns.md) states what the RK3588 and the RK3576 show about
+porting to another SoC:
 
 - Which classes of claim transfer as reliable priors, meaning the datapath algebra.
-- Which are coin flips and must be re-measured, meaning anything downstream of a machine
-  parameter.
+- Which are no better than chance and must be re-measured, meaning anything derived from a
+  machine parameter.
 - The six edit operations the register re-pack is built from.
 - The method for matching a register by value and function rather than by offset.
 
-Read it before assuming any RK3588 fact on a new SoC.
-
-An IP-inherent fact that turns out to differ on a new chip is a bug in the claim, not
-a per-SoC parameter. Promote the correction into the subsystem doc and note the SoC
-that disproved the old scope. The RK3576 CNA re-pack did exactly that to the old
-"register offsets are not SoC-specific" claim.
+Read it before relying on an RK3588 fact on another SoC.

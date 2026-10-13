@@ -58,8 +58,8 @@ block-participation mask (matmul = 0x1D = CNA|CORE|DPU|DPU_RDMA), not a "task st
 
 `OPERATION_MODE_CFG.FLYING_MODE = 1` **and** PPU_RDMA is fully armed (own SRC_BASE +
 strides + op via the PC mask), while `PPU_DATA_FORMAT.DPU_FLYIN = 0`. So a standalone pool
-is a **self-contained PPU job fed by PPU_RDMA**; FLYING_MODE=1 is set regardless (it is not
-"epilogue-of-conv" here; that would be DPU_FLYIN=1).
+is a **self-contained PPU job fed by PPU_RDMA**. FLYING_MODE=1 is the TRM's "outside" source
+(1'd0 DPU, 1'd1 outside). A DPU-fed epilogue pool is not captured here.
 
 ## RECIP_KERNEL format
 

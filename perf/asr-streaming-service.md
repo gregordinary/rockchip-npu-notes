@@ -1,79 +1,105 @@
 # A whisper.cpp transcription service on the NPU
 
-A streaming caller does not run `whisper-cli`. OpenWebRX+ (1.2.123) keeps `whisper-server`
-loaded and posts it a chunk of squelch-gated audio every `chunkSeconds` of wall time. The
-default is 20 s, as one 12 kHz WAV with no other request fields. So the server's command-line
-defaults decide every decode parameter. Every request costs one full 30 s-padded encode however
-long the chunk is. The number the caller pays is CPU core-seconds per second of audio while the
-channel is busy.
+OpenWebRX+ (1.2.123) keeps `whisper-server` loaded and posts it a chunk of squelch-gated audio
+every `chunkSeconds`, 20 s by default. The cost to the host is CPU core-seconds per second of
+audio while the channel is busy. With the server's defaults, offloading the encoder to the NPU
+frees 39-45% of that cost [HW sweep]. Three server configurations keep the transcript intact
+and cost less. At the client's 20 s latency, the cheapest returns 30% of the CPU at better
+accuracy than the defaults on every condition.
+
+**Conditions:** RK3588 (Turing RK1), NPU clock 600 MHz, mainline `rocket` 1.3.0, whisper.cpp
+master `eacbd82`, 2026-09-03 and 2026-09-04, unless a section states its own. The model is
+`ggml-small` (multilingual, F16), the one the deployment runs. The server runs 4 threads pinned
+to the A76 cores (`taskset -c 4-7`), under CPU governor `performance`, with `ROCKET_KACC=1`. The
+CPU-only configuration is the same binary with every op declined. Each figure excludes the model
+load. The audio is LibriSpeech read speech, clean and through a simulated radio channel at 15 dB
+and 5 dB (§"Word error rate on a radio-shaped channel").
+
+**Not characterized:** real fading, real compression and real accents, and the encoder attention
+offload on a `librocketnpu` build with the FA call's host-pass changes.
+
+| | Server | Request field | CPU (clean / 15 dB / 5 dB) | WER clean / 15 dB / 5 dB |
+|---|---|---|---|---|
+| 20 s chunks | `-nt -ac 1200 -sns` | `temperature_inc=0` | 0.638 / 0.774 / 0.689 | 7.7 / 13.8 / 63.6 |
+| 25 s chunks | `-nt` | `temperature_inc=0` | 0.710 / 0.852 / 0.825 | 8.3 / 15.0 / 56.4 |
+| 30 s chunks | `-nt` | `temperature_inc=0` | 0.639 / 0.741 / 0.557 | 5.3 / 19.0 / 79.5 |
+
+CPU is core-seconds per second of audio, relative to the NPU configuration with the server's
+defaults. The default configuration's word error rate (WER) is 8.9 / 16.7 / 68.7. The 25 s row returns 20% at better
+accuracy too. The 30 s row returns 35% with the best clean-speech accuracy of any configuration
+and a two-point loss at 15 dB, at 30 s of latency. All three encode once per request and trigger
+no fallback.
+
+## Cause
+
+The three configurations follow one rule: the encoder's context must extend past the audio. A
+20 s chunk gets its 4 s of silence from `-ac 1200`, and a 30 s chunk cannot get any. The 30 s
+row therefore takes `-nt`, and the 20 s row takes both. §"The decoder's re-runs" and §"The audio
+context" give the two mechanisms.
+
+## Client and server defaults
+
+A streaming caller uses the server, not `whisper-cli`. OpenWebRX+ posts each chunk as one 12 kHz
+WAV with no other request fields, so the server's command-line defaults decide every decode
+parameter. Every request costs one full 30 s-padded
+encode however long the chunk is.
 
 The client decides what a chunk holds [source-confirmed: OpenWebRX+ `owrx/transcribe.py` at
-1.2.123]. Audio accumulates after an SNR squelch, 20 dB with a 5 s hang time. So a chunk is
-dense with speech and can join several transmissions. A worker wakes every `chunkSeconds` of
-wall time and posts what accumulated, so a chunk can be shorter than its nominal length.
-The setting `chunkSeconds` has a floor of 10. A buffer past twice the chunk length drops its
-older half.
+1.2.123]. Audio accumulates after an SNR squelch, 20 dB with a 5 s hang time, so a chunk is dense
+with speech and can join several transmissions. A worker wakes every `chunkSeconds` of wall-clock
+time and posts what accumulated, so a chunk can be shorter than its nominal length. The setting
+`chunkSeconds` has a minimum of 10. A buffer past twice the chunk length drops its older half.
 
 The server resamples the 12 kHz audio to 16 kHz itself. The server defaults that then apply:
 
 - Greedy decoding with `best_of` 2
-- The temperature ladder on, in 0.2 steps
+- The temperature fallback on, in 0.2 steps
 - `no_context`
 - Timestamps on
 - The full 1500-frame audio context
 
-This page measures that number and the levers that move it, on `ggml-small` (multilingual, F16),
-the model that deployment runs. Three configurations come out of it, in the table of
-§"The operating point". The cheapest keeps the client's 20 s latency and returns 30% of the
-CPU at better accuracy than the defaults.
+## Cost of a request
 
-Measured on an RK3588 (Turing RK1) at 600 MHz, mainline `rocket` 1.3.0, A76-pinned
-(`taskset -c 4-7`), 4 threads, CPU governor `performance`, `ROCKET_KACC=1`, whisper.cpp master
-`eacbd82`. Both arms come from one binary. The CPU arm declines every op at `supports_op`
-(`ROCKET_MIN_M=1000000 ROCKET_FLASH_ATTN=0`). The server process is billed by its
-`utime + stime` sampled around each request, so the model load is outside every number. Arms
-rotate across two passes with a memory reset before each arm, and ratios are paired within a
-pass [HW sweep 2026-09-03 and 2026-09-04].
-
-The harness, the chunk sets and the raw sweeps are in [data/asr-service/](data/asr-service/).
-
-## The request
-
-The median clean 20 s request on the shipped NPU arm is 5.3 s of wall and 17.3 CPU
-core-seconds. The CPU arm's median is 7.8 s and 29.7. Over the whole clean set, which includes
-one chunk that trips the temperature ladder, the cost per second of audio is 1.06 against 1.74
-core-seconds. So the NPU frees 39% of the CPU before any tuning. The table is where those
-core-seconds go, by `perf` sample over the NPU arm's process, on a 20 s greedy window
-[HW sweep].
+The median clean 20 s request with the default NPU configuration takes 5.3 s of wall-clock time
+and 17.3 CPU core-seconds. The CPU-only configuration's median is 7.8 s and 29.7. Over the whole
+clean set, which includes one chunk that triggers the temperature fallback, the cost per second of
+audio is 1.06 against 1.74 core-seconds. The NPU therefore frees 39% of the CPU before any tuning.
+The table shows where those core-seconds go, by `perf` sample over the NPU configuration's process,
+on a 20 s greedy window [HW sweep].
 
 | Term | Share of CPU samples | Where it runs |
 |---|---:|---|
-| Encoder self-attention (`flash_attn_ext_tiled`, `flash_attn_ext`, `vec_soft_max`) | 54% | CPU. The op carries no mask and the gate declined it |
+| Encoder self-attention (`flash_attn_ext_tiled`, `flash_attn_ext`, `vec_soft_max`) | 54% | CPU. The op has no mask, and the backend declined it |
 | Decoder weight GEMV (`ggml_vec_dot_f16`), ~80 steps of M=1 per 20 s | 21% | CPU, by design |
 | Other ggml ops (GELU, LayerNorm, adds, conv1) | ~6% | CPU |
 | Backend and driver: input scatter, weight scatter, de-tile | 3.4% | CPU |
 | Mel spectrogram (`fft`, `log_mel_spectrogram`) | 2.4% | CPU |
 | libgomp barriers | 2.7% | CPU |
 
-The encoder's twelve `MUL_MAT`s per layer and the cross-attention K/V projections are what
-offload, 480 job-batches per request. The encoder is 3.0 s of the 5.3 s wall. The two largest
-CPU terms are therefore attention the NPU does not compute and a decoder it cannot. Every
-lever below is priced against that table.
+The encoder's twelve `MUL_MAT`s per layer and the cross-attention K/V projections offload, 480
+job-batches per request. The encoder takes 3.0 s of the 5.3 s wall-clock time. The two largest CPU
+terms are therefore attention that the NPU does not compute and a decoder that it cannot. Each
+option below is measured against that table.
 
 ## The encoder attention offload
 
-Whisper's encoder attention is unmasked, and the `FLASH_ATTN_EXT` handler takes a NULL mask as
-unmasked. Admitting the op is a two-line gate change, `ROCKET_FLASH_ATTN_UNMASKED=1`. It
-computes the same transcript (md5-identical) and buys nothing
-[HW sweep, 20 s greedy `whisper-cli`, two reps].
+**Conditions:** a 20 s greedy window through `whisper-cli`. The `librocketnpu` build predates the
+fused vector softmax pass (2026-09-27), and the direct fp16 score de-tile and the NEON softmax
+(2026-10-10). It also predates the scores and P handed between the two matmuls as rows
+(2026-10-11).
 
-| | CPU core-seconds | Encode wall |
+Whisper's encoder attention is unmasked, and the `FLASH_ATTN_EXT` handler takes a NULL mask as
+unmasked. Admitting the op takes `ROCKET_FLASH_ATTN_UNMASKED=1`, a two-line change to the
+backend's offload check. The transcript is the same (md5-identical), and the CPU cost does not
+fall [HW sweep].
+
+| | CPU core-seconds | Encode wall-clock |
 |---|---:|---:|
-| Attention on the CPU (shipped) | 16.2 | 3.17 s |
+| Attention on the CPU (default) | 16.2 | 3.17 s |
 | Attention on the NPU, host softmax | 16.1 | 4.31 s |
 | Attention on the NPU, on-chip softmax (`ROCKET_ATTN_HOST_SOFTMAX=0`) | 20.3 | 6.20 s |
 
-The 36.5% of samples the CPU kernel held moved, to the sample, into the offload's host half:
+The 36.5% of samples the CPU kernel held move, to the sample, into the offload's host half:
 
 - Scalar `expf`: 17.0%
 - `host_softmax_rows`: 6.9%
@@ -81,114 +107,119 @@ The 36.5% of samples the CPU kernel held moved, to the sample, into the offload'
 - The batch runner: 4.7%
 - The score de-tile: 2.1%
 
-`ROCKET_FA_TIMING` puts 93% of the handler in compute, 2.56 s over 12 ops. The driver's
-`read` bucket rises from 154 to 1137 ms.
+`ROCKET_FA_TIMING` puts 93% of the handler in compute, 2.56 s over 12 ops. The driver's `read`
+bucket rises from 154 to 1137 ms.
 
-The same NULL-mask case covers the vision encoders that llama.cpp's mtmd runs, whose attention
-op carries no mask either.
+The same NULL-mask case covers the vision encoders that llama.cpp's mtmd runs, whose attention op
+has no mask either.
 
-This cell predates three `librocketnpu` changes to the FA call's host passes, and none is
-re-measured here. They are the fused vector softmax pass (2026-09-27), and the direct fp16 score
-de-tile and the NEON softmax (2026-10-10). At a 1370-token, head-dim-64 encoder shape, the last
-two take a head range from 56.7-58.5 ms to 41.4-42.7 ms, ~0.73x [HW sweep 2026-10-10]. See
+At head size 64 the `[T, n_kv]` score matrix per head is 2.3M elements. In this measurement the
+handler moves it out to the host, exponentiates it one element at a time, and moves it back. The
+round trip costs what the QK and AV MACs cost the CPU kernel. Score traffic per MAC is
+`1/head_dim`, so the overhead halves at an LLM's 128 [expected]. The option is off by default for
+this reason.
+
+Those library changes reduce the FA call's host passes. At a 1370-token, head-dim-64 encoder
+shape, the two of 2026-10-10 take a head range to ~0.73x [HW sweep 2026-10-10]. Whisper's encoder
+is 1500 tokens at the same head dim. The 2026-10-11 change hands the scores and P between the
+two matmuls as rows. At Whisper-small's encoder layer, the call then takes 0.646-0.657x of its
+time with the cube layout [HW sweep 2026-10-11]. See
 [attention-offload-crossover.md](attention-offload-crossover.md) §"The head range's host passes
-at an encoder shape". Whisper's encoder is 1500 tokens at the same head dim, so a re-measure
-there settles whether the offload still reads parity.
-
-At head size 64 the `[T, n_kv]` score matrix per head is 2.3M elements. In this cell the handler
-moves it out to the host, exponentiates it one element at a time, and moves it back. That costs
-what the QK and AV MACs cost the CPU kernel. Score traffic per MAC is `1/head_dim`, so the
-tax halves at an LLM's 128 [expected]. The knob ships off, and this is the whole reason.
+at an encoder shape".
 
 ## The decoder's re-runs
 
-Three things in `whisper_full` multiply a request's decode cost. All three are decided by the
-server's defaults, because the client sends no fields [source-confirmed, whisper.cpp `eacbd82`]:
+Three things in `whisper_full` multiply a request's decode cost. The server's defaults decide all
+three, because the client sends no fields [source-confirmed, whisper.cpp `eacbd82`]:
 
-- The temperature ladder. A window whose decode fails the entropy threshold (2.4) or the
-  log-probability threshold (-1.0) is decoded again at temperature 0.2. The ladder continues
-  to 1.0 in steps of 0.2, with two decoders from the second rung on. Each rung is a full
-  decode of the window.
-- The timestamp failures. With timestamps on, a decoder also fails when a segment's end
-  timestamp moves backwards. It fails again when it produces no timestamped segment. Both
-  failures take the same ladder.
-- The re-window. When the last segment ends before the chunk's end, `seek` advances to that
-  end. The remainder is then encoded and decoded as a new window, padded to 30 s again.
+- The temperature fallback. A window whose decode fails the entropy threshold (2.4) or the
+  log-probability threshold (-1.0) is decoded again at temperature 0.2. The fallback continues to
+  1.0 in steps of 0.2, with two decoders from the second step on. Each step is a full decode of
+  the window.
+- The timestamp failures. With timestamps on, two more conditions fail a decoder: a segment end
+  timestamp that moves backwards, and no timestamped segment at all. Both failures take the same
+  fallback.
+- The re-window. When the last segment ends before the chunk's end, `seek` advances to that end.
+  The remainder is then encoded and decoded as a new window, padded to 30 s again.
 
 The flag `-nt` (`no_timestamps`) removes the second and the third. On completion the window
 advances by the full 30 s, whatever the decoder emitted.
 
-The field `temperature_inc` controls the ladder itself, and here `whisper-server` differs
-from `whisper-cli`. The server parses `-nf` and never applies it, so a server started with
-`-nf` still climbs the ladder. The per-request field `temperature_inc=0` is what turns it
-off today. Thresholds that never trip, `-et 100 -lpt -100`, stop the ladder too. They also
-disable the no-speech skip, which `temperature_inc=0` leaves alone. The one-line server fix
-is in
+The field `temperature_inc` controls the fallback itself, and here `whisper-server` differs from
+`whisper-cli`:
+
+> [!NOTE]
+> `whisper-server` parses `-nf` and never applies it, so a server started with `-nf` still uses
+> the temperature fallback. The per-request field `temperature_inc=0` turns the fallback off.
+
+Thresholds that never trip, `-et 100 -lpt -100`, stop the fallback too, and they disable the
+no-speech skip, which `temperature_inc=0` leaves alone. A one-line server fix is in
 [data/asr-service/whisper-server-no-fallback.patch](data/asr-service/whisper-server-no-fallback.patch).
 
-The cost of a rung shows on one clean 20 s chunk that trips the ladder in every arm. It
-reads 16.6 s of wall and 55.6 core-seconds on the NPU arm, against 5.3 s and 17.3 for a
-normal one, a factor of 3.2. On the CPU arm the tripped chunk reads 21.6 s and 80.4
-core-seconds. Over the 20 s sweep the shipped arm reports 7 failures in 36 requests. The
-flag `-ac 1000` alone raises that to 31, which is why its encode saving reaches the CPU bill
-only in part [HW sweep].
+One clean 20 s chunk triggers the fallback in every configuration, and shows what a fallback step
+costs. With the offload it takes 16.6 s of wall-clock time and 55.6 core-seconds, against 5.3 s
+and 17.3 for a normal one, a factor of 3.2. On the CPU-only configuration the same chunk takes
+21.6 s and 80.4 core-seconds. Over the 20 s sweep the default NPU configuration reports 7 failures
+in 36 requests [HW sweep].
 
-The re-window is what turns a longer chunk into a loss. A 30 s chunk fills the window, so it is
-cut mid-word at the window's edge. The decoder's last timestamp lands short of the edge, and
-the remainder is encoded again. That is 48 encodes for 26 requests on the 30 s arm, against
-39 for 38 on the 20 s arm.
+The re-window makes a longer chunk cost more. A 30 s chunk fills the window, so it is cut mid-word
+at the window's edge. The decoder's last timestamp falls short of the edge, and the remainder is
+encoded again. With 30 s chunks the server runs 48 encodes for 26 requests, against 39 for 38 with
+20 s chunks.
 
-The 30 s arm therefore costs 13% more per second of audio than the 20 s arm. A 20 s chunk's
-own silence padding lets the decoder reach the end of the audio. A 30 s chunk needs `-nt` to be
-one encode [HW sweep].
+The 30 s chunks therefore cost 13% more per second of audio than the 20 s chunks. A 20 s chunk's
+own silence padding lets the decoder reach the end of the audio. A 30 s chunk needs `-nt` to be one
+encode [HW sweep].
 
-Turning the ladder off (`temperature_inc=0`) on the shipped 20 s configuration reads 0.832x on
-clean speech, 0.998x at 15 dB and 0.919x at 5 dB. The chunks that trip it are not the noisy
-ones: the 15 dB set never tripped it, and the clean set's one hard chunk did. Turning it off
-costs 1.5 WER points on clean speech and 6 at 5 dB. So the ladder buys accuracy on the
+Turning the fallback off (`temperature_inc=0`) on the default 20 s configuration measures 0.832x
+on clean speech, 0.998x at 15 dB and 0.919x at 5 dB. The noisy chunks are not the ones that
+trigger it: the 15 dB set never did, and the clean set's one hard chunk did. Turning it off costs
+1.5 WER points on clean speech and 6 at 5 dB. The fallback therefore improves accuracy on the
 chunks it re-decodes [HW sweep].
 
 ## The audio context
 
-`-ac N` runs the encoder over the first N of its 1500 positions, 50 per second, and the stream
-example ships it as a speed knob. Set to the chunk's own length it halves the encode and breaks
-the decoder in a specific way. Every chunk transcribes correctly up to the audio's end and then
-continues into a loop, "unnotting, unnotting, unnotting", until the token limit.
+`-ac N` runs the encoder over the first N of its 1500 positions, 50 per second, and whisper.cpp's
+stream example uses it as a speed option. Set to the chunk's own length, it halves the encode.
 
-The model never sees the silence that closes an utterance, because the context ends where
-the speech does. The temperature ladder catches some of those loops as repetition failures
-and re-decodes them. That is why `-ac 1000` alone reads 21.0% WER on clean speech, against
-8.9% for the full context. With the ladder off, `-ac 1000` reads 26.8% [HW sweep].
+> [!CAUTION]
+> With `-ac` set to the chunk's own length, every chunk transcribes correctly up to the audio's
+> end. The decoder then continues into a loop, "unnotting, unnotting, unnotting", until the token
+> limit.
 
-With timestamps off as well, nothing bounds the run-on. With the ladder off, `-ac 1000 -nt`
-decodes every chunk to the 448-token window limit. It reads 103% WER on clean speech and 110%
-at 15 dB, more inserted words than the reference has. So the timestamp machinery limits the
+The model never sees the silence that closes an utterance, because the context ends where the
+speech does. The temperature fallback catches some of those loops as repetition failures and
+re-decodes them. With the fallback on, `-ac 1000` alone measures 21.0% WER on clean speech, against
+8.9% for the full context. With the fallback off, `-ac 1000` measures 26.8% [HW sweep].
+
+With timestamps off as well, nothing bounds the run-on. With the fallback off, `-ac 1000 -nt`
+decodes every chunk to the 448-token window limit. It measures 103% WER on clean speech and 110%
+at 15 dB, more inserted words than the reference has. The timestamp logic therefore limits the
 damage, and `-nt` is safe only where the context is not the problem [HW sweep].
 
-The remedy is the same rule the chunk length obeys: leave room after the audio. On a 20 s
-chunk, `-ac 1200` is 4 s of context past the cut. It transcribes every chunk end cleanly,
-trips no fallback, and encodes in 2.25 s against 3.07 s.
+The remedy is to leave context after the audio (§"Cause"). On a 20 s chunk, `-ac 1200` is
+4 s of context past the cut. It transcribes every chunk end cleanly, triggers no fallback, and
+encodes in 2.25 s against 3.07 s.
 
-With `-nt` it reads 0.636 / 0.775 / 0.665 of the shipped arm's CPU (clean / 15 dB / 5 dB).
-Its WER is 9.3 / 15.2 / 64.6 against 8.9 / 16.7 / 68.7. The rule is
-`audio_ctx = 50 x (chunk seconds + 4)`, capped at 1500. A 30 s chunk has no headroom to give,
-which is why it takes the `-nt` route instead [HW sweep].
+With `-nt` it costs 0.636 / 0.775 / 0.665 of the default NPU configuration's CPU (clean / 15 dB /
+5 dB). Its WER is 9.3 / 15.2 / 64.6 against 8.9 / 16.7 / 68.7. The rule is
+`audio_ctx = 50 x (chunk seconds + 4)`, capped at 1500. A 30 s chunk has no context to spare,
+so it takes `-nt` instead [HW sweep].
 
-## Levers, one at a time
+## Options, one at a time
 
-Every arm is the shipped NPU arm plus one change. The unit is CPU core-seconds per second of
-audio, paired against the shipped arm within a pass. The two passes agree to three decimals and
-the same-configuration repeat reads 0.999, so a difference under 1% is nothing.
+Each configuration is the default NPU configuration plus one change. The unit is CPU core-seconds
+per second of audio, relative to the default NPU configuration. A difference under 1% is within
+run-to-run variation.
 
-WER is the word error rate of the concatenated transcript against the LibriSpeech reference.
-Its absolute level carries the mid-word cuts every chunk boundary makes and the chapter's
-archaic names. Read it across arms rather than as a claim about the model
-[HW sweep, 2 passes].
+WER is the word error rate of the concatenated transcript against the LibriSpeech reference. It
+compares configurations rather than rating the model (§"Word error rate on a radio-shaped
+channel") [HW sweep].
 
-| Arm | CPU, clean | CPU, 15 dB | CPU, 5 dB | Request wall | WER clean / 15 dB / 5 dB |
+| Configuration | CPU, clean | CPU, 15 dB | CPU, 5 dB | Request wall-clock | WER clean / 15 dB / 5 dB |
 |---|---:|---:|---:|---:|---|
 | CPU only | 1.645 | 1.730 | 1.813 | +42 to +54% | 8.9 / 16.8 / 66.6 |
-| NPU, shipped (the reference) | 1.000 | 1.000 | 1.000 | 6.5 s / 5.3 s / 5.1 s | 8.9 / 16.7 / 68.7 |
+| NPU, defaults (the reference) | 1.000 | 1.000 | 1.000 | 6.5 s / 5.3 s / 5.1 s | 8.9 / 16.7 / 68.7 |
 | `-ac 1000` | 0.860 | 0.892 | 0.773 | -9 to -21% | 21.0 / 17.9 / 59.6 |
 | `-nt` | 0.782 | 0.955 | 0.916 | -5 to -21% | 9.5 / 15.8 / 62.4 |
 | `-t 2` | 0.874 | 0.877 | 0.883 | +51% | 8.9 / 16.7 / 68.7 |
@@ -198,178 +229,198 @@ archaic names. Read it across arms rather than as a claim about the model
 | unpinned (no `taskset`) | 1.024 | 1.021 | 1.023 | +7% | 8.9 / 16.7 / 68.7 |
 | encoder attention on the NPU | 1.003 | 0.985 | 1.161 | +20 to +38% | 8.9 / 16.8 / 66.3 |
 
-What each row says:
+Per row:
 
-- **The NPU** is worth 39-45% of the CPU before any tuning. The relief is largest on the
-  noisiest audio, where the decoder emits least.
-- **`-ac 1000`** halves the encode (3.07 to 1.65 s per request) and returns only 16% of the
-  CPU. The shorter context trips the fallback ladder 31 times in 36 requests against 7, and
-  each trip is a full re-decode. On clean speech it costs 12 WER points, and on the 5 dB
-  channel it gains 9. The loops that §"The audio context" describes are the reason.
-- **`-nt`** is the one free lever: 12% of the CPU, at better WER on both noisy sets and 0.6
-  points worse on clean speech. It removes the
-  timestamp failure branches (entropy failures 3 to 0), the re-window (encodes 39 to 36) and
-  17% of the decoded tokens.
-- **`-t 2`** trades latency for CPU at a fixed rate: 12% fewer core-seconds for a request
-  half again as long, and the transcript is bit-identical. The realtime factor falls from
-  3.1-3.9x to 2.1-2.6x, still above the channel.
-- **A quantized model** does not pay here. Q8_0 costs 10% more CPU than F16. The decoder step
-  is 20% faster, but the backend dequantizes the encoder's weights to fp16 on every request,
-  at about 3 core-seconds. Its unnamed tensors keep them off the resident route. Q5_1 reads
-  half as many bytes in that dequant and lands at -7%, at +2.4 WER points on clean speech.
-- **30 s chunks** cost 13% more per second of audio, which is the re-window of
-  §"The decoder's re-runs". They improve WER by three points on clean speech and at 15 dB,
-  because there are fewer cuts.
-- **Pinning to the A76 cluster** is worth 2% under the `performance` governor. The bias that
-  pinning corrects elsewhere is the load-sampling governor's, and §"The deployed governor"
-  measures that separately.
-- **The attention offload** reads parity at best on a build that predates the FA call's
-  host-pass cuts. Its section, §"The encoder attention offload", gives the reason and names
-  the cuts.
+- **The NPU** frees the most CPU on the noisiest audio, where the decoder emits least.
+- **`-ac 1000`** halves the encode (3.07 to 1.65 s per request) and returns only 16% of the CPU.
+  The shorter context triggers the fallback 31 times in 36 requests against 7, and each trigger is
+  a full re-decode. On clean speech it costs 12 WER points, and on the 5 dB channel it gains 9.
+  The loops that §"The audio context" describes cause both.
+- **`-nt`** is the one free option: 12% of the CPU, at better WER on both noisy sets and 0.6
+  points worse on clean speech. It removes the timestamp failure branches (entropy failures 3 to
+  0), the re-window (encodes 39 to 36) and 17% of the decoded tokens.
+- **`-t 2`** trades latency for CPU at a fixed rate: 12% fewer core-seconds for a request half
+  again as long, and the transcript is bit-identical. The realtime factor falls from 3.1-3.9x to
+  2.1-2.6x, still above the channel.
+- **A quantized model** does not pay off here. Q8_0 costs 10% more CPU than F16. The decoder step
+  is 20% faster, but the backend dequantizes the encoder's weights to fp16 on every request, at
+  about 3 core-seconds. The model's unnamed tensors keep those weights off the resident path. Q5_1
+  reads half as many bytes in that dequantization and measures -7%, at +2.4 WER points on clean
+  speech.
+- **30 s chunks** cost more per second of audio, because of the re-window of §"The decoder's
+  re-runs". They improve WER by three points on clean speech and at 15 dB, because there are fewer
+  cuts.
+- **Pinning to the A76 cluster** saves 2% under the `performance` governor. Elsewhere, pinning
+  corrects the load-sampling governor's bias, which §"The deployed governor" measures.
+- **The attention offload** measures parity at best, on a build before the FA call's host-pass
+  changes (§"The encoder attention offload").
 
-## Levers stacked
+## Options combined
 
-The unit and the reference are the same as in the previous table. The ladder is off
-(`temperature_inc=0`) in every row except the 25 s defaults row [HW sweep, 2 passes].
+The unit and the reference are the same as in the previous table. The temperature fallback is off
+(`temperature_inc=0`) in every row except the 25 s defaults row [HW sweep].
 
-| Arm | CPU, clean | CPU, 15 dB | CPU, 5 dB | Encodes per request | WER clean / 15 dB / 5 dB |
+| Configuration | CPU, clean | CPU, 15 dB | CPU, 5 dB | Encodes per request | WER clean / 15 dB / 5 dB |
 |---|---:|---:|---:|---:|---|
-| 20 s, ladder off | 0.832 | 0.998 | 0.919 | 1.00 | 10.4 / 16.7 / 74.8 |
-| 20 s, `-nt`, ladder off | 0.782 | 0.955 | 0.838 | 1.00 | 9.5 / 15.8 / 68.9 |
-| 20 s, `-ac 1200`, ladder off | 0.710 | 0.812 | 0.770 | 1.03 | 8.9 / 16.1 / 63.1 |
-| 20 s, `-ac 1200 -nt`, ladder off | 0.636 | 0.775 | 0.665 | 1.00 | 9.3 / 15.2 / 64.6 |
-| 20 s, `-ac 1200 -nt -sns`, ladder off | 0.638 | 0.774 | 0.689 | 1.00 | 7.7 / 13.8 / 63.6 |
+| 20 s, fallback off | 0.832 | 0.998 | 0.919 | 1.00 | 10.4 / 16.7 / 74.8 |
+| 20 s, `-nt`, fallback off | 0.782 | 0.955 | 0.838 | 1.00 | 9.5 / 15.8 / 68.9 |
+| 20 s, `-ac 1200`, fallback off | 0.710 | 0.812 | 0.770 | 1.03 | 8.9 / 16.1 / 63.1 |
+| 20 s, `-ac 1200 -nt`, fallback off | 0.636 | 0.775 | 0.665 | 1.00 | 9.3 / 15.2 / 64.6 |
+| 20 s, `-ac 1200 -nt -sns`, fallback off | 0.638 | 0.774 | 0.689 | 1.00 | 7.7 / 13.8 / 63.6 |
 | 25 s chunks, defaults | 0.756 | 0.981 | 1.146 | 1.10 | 6.8 / 21.4 / 52.2 |
-| 25 s chunks, ladder off | 0.756 | 0.981 | 1.281 | 1.17 | 6.8 / 21.4 / 96.2 |
-| 25 s chunks, `-nt`, ladder off | 0.710 | 0.852 | 0.825 | 1.00 | 8.3 / 15.0 / 56.4 |
-| 25 s chunks, `-ac 1250`, ladder off | 0.828 | 1.034 | 0.970 | 1.57 | 10.7 / 17.8 / 77.2 |
-| 30 s chunks, `-nt`, ladder off | 0.639 | 0.741 | 0.557 | 1.00 | 5.3 / 19.0 / 79.5 |
-| 20 s, `-ac 1000`, ladder off | 0.623 | 0.817 | 0.651 | 1.08 | 26.8 / 20.3 / 61.6 |
-| 20 s, `-ac 1000 -nt`, ladder off | 0.797 | 1.069 | 0.532 | 1.00 | 103 / 110 / 75 |
+| 25 s chunks, fallback off | 0.756 | 0.981 | 1.281 | 1.17 | 6.8 / 21.4 / 96.2 |
+| 25 s chunks, `-nt`, fallback off | 0.710 | 0.852 | 0.825 | 1.00 | 8.3 / 15.0 / 56.4 |
+| 25 s chunks, `-ac 1250`, fallback off | 0.828 | 1.034 | 0.970 | 1.57 | 10.7 / 17.8 / 77.2 |
+| 30 s chunks, `-nt`, fallback off | 0.639 | 0.741 | 0.557 | 1.00 | 5.3 / 19.0 / 79.5 |
+| 20 s, `-ac 1000`, fallback off | 0.623 | 0.817 | 0.651 | 1.08 | 26.8 / 20.3 / 61.6 |
+| 20 s, `-ac 1000 -nt`, fallback off | 0.797 | 1.069 | 0.532 | 1.00 | 103 / 110 / 75 |
 | the same, `-t 2` | 0.636 | 0.847 | 0.460 | 1.00 | 101 / 110 / 75 |
 | the same, `ggml-small-q5_1` | 0.816 | 0.938 | 0.563 | 1.00 | 142 / 109 / 73 |
 
 The three `-ac 1000 -nt` rows are the run-on, and their CPU columns are the cost of decoding loops
 rather than of transcribing. The 25 s chunk with defaults removes most of the re-window, 1.10
-encodes per request against 1.85 at 30 s, and lands near parity anyway. It costs the 15 dB set
-five WER points. With the ladder off, one 5 dB chunk decoded a 151-token loop that nothing
+encodes per request against 1.85 at 30 s, and still measures near parity. It costs the 15 dB set
+five WER points. With the fallback off, one 5 dB chunk decoded a 151-token loop that nothing
 interrupted.
-The same chunk with `-nt` is the length done right. It encodes once per request, returns 20%
-of the CPU, and beats the shipped arm's WER on every condition, at 25 s of latency.
 
-`-sns` (suppress non-speech tokens) adds nothing to the CPU and takes a point or more off the
-WER on every condition. On audio it cannot parse, whisper emits a run of bracket tokens, and
-those are the tokens `-sns` suppresses.
+The 25 s chunk with `-nt` encodes once per request and improves on the default configuration's
+WER on every condition, at 25 s of latency.
+
+`-sns` (suppress non-speech tokens) adds nothing to the CPU and takes a point or more off the WER
+on every condition. On audio it cannot parse, whisper emits a run of bracket tokens, and those are
+the tokens `-sns` suppresses.
 
 ## Word error rate on a radio-shaped channel
 
-The absolute level of the WER column is set by the chunk cuts and by the chapter rather than by
-the model. Every 20 s boundary falls mid-word. The reference is an archaic text full of names
-(`Montfichet`, `Fitzooth`) the model spells its own way. Read the column across arms.
+The chunk cuts and the chapter set the WER column's absolute level, rather than the model. Every
+20 s boundary falls mid-word. The reference is an archaic text full of names (`Montfichet`,
+`Fitzooth`) that the model spells its own way. The column compares configurations.
 
-On the clean set every arm that keeps its transcript sits between 7.7 and 9.5 points. The 30 s
-chunks reach 5.3 because there are fewer cuts. On the 15 dB set the range is 13.8 to 16.7, and
-on the 5 dB set 56 to 69. The NPU arm and the CPU arm agree on clean speech and differ by two
-points at 5 dB. That is the fp16 encoder on audio the decoder is already guessing at.
+On the clean set every configuration that keeps its transcript is between 7.7 and 9.5 points. The
+30 s chunks reach 5.3 because there are fewer cuts. On the 15 dB set the range is 13.8 to 16.7,
+and on the 5 dB set 56 to 69. The NPU and CPU-only configurations agree on clean speech and differ
+by two points at 5 dB. The difference is the fp16 encoder on audio the decoder is already guessing
+at.
 
-The 5 dB set is whisper's hallucination regime, and its CPU numbers say more about that than
-about any lever. A chunk the model cannot parse comes back as a run of bracket tokens. One 25 s
-chunk at 5 dB decoded a 151-token loop that cost 26 s of wall and 86 core-seconds, five times
-a normal request.
+The 5 dB set is whisper's hallucination regime, and its CPU figures reflect that regime more than
+any option. A chunk the model cannot parse comes back as a run of bracket tokens. One 25 s chunk
+at 5 dB decoded a loop that cost 26 s of wall-clock time and 86 core-seconds, five times a normal
+request.
 
-The temperature ladder is the only thing in the default configuration that interrupts such a
-loop. That is why turning it off on that set can cost rather than save. With a 20 dB squelch
-in front of the transcriber, the 15 dB set is the representative one. A noise burst inside
-an open squelch is the case the 5 dB set stands for [HW sweep].
+The temperature fallback is the only mechanism in the default configuration that interrupts such
+a loop. Turning it off on that set can therefore cost CPU rather than save it. With a 20 dB
+squelch in front of the transcriber, the 15 dB set is the representative one. The 5 dB set stands
+for a noise burst inside an open squelch [HW sweep].
 
-The channel is a proxy. It is band-passed, noisy, offset and fading read speech with a known
-transcript. What it cannot certify is real fading, real compression and real accents. The
-WER column ranks configurations against each other rather than predicting a channel.
+The channel is a simulation: band-passed, noisy, offset and fading read speech with a known
+transcript. The WER column ranks configurations against each other and does not predict a real
+channel's error rate.
 
-## The operating point
+## Applicability
 
-Three configurations survive with their transcript intact, and they differ in latency:
+### Second speaker
 
-| | Server | Request field | CPU (clean / 15 dB / 5 dB) | WER clean / 15 dB / 5 dB |
-|---|---|---|---|---|
-| 20 s chunks | `-nt -ac 1200 -sns` | `temperature_inc=0` | 0.638 / 0.774 / 0.689 | 7.7 / 13.8 / 63.6 |
-| 25 s chunks | `-nt` | `temperature_inc=0` | 0.710 / 0.852 / 0.825 | 8.3 / 15.0 / 56.4 |
-| 30 s chunks | `-nt` | `temperature_inc=0` | 0.639 / 0.741 / 0.557 | 5.3 / 19.0 / 79.5 |
-
-The shipped arm's WER is 8.9 / 16.7 / 68.7. The 20 s row keeps the latency the client has and
-returns 30% of the CPU at better accuracy on every condition. The 25 s row returns 20% at
-better accuracy too. The 30 s row returns 35% with the best clean-speech accuracy of any arm
-and a two-point loss at 15 dB, at 30 s of latency. All three encode once per request and trip
-no fallback.
-
-One rule sits behind all three: the encoder's context must extend past the audio. A 20 s chunk
-gets its 4 s of silence from `-ac 1200`, and a 30 s chunk cannot get any. That is why the 30 s
-row takes `-nt` and the 20 s row takes both.
-
-## Confirmation on a second speaker
-
-The three configurations ran again on a second chapter, by a different speaker whose audio
-the model finds easier (baseline WER 2.8 / 11.5 / 57.9). The run is two rotated passes, with
-the same unit and reference [HW sweep].
+On a second chapter, by a different speaker whose audio the model finds easier (baseline WER 2.8 /
+11.5 / 57.9), the three configurations keep their ranking [HW sweep]:
 
 | | CPU (clean / 15 dB / 5 dB) | WER clean / 15 dB / 5 dB |
 |---|---|---|
-| 20 s chunks, `-nt -ac 1200 -sns`, ladder off | 0.714 / 0.651 / 0.708 | 2.1 / 9.9 / 56.8 |
-| 25 s chunks, `-nt`, ladder off | 0.809 / 0.727 / 0.797 | 1.2 / 10.7 / 55.4 |
-| 30 s chunks, `-nt`, ladder off | 0.708 / 0.619 / 0.647 | 1.9 / 16.0 / 60.4 |
-| 30 s chunks, `-nt -sns`, ladder off | 0.703 / 0.615 / 0.648 | 1.9 / 15.8 / 60.3 |
+| 20 s chunks, `-nt -ac 1200 -sns`, fallback off | 0.714 / 0.651 / 0.708 | 2.1 / 9.9 / 56.8 |
+| 25 s chunks, `-nt`, fallback off | 0.809 / 0.727 / 0.797 | 1.2 / 10.7 / 55.4 |
+| 30 s chunks, `-nt`, fallback off | 0.708 / 0.619 / 0.647 | 1.9 / 16.0 / 60.4 |
+| 30 s chunks, `-nt -sns`, fallback off | 0.703 / 0.615 / 0.648 | 1.9 / 15.8 / 60.3 |
 
-The ranking holds. The 20 s and 25 s rows beat the shipped arm's WER on every condition on
-both chapters. The 30 s row is the cheapest on both chapters and loses on the noisy channel on
-both. It gives up 4.5 points at 15 dB here and 2.3 on the first chapter. Its cut always lands
-at the window's edge with no silence after it. The flag `-sns` changes nothing on a 30 s
-chunk, which is consistent with the bracket runs being an end-of-chunk symptom.
+The 20 s and 25 s rows improve on the default configuration's WER on every condition on both
+chapters. The 30 s row is the cheapest on both chapters and loses on the noisy channel on both.
+It gives up 4.5 points at 15 dB here and 2.3 on the first chapter. Its cut always falls at the
+window's edge with no silence after it. The flag `-sns` changes nothing on a 30 s chunk, which is consistent with the
+bracket runs being an end-of-chunk symptom.
 
-## The deployed governor
+### The deployed governor
 
-A stock board runs a load-sampling governor and nothing pins the server. Two arms re-ran that
-way, `ondemand` on every core and no `taskset`, one pass on the first chapter [HW sweep].
+A stock board runs a load-sampling governor, and nothing pins the server. The table measures two
+configurations that way, with `ondemand` on every core and no `taskset`, on the first chapter
+[HW sweep]. Its CPU column is absolute, in core-seconds per second of audio, where the other
+tables are relative to the default NPU configuration:
 
-| | CPU (clean / 15 dB / 5 dB) | Request wall (clean / 15 dB / 5 dB) |
+| | CPU core-s per audio-s (clean / 15 dB / 5 dB) | Request wall-clock (clean / 15 dB / 5 dB) |
 |---|---|---|
 | Defaults, `performance`, pinned | 1.058 / 0.856 / 0.831 | 6.5 / 5.3 / 5.1 s |
 | Defaults, `ondemand`, unpinned | 1.324 / 1.048 / 1.016 | 9.1 / 7.1 / 7.0 s |
-| 20 s stack, `ondemand`, unpinned | 0.832 / 0.812 / 0.694 | 5.5 / 5.4 / 4.6 s |
+| 20 s configuration, `ondemand`, unpinned | 0.832 / 0.812 / 0.694 | 5.5 / 5.4 / 4.6 s |
 
 Under the deployed governor the defaults cost 25% more core-seconds and 40% more latency than
-pinned at `performance`. The process blocks on the NPU with idle threads, the governor parks
-the big cores, and the host half of every request runs slow. The stack's ratio against the
-defaults holds at 0.69 either way (0.63 / 0.77 / 0.68 against the deployed defaults). So a
-stock board gets the stack's 31%, and pinning at `performance` returns another 20%. That is
-the bias that [cpu-governor-and-offload.md](cpu-governor-and-offload.md) measures on LLM
-prefill, seen from the service side.
+pinned at `performance`. The process blocks on the NPU with idle threads, the governor lowers the
+big cores' clock, and the host half of every request runs slowly. The 20 s configuration's ratio
+against the defaults holds at 0.69 either way (0.63 / 0.77 / 0.68 against the deployed defaults).
+A stock board therefore gets the configuration's 31%, and pinning at `performance` returns another
+20%. [cpu-governor-and-offload.md](cpu-governor-and-offload.md) measures the same bias on LLM
+prefill.
 
-## On a vendor kernel
+### On a vendor kernel
 
-The recommendations hold on the vendor kernel. The board was a second RK1 on
-`6.1.172-vendor-rk35xx` and `rknpu` 0.9.8, with ggml-rocket through rknpu-submit. Every
-configuration's ratio against the shipped arm lands within 0.03 of the mainline one [HW sweep, 2
-passes, 2026-09-26]. The setup was the first chapter, NPU 1000 MHz, DDR pinned at 2112 MHz, CPU
-governor `performance` and `taskset -c 4-7`. The model file and chunk sets were the same, and
-the whisper.cpp commit was `d09f61a`:
+**Conditions:** a second RK1 on `6.1.172-vendor-rk35xx` and `rknpu` 0.9.8, with ggml-rocket
+through rknpu-submit, 2026-09-26. NPU clock 1000 MHz, DDR pinned at 2112 MHz, CPU governor
+`performance`, `taskset -c 4-7`. The first chapter, with the same model file and chunk sets, and
+whisper.cpp `d09f61a`.
+
+The recommended configurations hold on the vendor kernel. Every configuration's ratio against the
+default NPU configuration is within 0.03 of the mainline one [HW sweep]:
 
 | | CPU (clean / 15 dB / 5 dB) | Mainline RK1 | WER clean / 15 dB / 5 dB |
 |---|---|---|---|
 | CPU only | 1.623 / 1.706 / 1.755 | 1.645 / 1.730 / 1.813 | 8.9 / 16.8 / 70.7 |
-| NPU, shipped (the reference) | 1.000 / 1.000 / 1.000 | 1.000 | 8.9 / 16.7 / 70.7 |
-| 20 s, `-nt -ac 1200 -sns`, ladder off | 0.639 / 0.777 / 0.718 | 0.638 / 0.774 / 0.689 | 7.3 / 13.8 / 63.1 |
-| 30 s, `-nt`, ladder off | 0.641 / 0.743 / 0.575 | 0.639 / 0.741 / 0.557 | 5.3 / 19.0 / 79.5 |
+| NPU, defaults (the reference) | 1.000 / 1.000 / 1.000 | 1.000 | 8.9 / 16.7 / 70.7 |
+| 20 s, `-nt -ac 1200 -sns`, fallback off | 0.639 / 0.777 / 0.718 | 0.638 / 0.774 / 0.689 | 7.3 / 13.8 / 63.1 |
+| 30 s, `-nt`, fallback off | 0.641 / 0.743 / 0.575 | 0.639 / 0.741 / 0.557 | 5.3 / 19.0 / 79.5 |
 
-The shipped arm's request wall is 6.2 / 5.0 / 4.7 s, 4-8% under the mainline board's. Its
-absolute cost is 1.022 / 0.826 / 0.768 core-seconds per audio-second.
+The default NPU configuration's request wall-clock time is 6.2 / 5.0 / 4.7 s, 4-8% under the
+mainline board's. Its absolute cost is 1.022 / 0.826 / 0.768 core-seconds per second of audio.
 
-The two ladder-off configurations reproduce the mainline WER to within half a point. The two
-arms that keep the temperature ladder match it on clean speech and at 15 dB. At 5 dB, where the
-ladder fires most, they read 2-4 points worse. Each board agrees with itself across both passes.
-The ladder samples at a nonzero temperature, so a different build's arithmetic takes a
-different path through it [hypothesis]. The whisper.cpp commit and CPU flags differ between
-the two boards, and neither was isolated.
+The two fallback-off configurations reproduce the mainline WER to within half a point. The two
+configurations that keep the temperature fallback match it on clean speech and at 15 dB. At 5 dB,
+where the fallback triggers most, they measure 2-4 points worse. The fallback samples at a nonzero
+temperature, so a different build's arithmetic takes a different path through it [hypothesis].
 
-On a stock vendor board, DDR runs under `dmc_ondemand`, and that slows the CPU-only arm and not
-the NPU arms (see [cpu-governor-and-offload.md](cpu-governor-and-offload.md)). An A/B there
-needs DDR pinned as well as the CPU governor.
+> [!NOTE]
+> On a stock vendor board, DDR runs under `dmc_ondemand`, which slows the CPU-only configuration
+> and not the NPU configurations ([cpu-governor-and-offload.md](cpu-governor-and-offload.md)). Pin
+> DDR as well as the CPU governor before comparing them.
+
+## Evidence
+
+The harness, the chunk sets and the raw sweeps are in [data/asr-service/](data/asr-service/).
+
+### Measurement method
+
+Both configurations come from one binary. The CPU-only configuration declines every op at
+`supports_op` (`ROCKET_MIN_M=1000000 ROCKET_FLASH_ATTN=0`). The server process is billed by its
+`utime + stime`, sampled around each request. Configurations rotate across two passes with a
+memory reset before each, and ratios are paired within a pass [HW sweep].
+
+### The encoder attention offload
+
+Each configuration ran two repetitions.
+
+### Options, one at a time
+
+Each configuration is paired against the default NPU configuration within a pass. The two passes
+agree to three decimals, and the same-configuration repeat measures 0.999. The WER figures come
+from two passes.
+
+### Options combined
+
+Two passes.
+
+### Second speaker
+
+Two rotated passes, with the same unit and reference.
+
+### The deployed governor
+
+One pass.
+
+### On a vendor kernel
+
+Two passes. Each board agrees with itself across both passes. The whisper.cpp commit and CPU flags
+differ between the two boards, and neither was isolated.
