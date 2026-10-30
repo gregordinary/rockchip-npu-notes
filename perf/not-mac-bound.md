@@ -1,16 +1,18 @@
 # Matmul throughput and its limits
 
-On the `rocket` path, resident multicore matmul throughput is ~460 GOP/s at fp16, int8 and int4
-alike [HW sweep]. The rate is ~15% of the fp16 MAC peak and ~4% of the int4 peak. The matmul
-is bound by a datatype-independent limit, not by the MAC array. The limit is the DMA that loads
-operands into the CBUF, plus the per-job dispatch latency. int8's 2x MAC rate and int4's 4x MAC rate
-therefore do not raise throughput, and quantization reduces memory use rather than prefill time.
+On the `rocket` path, the whole-tile matmul program measures ~460 GOP/s resident and multicore
+at fp16, int8 and int4 alike [HW sweep]. In that program each task holds both operand tiles in
+the CBUF. The rate is ~15% of the fp16 MAC peak and ~4% of the int4 peak. That program is
+bound by a datatype-independent limit, not by the MAC array. The limit is the DMA that loads
+operands into the CBUF, plus the per-job dispatch latency. int8's 2x MAC rate and int4's 4x MAC
+rate therefore do not raise its throughput, and quantization reduces memory use rather than
+prefill time.
 
-**Conditions:** RK3588, NPU clock 600 MHz, resident weights, three cores reached through 5
+**Conditions:** RK3588, NPU clock ~816 MHz, resident weights, three cores reached through 5
 worker fds, `512×3840×4096` unless a table states another shape.
 
 **Not characterized:** an operating point where DMA and dispatch do not bind
-(§"Applicability").
+(§"Applicability"), and the datatype comparison with streamed weights.
 
 | datatype | GOP/s | MAC advantage | Advantage realized |
 |---|---:|---|---|
@@ -26,6 +28,10 @@ Other shapes measure in the same band (GOP/s):
 | ffn-down | 486 | 452 | 463 |
 
 Every datatype is within ~20% of the others.
+
+A task that streams its weights through the CBUF removes most of the whole-tile program's
+tasks. On one core it runs `160×1024×4096` at 3.4x the best whole-tile tiling. As the library
+default, it gives 1.07-1.17x on prefill across four models (§"Streamed weights").
 
 ## Cause
 
@@ -46,7 +52,7 @@ and fence overhead. Both are datatype-independent.
 ### In-model int8 and int4 prefill
 
 In the live model, int8 prefill is slower than fp16. Resident int8 prefill is ~9.1 t/s against
-resident fp16's ~15.1 t/s, 0.60x [HW sweep, 600 MHz].
+resident fp16's ~15.1 t/s, 0.60x [HW sweep, ~816 MHz].
 
 The fp16 path has on-NPU K-accumulation (`read ∝ M·N`), and int8 does not. No integer EW path is
 supported, and fp32 cannot hold int8's int32 partials exactly (see
@@ -57,7 +63,7 @@ non-resident int8 path). The readback cost is unchanged, and it holds int8 below
 
 A same-weights precision sweep shows the same in a model. It runs the Gemma-4-12B F16 GGUF
 through the *one-shot* paths, which re-quantize on each prefill. The sweep runs at pp512 under
-the `performance` governor [HW sweep, 2026-06-24, RK1 7.1.0-1, 600 MHz]:
+the `performance` governor [HW sweep, 2026-06-24, RK1 7.1.0-1, ~816 MHz]:
 
 | path | t/s | vs fp16 |
 |---|---:|---:|
@@ -83,7 +89,7 @@ faster than the CPU, at half the memory. The dequantization runs once per micro-
 Resident group-wise int4 shows the resident-int8 result more strongly. Holding the group-wise
 Hadamard int4 weights resident (`ROCKET_INT4_RESIDENT`) removes the per-call weight scatter, as
 resident int8 does. The in-model gain is ~2x over the one-shot int4 path: 6.94 t/s against 3.56,
-with fp16 at 13.18, at pp512 and 600 MHz [HW sweep, 2026-06-25]. Resident int4 is still 0.53x
+with fp16 at 13.18, at pp512 and ~816 MHz [HW sweep, 2026-06-25]. Resident int4 is still 0.53x
 fp16.
 
 A group-wise int4 matmul reads back one int16 partial *per K-group* (`read ∝ M·N·nKt`,
@@ -112,7 +118,7 @@ The rest of the vendor's advantage is dispatch efficiency, in three parts:
 - A batched whole-graph submit, with ~10x fewer kernel transitions (see
   [iova-and-multicore.md](iova-and-multicore.md) §batched submit)
 - 3-core dispatch, which the `rocket` path matches
-- The 1 GHz default clock, against the 600 MHz the `rocket` clock patch reaches
+- The 1 GHz default clock, against ~816 MHz under the `rocket` clock patch
 
 The "+200-400%" quoted for the vendor's int8 prefill is the 6-vs-3 TOPS spec-sheet ratio
 (6 TOPS int8 / 3 TOPS fp16), not a measured fp16-to-int8 comparison. The measured 40-58%
@@ -157,7 +163,7 @@ count the router gives that expert. On gpt-oss-20b's `[2880,2880]` MXFP4 experts
 75 ms per expert, per micro-batch, and a prefill touches ~1580 of them. Dequantizing weights
 therefore takes the host ~119 s per prefill, 59% of a pp2048 prefill, before any arithmetic runs.
 Offloading quantized MoE experts through the fp16 path is slower than leaving them on the CPU
-for that reason [HW sweep, 600 MHz, 2026-07-14].
+for that reason [HW sweep, ~816 MHz, 2026-07-14].
 
 Ingesting each expert once into resident int8 codes removes that cost. The speedup is not from
 int8 arithmetic: the int8 GEMM's int32 output reads back at 8 B/element and moves *more* bytes
@@ -180,6 +186,137 @@ padding is an expert that has to stream instead, and a streamed expert costs man
 resident one does. The N-tile padding fix is in
 [iova-and-multicore.md](iova-and-multicore.md).
 
+## Streamed weights
+
+[CBUF weight streaming](../GLOSSARY.md) keeps the input tile in the CBUF while the weight groups
+cycle through the weight banks. One task therefore covers a whole N slice
+([../matmul-as-conv.md](../matmul-as-conv.md) §"CBUF weight streaming"). The whole-tile form
+shares the CBUF between both tiles, which caps Nt and multiplies the task count. The streamed
+form's gain at a shape follows the task count that the whole-tile form needs there [HW sweep
+2026-10-21].
+
+**Conditions:** RK3588 (Turing RK1), kernel 7.2.9, `rocket` 1.3.0, NPU clock 928 MHz (the
+900 MHz request), CPU governor `performance`, fp16. One core, one job a configuration, tasks
+submitted gapped. Median submit-to-fence time. Measured 2026-10-21.
+
+| Shape | Streamed against the best whole-tile tiling with DATA_REUSE | Speedup |
+|---|---|---:|
+| `160×1024×4096` | 1.75 ms (766 GFLOP/s) against 6.01 ms (223 GFLOP/s) | 3.4x |
+| `128×2560×4096` | Streamed at 32-row M tiles | 1.30x |
+| `128×512×4096` | The whole-tile form already runs 128×256 tiles at K 512, so few tasks are removed | 0.90x |
+
+An external userspace reports fp16 device time of ~2.6 TFLOPS over three cores at K 1024 and
+N 4096 [source-confirmed: `rknpu2_matmul_open`, [../SOURCES.md](../SOURCES.md)]. It runs on the
+vendor `rknpu` driver at 1 GHz. The reported rate is ~870 GFLOP/s a core [host-computed]. The
+streamed device rate over three cores on `rocket` is not characterized.
+
+### Weight bandwidth a core
+
+At M 4, one core streams resident weights at ~5.4 GB/s, fp16 and int8 alike [HW sweep
+2026-10-21]. The rates are 5.49 GB/s at fp16 and 5.38 GB/s at int8, and 5.39 GB/s at int8 with
+K 8192 and N 3072. Three cores, each driven by its own process on its own fd, keep their solo
+rate: ~16.4 GB/s at fp16 and ~15.4 GB/s at int8 in aggregate. What this bandwidth means for
+decode is in [decode-gemv.md](decode-gemv.md).
+
+**Conditions:** as above, at M 4, fp16 and int8. Each rate is the weight bytes over the median
+submit-to-fence time, one submit and fence a run.
+
+> [!NOTE]
+> Several jobs in one submit run one after another on `rocket` 1.3.0: three jobs take 2.96x
+> the time of one [HW sweep 2026-10-21]. Software reaches the three cores through separate fds.
+
+### Through the resident matmul
+
+The streamed plan is faster than the whole-tile plan at every LLM projection shape measured,
+for fp16 and for int8 [HW sweep 2026-10-21].
+
+**Conditions:** RK3588, kernel 7.2.9, `rocket` 1.3.0, NPU clock 928 MHz, CPU governor
+`performance`. M 512, resident weights split over five worker fds on the three cores,
+fp16 K-accumulation on. The streamed plans are those of a planner that counts DRAM bytes,
+before the K-tile choice below. Each speedup is the whole-tile call's time over the streamed
+call's, per pass, over three passes with the order rotated. Measured 2026-10-21.
+
+| Shapes, K × N | fp16 | int8 |
+|---|---:|---:|
+| K 1024-4096, N 1024-15360: attention and FFN up projections | 1.10-1.51x | 0.99-2.43x |
+| K 8192-15360, N 3072-4096: FFN down projections | 1.22-1.39x | 1.72-2.09x |
+| K 128-512, N 2048-4096 | 1.01-1.17x | Not measured |
+
+The int8 gain follows the K passes that the streamed plan removes, because the host reads and
+sums every pass's int32 partial. A single K pass at K 1024 gives 2.20-2.43x. A plan that keeps
+Kt at 1024 against a slice of N 2464-3072 gives 0.99-1.06x.
+
+Within the streamed plans, the K-tile and the M-tile it leaves set the time [HW sweep
+2026-10-21]:
+
+- **fp16.** Kt 1024 at Mt 160 is the fastest of 4-5 candidates at all six shapes swept. Kt
+  608-640 at Mt 256 costs 1.09-1.14x more, because it adds K passes. An M tile under about 128
+  rows cannot hide the weight stream it re-reads, and Kt 1536-3072 at Mt 32-96 costs
+  1.11-2.99x more.
+- **int8.** The deepest Kt that keeps Mt at 72 rows or more is fastest, Kt 1376-3072. Each K
+  pass is an int32 partial that the host reads and sums, and Kt 1024 at Mt 256 costs
+  1.31-2.03x more.
+
+One candidate departs from both trends. At K 3840, fp16 Kt 960 at Mt 168 costs 1.25-1.6x more
+than Kt 640 at Mt 256 [HW sweep 2026-10-21]. It takes fewer K passes. Its cause is not
+characterized.
+
+### In a model
+
+`librocketnpu` plans fp16 matmuls with streamed weights by default. Its planner trades Kt
+against Mt, because each M tile reads the whole weight slice again.
+
+**Conditions:** RK3588 (Turing RK1), kernel 7.2.9, `rocket` 1.3.0, NPU clock 928 MHz, CPU
+governor `performance`. The runs use llama.cpp through `ggml-rocket` on three cores, with
+`llama-bench -n 0 -r 3` at the default `-b` and `-ub`, pp512 unless the row states another.
+Each range is over three passes with the configuration order rotated. Measured 2026-10-21.
+
+| Model | Weights | Whole-tile t/s | Streamed t/s | Speedup |
+|---|---|---:|---:|---:|
+| Llama-3.2-3B-Instruct F16 | `ROCKET_F16_RESIDENT=auto` | 87.8-89.3 | 100.4-101.3 | 1.134-1.143x |
+| Llama-3.2-3B-Instruct F16, pp2048 | `ROCKET_F16_RESIDENT=auto` | 79.2-80.0 | 91.2-91.7 | 1.140-1.157x |
+| Llama-3.2-3B Q4_K_M | `ROCKET_QUANT_RESIDENT=auto` | 81.6-82.9 | 95.3-96.6 | 1.163-1.167x |
+| Ministral-3-3B F16 | Resident F16 | 82.0-83.7 | 93.7-94.9 | 1.120-1.153x |
+| Qwen3.5-9B Q4_K_M | `ROCKET_QUANT_RESIDENT=auto` | 34.9-35.7 | 38.2-38.7 | 1.069-1.110x |
+
+Llama-3.2-3B F16's wikitext perplexity (8 chunks of 512) is 10.9135 whole-tile and 10.9120
+streamed [HW sweep 2026-10-21]. The flash attention gains 1.04-1.06x at Depth Anything's layer
+and 1.12-1.19x at Gemma-4's shape (T 512, 2048 keys, head dimension 256). The one-shot
+single-fd call at `512×3840×4096` goes from 150-153 to 163-167 GFLOP/s, 1.08-1.10x.
+
+### The planner's K-tile cost
+
+The table above uses a planner that counts DRAM bytes. The current planner charges a streamed
+task the larger of two costs: its weight bytes, or the MACs of 128 rows per weight byte. An M tile
+of 128 rows or more therefore hides its weight re-read. With K accumulated on the NPU, a K pass
+costs its partial, written and read back once. When the host reads and sums every pass, a pass
+costs 8x its partial's bytes.
+
+No fixed charge applies per task or per pass. The 128-row crossover and the 8x factor are fitted
+to the K-tile sweep above.
+
+At the resident call at M 512, the current planner is 1.061x faster at fp16 than the byte-count
+planner. At int8 with int8 streaming on it is 1.228x faster. Both are geometric means, over 24
+and 20 projection shapes [HW sweep 2026-10-21]. One shape is slower: K 3584 N 1024 at 0.87x. The
+planner charges that slice's 76-row last M tile as a whole exposed weight read. In a model it is
+faster on the 3B units and neutral on Qwen3.5-0.8B, whose FFN down projection is that shape [HW
+sweep 2026-10-22]:
+
+| Model | Weights | Byte-count planner t/s | Current planner t/s | Speedup |
+|---|---|---:|---:|---:|
+| Llama-3.2-3B-Instruct F16 | `ROCKET_F16_RESIDENT=auto` | 98.7-102.3 | 107.4-108.5 | 1.060-1.089x |
+| Llama-3.2-3B Q4_K_M | `ROCKET_QUANT_RESIDENT=auto` | 93.6-97.6 | 100.3-101.0 | 1.027-1.080x |
+| Qwen3.5-0.8B F16 | `ROCKET_F16_RESIDENT=auto` | 132.0-149.2 | 133.0-147.0 | 0.891-1.102x, geometric mean 0.998x |
+
+**Conditions:** as the table above, pp512. `ggml-rocket` built twice from one `librocketnpu`
+tree, the two builds differing only in the planner's cost. Each speedup is a ratio within one
+pass, the system memory reset before every process. Three passes with the order rotated, eight
+for Qwen3.5-0.8B. Measured 2026-10-22.
+
+> [!NOTE]
+> Qwen3.5-0.8B F16 runs at either ~133 or ~147 t/s in a process, under both planners. On that
+> model one pass resolves no difference smaller than ~10%.
+
 <a name="scope"></a>
 ## Applicability
 
@@ -195,12 +332,16 @@ datatype-independent range remains before the MAC array binds. Only after DMA an
 binding, and the NPU approaches its MAC limit, would int8's 2x and int4's 4x MAC rates raise
 throughput [expected].
 
-The result can also stay as it is. The CBUF is 384 KB, which caps the MAC work per job. If jobs
+The result can also stay as it is. In the whole-tile form the CBUF's 384 KB caps the MAC work
+per task, and weight streaming lifts that cap for the weights (§"Streamed weights"). If jobs
 cannot be made large enough for MAC time to exceed DMA and dispatch latency, quantization never
-raises throughput [expected]. int4 reads ¼ the weight bytes, *and* has 4x the MAC rate, and it
-still does not win. The limit is therefore not weight-DMA bandwidth either. It behaves like
-latency (dispatch, fence, CBUF fill), which large tiles amortize and cannot remove
-[hypothesis].
+raises throughput [expected].
+
+int4 reads ¼ the weight bytes, *and* has 4x the MAC rate, and it still does not win in the
+whole-tile form. That form's limit is therefore not weight-DMA
+bandwidth either. It behaves like latency (dispatch, fence, CBUF fill), which large tiles
+amortize and cannot remove [hypothesis]. The streamed form's gain follows the task count it
+removes, which agrees with that reading.
 
 ### Host-side part of the limit
 
@@ -226,8 +367,8 @@ fences.
 The limit is DMA, dispatch and the clock, so the prefill optimizations are
 datatype-independent. They compound:
 
-1. **The clock.** 200 -> 600 MHz gives 1.43x. 900 MHz and 1 GHz are gated (see
-   [clock.md](clock.md)).
+1. **The clock.** 198 -> ~816 MHz gives 1.43x. For 928 MHz (the 900 MHz request) and
+   1019 MHz, see [clock.md](clock.md) §"Rates from ~816 to 1019 MHz".
 2. **Fewer, larger NPU jobs.** Fusion and a larger micro-batch, and batching independent tasks
    into one hardware kick instead of one kick and completion IRQ per task. The vendor stack
    uses fewer submits than the open one in this way (see
@@ -276,7 +417,7 @@ the CPU governor that the per-submit overhead depends on, are:
   On the `rocket` path the SigLIP-B/16 encoder behaves the same way [HW sweep]. It has many
   small attention submits, and a host softmax and de-tile per layer. Its resident warm median
   goes from 5.44 s under `schedutil` to 2.71 s under `performance` (−50%) [HW sweep]. Its
-  variation goes from ±1.5 s to ±0.02 s, with the NPU at 600 MHz throughout. The readback-bound matmuls are the most
+  variation goes from ±1.5 s to ±0.02 s, with the NPU at ~816 MHz throughout. The readback-bound matmuls are the most
   governor-sensitive, because readback is host work. For the same reason a NEON KACC de-tile
   gather (`detile_store_f16`, shared by the prepacked, stream and multicore paths) saved a
   further ~0.35 s ([encodings/siglip-encoder.md](../encodings/siglip-encoder.md),
@@ -314,13 +455,13 @@ de-tile dominate the matmul and convolution time, and the per-submit overhead is
 fraction.
 
 Host-path changes and moving the requant on chip take warm MobileDet from 205 to 56 ms
-[HW sweep, RK1, 600 MHz, governor pinned, 2026-09-27 and 2026-09-28]. The submit path is
+[HW sweep, RK1, ~816 MHz, governor pinned, 2026-09-27 and 2026-09-28]. The submit path is
 unchanged ([benchmarks.md](benchmarks.md) §"Single-stream latency").
 
 ## CPU-side profile
 
-The wall-clock breakdown depends on the operating point. At 600 MHz with on-NPU K-accumulation
-and DATA_REUSE, it is `wait` ~60-68%, packB ~22%, and a small read. At 200 MHz with host
+The wall-clock breakdown depends on the operating point. At ~816 MHz with on-NPU K-accumulation
+and DATA_REUSE, it is `wait` ~60-68%, packB ~22%, and a small read. At 198 MHz with host
 K-accumulation and no reuse, it is roughly 67% layout pack, scatter and readback, and only ~25%
 NPU FLOPs. The CPU scatter, the readback and the per-call setup are therefore where
 optimizations gain, and those gains compound at every model size and precision.
@@ -353,7 +494,7 @@ The flag sweep covers the fp16 `packB` and `read` loops, and no other host loop.
 does not version a loop for aliasing. A loop between two pointers it cannot prove distinct
 compiles to a byte or scalar loop, and a block-scope `restrict` does not settle it. In
 `librocketnpu`, `MM_NO_OVERLAP` (GCC `ivdep`, clang `assume_safety`) marks such a loop, and the
-mark vectorizes it [HW sweep 2026-10-09, RK1, 600 MHz, governor `ondemand`]:
+mark vectorizes it [HW sweep 2026-10-09, RK1, ~816 MHz, governor `ondemand`]:
 
 | Loop | Measured with the mark |
 |---|---|
@@ -407,9 +548,10 @@ times are that build's:
   streaming (~17 GB/s). The host scatter and gather are bound by latency and index arithmetic
   (random-stride writes and the fp16↔fp32 convert). Reducing pack and read *bytes*, for example
   by quantization, gives far less than changing their *gather pattern* (the NEON de-tile).
-- The model sizes DATA_REUSE. The planner's default tiling for this shape is Mt 256, Kt 512,
-  Nt 128 (`nMt`=2, `nKt`=8, `nNt`=32). There, turning data_reuse off changes only `fDMA`,
-  3.75 -> 120 MB (`×nNt=32`), and moves the total 133.50 -> 249.75 MB [host-computed]. The
+- The model sizes DATA_REUSE. The planner's whole-tile tiling for this shape
+  (`ROCKET_MM_STREAM=0`) is Mt 256, Kt 512, Nt 128 (`nMt`=2, `nKt`=8, `nNt`=32). There, turning
+  data_reuse off changes only `fDMA`, 3.75 -> 120 MB (`×nNt=32`), and moves the total
+  133.50 -> 249.75 MB [host-computed]. The
   `ROCKET_REUSE` CBUF-reuse gain removes that DMA ([cbuf-reuse.md](../encodings/cbuf-reuse.md)).
 
 The DDR controller's PMU shows the model right on DATA_REUSE and 3.57x low in absolute terms
@@ -441,6 +583,29 @@ bottleneck-conditional scope above rests on that pattern and on the CBUF argumen
 
 The right-sized BO's +11% is a drift-controlled comparison, and +17% is its best case.
 
+### Streamed weights
+
+The resident-matmul table comes from `tests/matmul_dtype_perf_rocket`, one process a
+configuration with the memory reset before each. A process makes eight calls, drops the first
+and keeps the fastest of the rest. The shapes are five models' projections (Llama-3.2-3B,
+Ministral-3-3B, Qwen3.5-9B, Gemma-4-12B and Qwen3.5-0.8B) and four short-K shapes. It counts 24 fp16 shapes and 20 int8 shapes. int8
+streams with one weight bank beyond the fp16 minimum (Erratum E11). The K-tile sweep forced each candidate
+with `ROCKET_MM_STREAM_KT` at six shapes a datatype, 52 configurations, three passes.
+
+The single-core comparison is `tests/weight_stream_probe`, 15 interleaved runs a configuration
+with the order rotated. The whole-tile configuration is the best tiling found with DATA_REUSE
+set, which moves the same DRAM bytes as the streamed one. The bandwidth figures are
+`tests/gemv_bw_probe` at M 4, and include one submit and fence a run. The three-core figure ran
+three processes at once, and all three cores raised interrupts. One submit of three jobs is
+`multicore_probe`.
+
+The model figures are `llama-bench` with memory reset before every process. Every run was
+bit-exact against its reference. The RK3588 CTest suite (126 tests) passes under both settings,
+with three model tests skipped for lack of model paths. The flash-attention figures
+are 30 iterations, five runs a configuration. The one-shot call's gain includes the output BO
+that the K-accumulating path no longer allocates up front, which alone made the whole-tile
+call ~4% faster.
+
 ### Vendor-stack int8 prefill
 
 An isolated fixed-clock fp16-against-W8A8 prefill sweep on the vendor stack, with a DDR or NOC
@@ -448,7 +613,7 @@ PMU read, would test the bandwidth account directly. It has not been run.
 
 ### Bytes-moved model
 
-The DDR PMU check [HW sweep 2026-08-28, RK1, 600 MHz] uses `rockchip_ddr`, calibrated to 0.4%
+The DDR PMU check [HW sweep 2026-08-28, RK1, ~816 MHz] uses `rockchip_ddr`, calibrated to 0.4%
 against known bytes ([hw-byte-counters.md](hw-byte-counters.md) §5). Differencing 45 against 5
 repetitions of the same `512×3840×4096` test point isolates 40 matmuls:
 

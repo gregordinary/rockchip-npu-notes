@@ -2,7 +2,7 @@
 
 `gemma4-12b` F16, spelled as the published `unpinned` arm of the pinning intervention:
 `GGML_BACKEND_PATH` and nothing else, no extra llama-bench args, `-p 2048 -n 0 -r 3`, unpinned,
-governor `performance`, NPU at 600 MHz. Driver `perf/data/trackd22-a55-symbols-12b.sh`
+governor `performance`, NPU at ~816 MHz. Driver `perf/data/trackd22-a55-symbols-12b.sh`
 (md5 `8c400d14f2ead7df3ad2b9eb286121ca`). `libggml-rocket.so` md5
 `61f02a02345f3b2e27cef45de8ade0c2`. [HW readout 2026-09-02, RK1.]
 

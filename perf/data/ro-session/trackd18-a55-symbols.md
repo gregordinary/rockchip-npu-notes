@@ -1,7 +1,7 @@
 <!-- A55 instruction attribution: WHAT runs on the little cluster?   -p 2048 -n 0 -r 3
      qwen35-9b Q4_K_M, ROCKET_QUANT_RESIDENT=auto -b 2048 -ub 2048, UNPINNED.
      perf record -a -e armv8_cortex_a55/inst_retired/ -F 499, leaf-IP attribution only.
-     so=61f02a02345f3b2e27cef45de8ade0c2   board: RK1, 600 MHz, governor performance
+     so=61f02a02345f3b2e27cef45de8ade0c2   board: RK1, ~816 MHz, governor performance
 
      THE QUESTION. `librocketnpu` pins every worker to a big core, so the little-cluster
      instructions the readout's `a55_inst_share` column counts belong to llama.cpp's own threads

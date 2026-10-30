@@ -69,7 +69,7 @@ and neither ort-rocket nor tflite-rocket has an RMSNorm handler.
 
 ## Accuracy
 
-**Conditions:** RK3588, 600 MHz, kernel 7.1.0-1, against the fp64 oracle.
+**Conditions:** RK3588, NPU clock ~816 MHz, kernel 7.1.0-1, against the fp64 oracle.
 
 `scale_rows` measures max_rel ~1e-3 (fp16 ulp) [HW sweep]. RMSNorm measures max_rel <= 3.5e-3
 (the benign per-row fp16 square-rounding) [HW sweep] across:

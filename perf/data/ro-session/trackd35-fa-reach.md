@@ -1,4 +1,4 @@
-<!-- ministral3-3b F16, RK3588 600 MHz, governor ondemand, taskset 0xf0 -t 4, one job in flight.
+<!-- ministral3-3b F16, RK3588 at ~816 MHz, governor ondemand, taskset 0xf0 -t 4, one job in flight.
      llama-perplexity -c 2048 --chunks 2 -fa on, and llama-bench -p 2048 -n 0 -r 1 -v.
      Measured 2026-09-07 on libggml-rocket.so md5 5eaf4076a9f50dcb7e953156823d1d4e.
      Drivers: perf/data/trackd34-fa-reach.sh and perf/data/trackd35-reach2.sh.

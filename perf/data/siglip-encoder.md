@@ -12,7 +12,7 @@ Two Turing RK1 modules carry the same RK3588 silicon on two kernels:
 | Stack | Kernel and driver | NPU clock | Host |
 |---|---|---|---|
 | RKNN and SHARD | `6.1.172-vendor-rk35xx`, `rknpu` 0.9.8, `librknnrt` 2.3.2 | 1000 MHz, `rknpu_ondemand` | CPU and DDR governors `performance` |
-| rocket | `7.2.8-1-arm64`, `rocket` 1.3.0 | 600 MHz | CPU governor `performance`, `taskset 0xf0` |
+| rocket | `7.2.8-1-arm64`, `rocket` 1.3.0 | ~816 MHz, the 600 MHz request ([../clock.md](../clock.md)) | CPU governor `performance`, `taskset 0xf0` |
 
 Each state is a [live] read on the day. The two NPU clocks differ, so a wall compared across the
 two stacks is not iso-clock.

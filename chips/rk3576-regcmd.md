@@ -2680,9 +2680,9 @@ divides evenly.
 
 The RK3576 places no constraint on M. Every M tried (1, 2, 3, 4, 5, 6, 7, 8, 12, 15, 16, 17,
 31, 32 and 64) is bit-exact at every factorization into a plane, from `1xM` through `Mx1`.
-`M=1` needs no padding here, the opposite of the RK3588. There, rows are the convolution's
-spatial height, a height under 4 produces incorrect output, `M%4` must be 0, and software pads
-`M==1` to 4. The per-submit cost, not correctness, decides whether a matmul runs at M=1.
+`M=1` needs no padding here. The RK3588 needs none either, once its feature surface stride is
+programmed as `width × (H − 4)` ([../matmul-as-conv.md](../matmul-as-conv.md) §"Feature surface
+stride"). The per-submit cost, not correctness, decides whether a matmul runs at M=1.
 [HW sweep, H96 MAX M9]
 
 ### Matmul precision

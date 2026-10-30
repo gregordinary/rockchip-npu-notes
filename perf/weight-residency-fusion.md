@@ -10,7 +10,7 @@ Residency (`ROCKET_F16_RESIDENT`) removes the per-call weight scatter, and proje
 removes the per-node input scatter. The two gains combine. Greedy output is byte-identical
 across all three configurations (llama-simple, ~300-token prompt).
 
-**Conditions:** RK3588 (RK1), NPU clock 600 MHz, Llama-3.2-3B-F16, warm pp512 and pp2048
+**Conditions:** RK3588 (RK1), NPU clock ~816 MHz, Llama-3.2-3B-F16, warm pp512 and pp2048
 through ggml-rocket in llama.cpp, idle board, 2026-07-15. The 1.081x is pp2048 at the default
 `-ub`, CPU governor `performance`, three interleaved passes with the configuration order
 rotated, 2026-08-29 ([data/tuning-matrix.md](data/tuning-matrix.md)).
@@ -118,7 +118,7 @@ streaming path.
 
 A fused group's members count individually, so the number means the same thing on both paths.
 Llama-3.2-3B-F16 at `ROCKET_F16_RESIDENT=auto` reports 193 resident / 5232 MB with fusion on
-and 193 / 5232 MB with `ROCKET_NO_FUSE=1` [HW sweep 2026-08-28, RK1, 600 MHz].
+and 193 / 5232 MB with `ROCKET_NO_FUSE=1` [HW sweep 2026-08-28, RK1, ~816 MHz].
 
 The report does not measure three things:
 
@@ -149,6 +149,6 @@ would measure ~55 / 41, which is below resident-no-fusion, not above it.
 ### Revision history
 
 An earlier measurement on 2026-07-15 preceded the interleaved pairs above. It compared
-residency without fusion against the streaming-fused default, on Llama-3.2-3B-F16 at 600 MHz
+residency without fusion against the streaming-fused default, on Llama-3.2-3B-F16 at ~816 MHz
 and `-ub 512`. It measured 54.5 -> 59.6 t/s at pp512 (+9.5%) and 39.8 -> 42.1 t/s at pp2048
 (+5.9%) [HW sweep 2026-07-15]. The body's figures are the interleaved pairs.

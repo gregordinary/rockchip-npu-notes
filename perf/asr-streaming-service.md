@@ -7,7 +7,7 @@ frees 39-45% of that cost [HW sweep]. Three server configurations keep the trans
 and cost less. At the client's 20 s latency, the cheapest returns 30% of the CPU at better
 accuracy than the defaults on every condition.
 
-**Conditions:** RK3588 (Turing RK1), NPU clock 600 MHz, mainline `rocket` 1.3.0, whisper.cpp
+**Conditions:** RK3588 (Turing RK1), NPU clock ~816 MHz, mainline `rocket` 1.3.0, whisper.cpp
 master `eacbd82`, 2026-09-03 and 2026-09-04, unless a section states its own. The model is
 `ggml-small` (multilingual, F16), the one the deployment runs. The server runs 4 threads pinned
 to the A76 cores (`taskset -c 4-7`), under CPU governor `performance`, with `ROCKET_KACC=1`. The

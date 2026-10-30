@@ -193,7 +193,7 @@ earliest provides the smaller share.
 
 ## Short utterances below the F16 floor
 
-**Conditions:** RK3588 (Turing RK1), mainline `rocket` 1.3.0, kernel 7.2.8, NPU clock 600 MHz,
+**Conditions:** RK3588 (Turing RK1), mainline `rocket` 1.3.0, kernel 7.2.8, NPU clock ~816 MHz,
 2026-09-30. Parakeet TDT 0.6B v3 F16 runs through whisper.cpp v1.9.4's `parakeet-cli`, on 4
 threads pinned to the A76 cores, under CPU governor `ondemand`. Each length is ten LibriSpeech
 test-clean utterances. The NPU configuration runs `ROCKET_MIN_M=4`. Each figure is a
@@ -492,7 +492,7 @@ length. Its cache cap there is 0.7%.
 On the vendor driver the NPU clock does not drop to its idle rate during an encode. Mainline
 `rocket` defaults to a 50 ms `autosuspend_delay_ms`, and host packing leaves gaps longer than
 that. On mainline, all three cores therefore idle inside a single encode, and the next submit runs
-at a third of the clock. The patch `patches/rocket/081` raises the delay to 1000 ms.
+at 198 MHz, ~4.1x below the raised ~816 MHz. The patch `patches/rocket/081` raises the delay to 1000 ms.
 
 The vendor `rknpu` driver sets `power_put_delay = 3000`, and its `rknpu_ondemand` governor never
 measures load, so neither effect exists on the vendor driver. Through one `small.en` encode the

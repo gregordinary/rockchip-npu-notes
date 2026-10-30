@@ -298,10 +298,10 @@ operand `B`:
 | `SRC_BASE`/`EW_BASE` | operand / operand+1surf | same |
 
 Only `DPU_EW_CFG` changes: clear the ALU algo and set `EW_OP_TYPE(1)`, the fp16
-eltwise-multiply word. The operand DMA transport (ERDMA + `COMB_USE(5)` + the `MAX(M,12)`
-surface-stride minimum) is identical to K-accumulation. Software must therefore keep
-**M >= 12**. Below that minimum, the upper channel surfaces mis-stride. ADD reproduces `A+B`
-and MUL gives `A*B` bit-exactly, both max_abs 0 [HW sweep].
+eltwise-multiply word. The operand DMA transport (ERDMA, `COMB_USE(5)` and a surface stride of
+M) is identical to K-accumulation ([k-accumulation.md](k-accumulation.md) §"Programming
+requirements"). ADD reproduces `A+B` and MUL gives `A*B` bit-exactly, both max_abs 0 [HW sweep].
+`librocketnpu` runs these operations at M of 12 or more.
 
 ### Subtract
 

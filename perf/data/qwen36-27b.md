@@ -1,11 +1,14 @@
 <!-- Raw llama-bench + llama-perplexity output backing perf/benchmarks.md (Qwen3.6-27B). The
      clk=200 in each per-run header is an idle sample taken between the discarded warmup and the
-     measured run; the NPU rides to 600 MHz under load (module loaded with
-     rocket_npu_clk_hz=600000000). Warm medians. Q4_K_M only: at 27B the F16 GGUF (~54 GB) and
+     measured run. Under load the NPU runs at ~816 MHz, the 600 MHz request at a 0.80 V rail (module
+     loaded with rocket_npu_clk_hz=600000000, ../clock.md).
+
+     Warm medians. Q4_K_M only: at 27B the F16 GGUF (~54 GB) and
      Q8_0 (~29 GB) do not fit the 31 GB board; Q4_K_M (15.92 GiB) fits with headroom. Quant and PPL
      both at -b 2048 -ub 2048. Two methodology deviations forced by the 27B CPU baseline being
      ~1.8 t/s (a full -r 2 CPU pass is ~2.8 h): the CPU baseline runs -r 1 (its prefill variance is
      +/-0.01 t/s, the BENCHMARKS_TODO-sanctioned CPU-rep trim); the NPU headline stays -r 2.
+
      GGUF from unsloth/Qwen3.6-27B-MTP-GGUF; arch qwen35 (hybrid Gated-DeltaNet linear-attention +
      SSM scan: the DeltaNet/SSM-scan layers are CPU-only ops and stay there, the FFN + attention
      projections offload). Unlike the instruct/reasoning models in this record, the absolute

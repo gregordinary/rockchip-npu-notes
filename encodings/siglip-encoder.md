@@ -96,8 +96,9 @@ the matmul's `B=[N,K]`), so no transpose is needed.
 
 ## Accuracy
 
-**Conditions:** RK3588 (Turing RK1), NPU 600 MHz, 2026-06-24, against an fp32 HF `transformers`
-oracle. The input is a 512×512 synthetic image, smooth gradients plus mild noise, seed 1234.
+**Conditions:** RK3588 (Turing RK1), NPU clock ~816 MHz, 2026-06-24, against an fp32 HF
+`transformers` oracle. The input is a 512×512 synthetic image, smooth gradients plus mild
+noise, seed 1234.
 
 The table gives the per-layer cosine of the on-NPU hidden states against the fp32 HF oracle,
 averaged over the 12 layers [HW sweep]. It also gives the post-LayerNorm output:
@@ -141,9 +142,9 @@ anyway (free, because the data is already de-tiled there).
 
 ### Latency
 
-**Conditions:** RK3588 (Turing RK1), mainline 7.1, NPU 600 MHz, `ROCKET_KACC=1`. All CPU cores
-are pinned to the `performance` governor, under `taskset 0xf0` (A76 cluster). Each figure is
-the warm median of 12 (discard cold).
+**Conditions:** RK3588 (Turing RK1), mainline 7.1, NPU clock ~816 MHz, `ROCKET_KACC=1`. All CPU
+cores are pinned to the `performance` governor, under `taskset 0xf0` (A76 cluster). Each
+figure is the warm median of 12 (discard cold).
 
 **Not characterized:** the resident latency with the 2026-10-09 and 2026-10-10
 `librocketnpu` changes to this encode.
@@ -156,7 +157,7 @@ the warm median of 12 (discard cold).
 The resident figure is measured without the head fan-out and the GELU LUT, both on by
 default (§"Latency optimizations") [HW sweep]. With both on, the resident warm median is
 1.394-1.412 s over four real images, 20 calls each [HW sweep 2026-10-03, `7.2.8-1-arm64`,
-`rocket` 1.3.0, 600 MHz, `performance`, `taskset 0xf0`]. That build predates four
+`rocket` 1.3.0, ~816 MHz, `performance`, `taskset 0xf0`]. That build predates four
 `librocketnpu` changes to this encode, from 2026-10-09 and 2026-10-10. They cover the
 encoder's scratch and V transpose, its bias add and LayerNorm, the FA's QK de-tile and its
 softmax.
@@ -177,7 +178,7 @@ reproduced, see [../SOURCES.md](../SOURCES.md)].
 ### Host runtime policy and the CPU governor
 
 **Conditions:** the resident path without the head fan-out and the GELU LUT, NPU core clock
-held at 600 MHz throughout.
+held at ~816 MHz throughout.
 
 This workload is host-orchestration-bound (submit `ioctl`, blocking wait on the completion IRQ,
 host softmax/LN/GELU, de-tile/readback). The clock patch also re-applies the NPU voltage and
@@ -204,9 +205,10 @@ mechanism is in [cpu-governor-and-offload.md](../perf/cpu-governor-and-offload.m
 > [!NOTE]
 > The rocket clock patch writes the NPU PVTPLL/SCMI clock directly in `runtime_resume`,
 > bypassing the Linux clk framework's cache. `debugfs .../aclk_npu0/clk_rate` (and
-> `clk_npu_dsu0`) therefore read a stale 250 MHz even while the cores run at 600 MHz. The
+> `clk_npu_dsu0`) therefore read a stale 250 MHz even while the cores run at ~816 MHz. The
 > driver's own `dmesg` line (`core N NPU clk -> 600000000 Hz (reads back 600000000)`) gives the
-> rate the cores run at.
+> requested rate. At the 0.80 V rail the 600 MHz request runs at ~816 MHz
+> ([clock.md](../perf/clock.md) §"Reading the physical clock").
 
 ### Time breakdown
 
@@ -231,7 +233,7 @@ FA-on encode:
 | im2col + pos | ~ negligible | |
 
 The 2026-10-09 and 2026-10-10 changes were measured on Depth Anything v2-small, which runs the
-same encoder [HW sweep 2026-10-09 and 2026-10-10, RK1, 600 MHz, `ondemand`]. They cut its
+same encoder [HW sweep 2026-10-09 and 2026-10-10, RK1, ~816 MHz, `ondemand`]. They cut its
 LayerNorm, its bias adds, its head transpose, and its attention's de-tile and softmax.
 
 On a single worker (`ROCKET_SIGLIP_FA=0`) the attention block is ~63 % and ~1.9x slower.
@@ -272,7 +274,7 @@ readback-bound KACC matmul. The gain is largest where output `M·N` is big and K
 #### Head fan-out
 
 The head fan-out (§"Simple and resident paths") cuts the attention block ~1.9x and the whole
-resident encode 1.44-1.51x warm (cosine identical, 0.999998 mean-layer) [HW sweep, 600 MHz,
+resident encode 1.44-1.51x warm (cosine identical, 0.999998 mean-layer) [HW sweep, ~816 MHz,
 loaded board]. On a single worker, the attention is the resident path's largest slice. The
 fan-out reuses the LLM flash-attention primitive rather than a new kernel, so the
 head-chaining and resident-scratch work applies to it directly.
@@ -294,7 +296,7 @@ multicored, GELU is the second-largest cost (§"Time breakdown"). The LUT is 1.2
 whole resident encode.
 
 The fan-out and the LUT together are 1.78x warm (4.10 -> 2.30 s, loaded board, cosine
-0.999998) [HW sweep, 600 MHz]. The resident encode then runs under the 2.71 s idle baseline
+0.999998) [HW sweep, ~816 MHz]. The resident encode then runs under the 2.71 s idle baseline
 even under load.
 
 An on-chip GELU would need the cube residency that loses multicore (§"Cube chaining of the

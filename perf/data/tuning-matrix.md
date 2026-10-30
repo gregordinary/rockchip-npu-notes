@@ -3,14 +3,14 @@
      buy", which is a ratio of two NPU arms, so there is no CPU arm here (CPUARM=1 adds one; the
      per-model CPU reference is already in the sibling files). MODE=headline, so pp2048 only.
 
-     Method: RK1 (RK3588), NPU pinned 600 MHz, CPU governor `performance` on all three policies
-     (cur = max, 1.8 / 2.4 / 2.4 GHz), package 41-59 C across the landed units, board otherwise idle. Each arm
-     resets the board's memory (drop_caches + compact_memory) and then runs a discarded warm-up
-     process, both outside the timed region, and the unit is repeated over PASSES interleaved
-     passes with the ARM ORDER ROTATED, ratios paired within a pass. llama-bench -r 3 after its own
-     internal warm-up. Stock is spelled as an ABSENCE of settings, not as flags that match today's
-     defaults, so a default moving underneath this file changes the measurement instead of hiding
-     in it.
+     Method: RK1 (RK3588), NPU pinned at ~816 MHz (the 600 MHz request, ../clock.md). CPU governor
+     `performance` on all three policies (cur = max, 1.8 / 2.4 / 2.4 GHz), package 41-59 C across
+     the landed units, board otherwise idle. Each arm resets the board's memory (drop_caches +
+     compact_memory) and then runs a discarded warm-up process, both outside the timed region, and
+     the unit is repeated over PASSES interleaved passes with the ARM ORDER ROTATED, ratios paired
+     within a pass. llama-bench -r 3 after its own internal warm-up. Stock is spelled as an ABSENCE
+     of settings, not as flags that match today's defaults, so a default moving underneath this file
+     changes the measurement instead of hiding in it.
 
      THE PASSES ARE NOT OPTIONAL, and this file's first unit is why. Measured once per arm, unit 1
      read stock 108.46 and `-b 2048 -ub 2048` 110.92 -- a 1.023x lever. Measured over three
@@ -83,7 +83,7 @@ Unit 2 cost seven passes to land unresolved for a reason its own teardown line s
 line was read for every f16 unit before any of them got board time — one warm-up-sized process per
 arm, `ROCKET_LOG_STDERR=1` with stderr kept, `-p 512` to clear the `ROCKET_MIN_M` floor
 (`perf/data/f16-resident-readout.sh`, ~11 minutes for all four)
-[HW sweep 2026-08-28, RK1, 600 MHz]:
+[HW sweep 2026-08-28, RK1, ~816 MHz]:
 
 | unit | stock | `ROCKET_F16_RESIDENT=auto` | what the knob moves |
 |---|---|---|---|
@@ -107,7 +107,7 @@ the matrix rather than the smallest.
 ## What the whole residency route is worth: 1.08x, flat across the class
 
 The three 3B-class f16 units ran on 2026-08-29 and all three resolved at three passes
-[HW sweep, RK1, 600 MHz, governor `performance`]:
+[HW sweep, RK1, ~816 MHz, governor `performance`]:
 
 | unit | knob turns on | stock t/s | resident t/s | paired ratio | per-pass |
 |---|---|---:|---:|---:|---|
@@ -139,7 +139,7 @@ model noisy on it".
 
 Every quant unit measured under this protocol reads below the ~2.1x that
 `quant-prefill-microbatch.md` records for the same flag, including the 9B that figure was taken on
-[HW sweep, RK1, 600 MHz, three rotated passes]:
+[HW sweep, RK1, ~816 MHz, three rotated passes]:
 
 | unit | params | stock (`-ub 512`) | `-b 2048 -ub 2048` | paired ratio | per-pass |
 |---|---:|---:|---:|---:|---|
@@ -212,7 +212,7 @@ model reaches the published ~2x.**
 
 The two models the published `-ub` figures were taken on have now both been re-measured under this
 protocol, and they did not merely both fall — **they fell by the same multiplier**
-[HW sweep 2026-08-29, RK1, 600 MHz, three rotated passes each]:
+[HW sweep 2026-08-29, RK1, ~816 MHz, three rotated passes each]:
 
 | model | published (2026-06-28) | measured now | decay |
 |---|---:|---:|---:|
@@ -247,7 +247,7 @@ where their 0.94-1.13x came from. The mechanism's *direction* is documented in
 
 `smolvlm2` is the first unit where following the tuning guide end to end buys **nothing**, and the
 row is the reason this matrix exists rather than a projection from the flag defaults
-[HW sweep 2026-08-29, RK1, 600 MHz, three rotated passes]:
+[HW sweep 2026-08-29, RK1, ~816 MHz, three rotated passes]:
 
 | arm | t/s | against stock | per-pass |
 |---|---:|---:|---|
@@ -281,7 +281,7 @@ not a cause fitted to one point.
 
 The `moe` unit's four arms exist so the expert route's contribution can be separated from the
 `-ub` lever's. On `gpt-oss-20b` they separate cleanly, and one pair that was expected to be
-identical is not [HW sweep 2026-08-29, RK1, 600 MHz, three rotated passes, all four resolved]:
+identical is not [HW sweep 2026-08-29, RK1, ~816 MHz, three rotated passes, all four resolved]:
 
 | arm | t/s | against stock | per-pass | experts placed |
 |---|---:|---:|---|---|
@@ -323,7 +323,7 @@ so the two figures in that basis cell already disagreed.
 ## On a MoE model the `-ub` flag can be buying something else entirely
 
 The four-arm design pays for itself on `deepseek-v2-lite`, because the arm that looks like the
-`-ub` lever is mostly not [HW sweep 2026-08-29/30, RK1, 600 MHz, three rotated passes, all four
+`-ub` lever is mostly not [HW sweep 2026-08-29/30, RK1, ~816 MHz, three rotated passes, all four
 resolved, per-pass ratios agreeing to 0.4%]:
 
 | arm | t/s | against stock | experts placed |
@@ -379,7 +379,7 @@ unit — stock, `ub2048`, and the same pair under the cache — so `dqc2048/dqc5
 pass is the `-ub` lever with the dequant term removed, and `full / control` is the dequant
 component. Greedy output under the cache is byte-identical to the streaming path, and every arm's
 `[dq-cache]` teardown line reported full engagement (150 / 200 / 165 weights, 0 still-streaming)
-[HW sweep 2026-08-31, RK1, 600 MHz, governor `performance`, three rotated passes, 0 failed arms]:
+[HW sweep 2026-08-31, RK1, ~816 MHz, governor `performance`, three rotated passes, 0 failed arms]:
 
 | unit | full `-ub` lever | dequant component | non-dequant residue (control lever) | per-pass control |
 |---|---:|---:|---:|---|
@@ -415,14 +415,14 @@ for the whole class rather than for smolvlm2 alone.
 **The actionable form of the smolvlm2 finding is residency at the DEFAULT `-ub`, and it was
 hiding behind the arm stacking.** The matrix's `qresident` arm stacks on `-b 2048 -ub 2048`, so on
 this model it measured residency on top of the loss and read 1.002x flat. Unstacked
-[HW sweep 2026-08-31, RK1, 600 MHz, three rotated passes, 165 resident (2976 MB), 0 streamed]:
+[HW sweep 2026-08-31, RK1, ~816 MHz, three rotated passes, 165 resident (2976 MB), 0 streamed]:
 `ROCKET_QUANT_RESIDENT=auto` at stock `-ub 512` reads **1.346x** (1.346 1.337 1.353) — above the
 dqc512 control's 1.266x, as removing the per-call pack on top of the dequant should be. On a
 model whose `-ub` residue is a loss, the recipe inverts: residency INSTEAD OF `-ub 2048`, not on
 top of it.
 
 **The inversion is now measured across the whole sub-4B class, and it holds on every unit**
-[HW sweep 2026-08-31, RK1, 600 MHz, three rotated passes per unit, all arms 100% resident /
+[HW sweep 2026-08-31, RK1, ~816 MHz, three rotated passes per unit, all arms 100% resident /
 0 streamed, stock arms replicating the matrix epoch to <= 0.7%; raw files
 `dqc-session/*-qres512.md`]:
 
@@ -457,7 +457,7 @@ the only measured model whose non-dequant `-ub` residue is a WIN (1.038x), so it
 where the residue argument predicts stacking should hold. It does not: unstacked reads
 **1.752x** against the stacked **1.661x**, resolved the same way on all three passes, with the
 stock arm replicating the matrix epoch to 0.2% and every pass 100% resident
-[HW sweep 2026-08-31, RK1, 600 MHz, three rotated passes, raw in
+[HW sweep 2026-08-31, RK1, ~816 MHz, three rotated passes, raw in
 `ro-session/qwen35-9b-qres512.md`]. So the earlier expectation recorded here — that stacking
 barely matters on a model with a winning residue — was wrong by 5.5%, and in the direction of
 unstacked.
@@ -467,7 +467,7 @@ unstacked.
 `gemma4-12b` was expected to be the case where the class rule breaks, because it places only
 part of its weights and the streamed remainder still pays the per-micro-batch dequant that the
 unstacked form exists to avoid. It does not break, and the reason is a term the six
-fully-placed models could not show [HW sweep 2026-08-31, RK1, 600 MHz, three rotated passes,
+fully-placed models could not show [HW sweep 2026-08-31, RK1, ~816 MHz, three rotated passes,
 raw in `ro-session/gemma4-12b-qres.md`]:
 
 | arm | `-ub` | weights resident | MB resident | pp2048 |
@@ -503,7 +503,7 @@ and **1.095** on the 9B. A band built on a flat `k` fitted at one size will read
 larger one, which is how this cell's own registered band missed on the high side.
 
 **The smolvlm2 non-dequant residue is bounded by a profiled A/B of the dqc pair, and half of
-it is the output de-tile** [HW sweep 2026-08-31, RK1, 600 MHz, one profiled process per arm,
+it is the output de-tile** [HW sweep 2026-08-31, RK1, ~816 MHz, one profiled process per arm,
 `ROCKET_MM_PROFILE=1 ROCKET_FA_TIMING=1`, both arms under the cache; the profiled arms
 reproduce the campaign ratio to 0.1% (65.14/51.48 = 0.790 against 0.789), raw in
 `dqc-session/smolvlm2.dqc{512,2048}-prof.{out,err}`]:
@@ -554,7 +554,7 @@ a benchmark taken with any background load overstates it for an idle deployment.
 ## The largest model in the matrix is the one where every tuned arm loses
 
 `qwen3-30b-a3b` closes the matrix and inverts its headline. All four arms resolved, per-pass ratios
-agreeing to 0.4%, and **all three tuned arms are below stock** [HW sweep 2026-08-30, RK1, 600 MHz,
+agreeing to 0.4%, and **all three tuned arms are below stock** [HW sweep 2026-08-30, RK1, ~816 MHz,
 three rotated passes]:
 
 | arm | t/s | against stock | placed |
@@ -600,7 +600,7 @@ dense group at 1.038-1.093x, and it reads below all of them. Read the MoE units 
 
 This was the matrix's one named open question, posed three ways — fits, refuses, or refuses for a
 stated reason. The answer is **none of them: it fits partially, and the limit that stops it is the
-runtime reserve floor rather than the resident-weight budget** [HW sweep 2026-08-29, RK1, 600 MHz,
+runtime reserve floor rather than the resident-weight budget** [HW sweep 2026-08-29, RK1, ~816 MHz,
 three rotated passes, `gemma4-12b` = 11.91 B, 6.86 GiB `Q4_K_M`]:
 
 ```
@@ -671,7 +671,7 @@ the two units with the widest spread on record (unit 2, ~11%) are among those th
 ### The predictors do not predict the spread, and the re-run says what would
 
 The correlation has now been run, and unit 2 re-run under the predictor-carrying harness
-[HW sweep 2026-08-31, RK1, 600 MHz, governor `performance`; raw rows in
+[HW sweep 2026-08-31, RK1, ~816 MHz, governor `performance`; raw rows in
 `qwen35-08b-f16-rerun.md`, two 6-pass campaigns, 24 predictor-carrying arms].
 
 **The recorded covariates cannot carry the spread.** Over 177 joined (PRED, t/s) rows — the
@@ -707,7 +707,7 @@ correlation over it to mean anything.
 
 ### The L3 column is a within-arm covariate, the level is thread placement, and one intervention separates them
 
-The readout has now been taken on the unit it was built for [HW sweep 2026-08-31, RK1, 600 MHz,
+The readout has now been taken on the unit it was built for [HW sweep 2026-08-31, RK1, ~816 MHz,
 governor `performance`, `qwen35-08b-f16`, six rotated passes over two arms, memory reset before
 every arm, `pfn_zero_frac`=0.0000 and `pmu_enabled`=100 on all twelve processes; raw rows in
 `ro-session/trackd-08b-f16-6pass.md`]. Both arms reproduced the mode at the depth the unit was
@@ -773,7 +773,7 @@ them. That is what the next section intervenes on.
 The knob is `taskset`, not `ROCKET_CPU_AFFINITY`. `librocketnpu` already pins its own pack and
 readback workers to the max-frequency cluster, all four A76s on this part, so the instructions the
 readout sees on the little cluster belong to llama.cpp's own ggml threads. Three arms, six rotated
-passes, everything else held [HW sweep 2026-09-01, RK1, 600 MHz, governor `performance`,
+passes, everything else held [HW sweep 2026-09-01, RK1, ~816 MHz, governor `performance`,
 `qwen35-08b-f16`, memory reset before every arm, 0 failed arms, `pfn_zero_frac`=0.0000 and
 `pmu_enabled`=100 on all eighteen processes; raw rows in
 `ro-session/trackd-pin-08b-f16-6pass.md`]. `pin76` is `taskset 0xf0` at llama-bench's default
@@ -836,7 +836,7 @@ in this workspace, and this board does not settle a sign at one process per arm.
 
 **A second model, at the other end of the matrix and under the recipe the guide recommends.**
 `qwen35-9b` Q4_K_M with `ROCKET_QUANT_RESIDENT=auto` at the default `-ub`, three rotated passes,
-every arm 200 weights resident at 13184 MB and 0 streamed [HW sweep 2026-09-01, RK1, 600 MHz,
+every arm 200 weights resident at 13184 MB and 0 streamed [HW sweep 2026-09-01, RK1, ~816 MHz,
 governor `performance`, 0 failed arms, both guards clean on all nine; raw in
 `ro-session/trackd-pin-9b-qres-3pass.md`]. `pin76` reads **1.059x** (per-pass 1.098 / 1.010 /
 1.068) and `pin76t4` **1.062x** (1.089 / 1.052 / 1.045), with all six ratios above 1.00. So the
@@ -977,7 +977,7 @@ residency has already removed the A76 host pack work that pinning was accelerati
 null on a knob that places nothing. **It does not happen.** `-b 2048 -ub 2048` alone on
 `qwen35-9b` Q4_K_M, which places nothing at all, reads an interaction of **0.9775** (per-pass
 0.9910 / 0.9903 / 0.9813 / 0.9719 / 0.9538 / 0.9767, sd 0.0138, se 0.0056, **4.0 standard errors
-below 1.00** and below it in **6 of 6** passes) [HW sweep 2026-09-02, RK1, 600 MHz, six rotated
+below 1.00** and below it in **6 of 6** passes) [HW sweep 2026-09-02, RK1, ~816 MHz, six rotated
 passes, 24 of 24 `<!--DATA-->` rows, 0 failed arms, `pfn_zero_frac`=0.0000 and `pmu_enabled`=100 on
 all 24, and no arm reports a resident weight; raw in `ro-session/trackd20-pin-ub-2x2-6pass.md`].
 
@@ -1023,7 +1023,7 @@ Every cell it was fitted on carries a knob that removes HOST work: two residency
 micro-batch knob. `ROCKET_MM_ASYM` does not -- it halves Nt so the CBUF fill does more MAC per
 pass, at unchanged K-accumulation and output volume -- and on `gemma4-12b` F16 the interaction is
 **1.0047** (se 0.0108, per-pass 0.9642 / 0.9888 / 1.0136 / 1.0191 / 1.0409 / 1.0018, below 1.00 in
-2 of 6) [HW sweep 2026-09-02, RK1, 600 MHz, two three-pass campaigns pooled, 24 of 24
+2 of 6) [HW sweep 2026-09-02, RK1, ~816 MHz, two three-pass campaigns pooled, 24 of 24
 `<!--DATA-->` rows, 0 failed arms, `pfn_zero_frac`=0.0000 and `pmu_enabled`=100 on all 24, no arm
 placing a resident weight; raw in `ro-session/trackd23-asym-pin-12b-3pass.md` and
 `ro-session/trackd23b-asym-pin-12b-repeat.md`].
@@ -1123,7 +1123,7 @@ seven cells over three units cannot say which.
 adds 51% of host core-seconds -- and the model, with both signs flipped, predicts I = 1.031: the
 CPU-attention arm should gain MORE from pinning, since it has more host work for pinning to speed
 up. It gains less: **I = 0.9690 +- 0.0090, 6.8 se below the model and 3.4 se below the null**,
-below 1 in 3 of 3 passes [HW sweep 2026-09-03, RK1, 600 MHz, `performance`, three rotated passes,
+below 1 in 3 of 3 passes [HW sweep 2026-09-03, RK1, ~816 MHz, `performance`, three rotated passes,
 12 of 12 `<!--DATA-->` rows, 0 failed arms, `pfn_zero_frac` 0.0000 and `pmu_enabled` 100 on all,
 no arm placing a resident weight; raw in `ro-session/trackd32-fa-pin-2x2-12b.md`, driver
 `perf/data/trackd32-fa-pin-2x2-12b.sh`; registered 2026-09-03, sign REFUTED]. **The model
@@ -1202,7 +1202,7 @@ returns nonsense, which is the control.
 reps. The **slope** is the per-rep host work and gives an uncontaminated `phi`; the **intercept**
 is the model load plus the ingest. `gemma4-12b` F16, PINNED throughout (`PIN_MASK=0xf0 -t 4`,
 since `phi` is defined at fixed pinning), streamed against `ROCKET_F16_RESIDENT=auto`, at `-r 1`,
-`-r 2` and `-r 4`, three rotated passes [HW sweep 2026-09-02, RK1, 600 MHz, governor
+`-r 2` and `-r 4`, three rotated passes [HW sweep 2026-09-02, RK1, ~816 MHz, governor
 `performance`; 18 of 18 `<!--DATA-->` rows, 0 failed arms, `pfn_zero_frac`=0.0000 and
 `pmu_enabled`=100 on all eighteen; raw in `ro-session/trackd25-busy-intercept-12b.md`]:
 
@@ -1305,7 +1305,7 @@ third, non-nested knob on this unit is what would give the first genuine residua
 **THE NON-NESTED THIRD POINT SITS ABOVE THE NESTED LINE AT 4 se, AND ITS `phi` WAS DERIVABLE FROM THE
 OTHER TWO CELLS TO 0.3%.** Unstacked quant residency -- `ROCKET_QUANT_RESIDENT=auto` at the DEFAULT
 `-ub`, the recipe this file recommends -- measured with its own unpinned `a` rather than an imported
-one [HW sweep 2026-09-03, RK1, 600 MHz, `performance`; six pinned arms at `-r 1/2/4` for the
+one [HW sweep 2026-09-03, RK1, ~816 MHz, `performance`; six pinned arms at `-r 1/2/4` for the
 rep-count regression plus two unpinned arms at `-r 2`, three rotated passes, 24 of 24 `<!--DATA-->`
 rows, 0 failed arms, `pfn_zero_frac` 0.0000 and `pmu_enabled` 100 on all, 12 of 12 resident arms
 at 200 weights / 13184 MB and 0 of 12 stock arms placing anything; raw in
@@ -1489,7 +1489,7 @@ route declining on the NPU IOVA window and a real `ROCKET_CREATE_BO` ENOSPC besi
 [ro-session/trackd19-f16-window-ladder.md]. **That does not transfer to the shape every campaign
 number in this file is taken at.** At `-p 2048` the KV cache lowers MemAvailable and the RESERVE
 FLOOR binds instead, and a worker count buys file descriptors, which relieve the window and do
-nothing to a memory floor [HW readout 2026-09-03, RK1, 600 MHz, `gemma4-12b` F16,
+nothing to a memory floor [HW readout 2026-09-03, RK1, ~816 MHz, `gemma4-12b` F16,
 `ROCKET_F16_RESIDENT=auto`, `-p 2048 -n 0 -r 1`, all four arms rc=0; raw in
 `ro-session/trackd26-f16-window-p2048.md`]:
 
@@ -1516,7 +1516,7 @@ MemAvailable. That is why the readout runs `t5` twice.
 The knob's only measured price was **0.9873x** of prefill wall on `gemma4-12b` F16 at pp2048, with
 `a55_inst_share` rising 0.1410 to 0.1498. On `gpt-oss-20b` MXFP4 the same step measures
 **1.0274x**, per-pass 1.0289 / 1.0287 / 1.0247, se 0.0014, **20.1 standard errors above 1.00** and
-above it in 3 of 3 passes [HW sweep 2026-09-02, RK1, 600 MHz, `-b 2048 -ub 2048`, three rotated
+above it in 3 of 3 passes [HW sweep 2026-09-02, RK1, ~816 MHz, `-b 2048 -ub 2048`, three rotated
 passes, 6 of 6 `<!--DATA-->` rows, 0 failed arms, `pfn_zero_frac`=0.0000 and `pmu_enabled`=100 on
 all six; raw in `ro-session/trackd17c-moe-nthreads-cost.md`].
 
@@ -1537,7 +1537,7 @@ pair read 24.54 against 28.36 t/s, a 0.87x, which three rotated passes turned in
 
 **The shape between five and eight is a step at the first worker above the default**, not a ramp
 and not a step at the count that balances the cores. Four arms, ratios paired within a pass
-against nt5, three rotated passes [HW sweep 2026-09-02, RK1, 600 MHz, `-b 2048 -ub 2048`, 12 of 12
+against nt5, three rotated passes [HW sweep 2026-09-02, RK1, ~816 MHz, `-b 2048 -ub 2048`, 12 of 12
 `<!--DATA-->` rows, 0 failed arms, `pfn_zero_frac`=0.0000 and `pmu_enabled`=100 on all twelve, and
 the pre-flight admits an identical 63 stacks / 24529 MB RAM / 15946 MB IOVA and announces `Bound
 by RAM` in every one; raw in `ro-session/trackd21-moe-nthreads-shape.md`].
@@ -1579,7 +1579,7 @@ per route on one board, and the mechanism is a worker count against a big-core c
 it ports to a part with a different one.
 
 **A third model, and it is the one the standing negative was recorded on.** `gemma4-12b` F16,
-the 22.18 GiB GGUF, three rotated passes [HW sweep 2026-09-01, RK1, 600 MHz, governor
+the 22.18 GiB GGUF, three rotated passes [HW sweep 2026-09-01, RK1, ~816 MHz, governor
 `performance`, memory reset before every arm, 0 failed arms, 9 of 9 `<!--DATA-->` rows,
 `pfn_zero_frac`=0.0000 and `pmu_enabled`=100 on all nine; raw in
 `ro-session/trackd-pin12b-f16-3pass.md`].
@@ -1660,7 +1660,7 @@ quieter.** The 6.5% per-pass paired-ratio sd on the 0.8B class is what bounds ev
 matrix, so the same two-arm unit was run twice, six passes each: once with both arms unpinned and
 once with `PIN_MASK=0xf0 -t 4` applied to both, which makes pinning a constant within a campaign
 rather than a difference between arms. The unit is `qwen35-08b-f16` stock against
-`ROCKET_F16_RESIDENT=auto`, the one that straddles [HW sweep 2026-09-01, RK1, 600 MHz, governor
+`ROCKET_F16_RESIDENT=auto`, the one that straddles [HW sweep 2026-09-01, RK1, ~816 MHz, governor
 `performance`, memory reset before every arm, 0 failed arms, 12 of 12 `<!--DATA-->` rows per
 campaign, both guards clean on all twenty-four, and every arm at its expected split -- 126 resident
 stock and 150 under the knob, 0 streamed, twelve of each; raw in
@@ -1751,7 +1751,7 @@ every unit that could host the arm, so it is a knob to know about and not one to
 **The residency configuration varies with the model held fixed, and the two host-side levers
 overlap.** The three cells above differ in residency and in model size at once, so neither
 separates them. A 2x2 in pinning and residency on ONE GGUF does. `gemma4-12b` F16, `-p 2048 -n 0
--r 3`, three passes [HW sweep 2026-09-01, RK1, 600 MHz, governor `performance`, memory reset
+-r 3`, three passes [HW sweep 2026-09-01, RK1, ~816 MHz, governor `performance`, memory reset
 before every arm, arm order rotated per pass, ratios paired within a pass, 12 of 12
 `<!--DATA-->` rows, `pfn_zero_frac`=0.0000 and `pmu_enabled`=100 on all twelve, and every
 resident arm at an identical 286 of 328 weights (18078 MB, 87%); raw in
@@ -1862,7 +1862,7 @@ setting to adopt.
 ### What the last 13% is worth, and why the profiler could not say
 
 **The cap on full residency is 1.009x, and it comes from two measured walls rather than from a
-profile bucket** [HW readout 2026-09-01, RK1, 600 MHz, `gemma4-12b` F16 at `-p 2048`, 87%
+profile bucket** [HW readout 2026-09-01, RK1, ~816 MHz, `gemma4-12b` F16 at `-p 2048`, 87%
 resident; raw in `ro-session/trackd14-packcap-readout.md`]. Residency over 87% of this model's
 weight bytes is a measured 1.0614x, worth 5.94 s of a 102.50 s streamed prefill. The 42 weights
 left over are 2712 of 20790 MB. At a per-byte-constant pack cost that is 0.89 s of the 96.56 s
@@ -1901,7 +1901,7 @@ placement rather than two arms.
 
 ### Full residency does not pay on this model, and the recipe is two opposite effects that cancel
 
-[HW sweep 2026-09-01, RK1, 600 MHz, governor `performance`, `gemma4-12b` F16 at `-p 2048 -n 0
+[HW sweep 2026-09-01, RK1, ~816 MHz, governor `performance`, `gemma4-12b` F16 at `-p 2048 -n 0
 -r 3`, three rotated passes, memory reset before every arm, ratios paired within a pass, 9 of 9
 `<!--DATA-->` rows, 0 failed arms, `pfn_zero_frac`=0.0000 and `pmu_enabled`=100.0 on all nine, and
 each arm's placement identical in all three passes; raw in `ro-session/trackd15-res100-value.md`.]
@@ -1960,7 +1960,7 @@ interact with the knob under test. The `gemma4-12b` F16 2x2 above resolved a 0.9
 against a 6.1 pp knob and left the published ratio standing. **A knob eleven times larger
 interacts more, and the sign is now resolved on both units.** `qwen35-9b` Q4_K_M, the matrix's
 largest resolved cell, stock against `ROCKET_QUANT_RESIDENT=auto -b 2048 -ub 2048`, with each arm
-run pinned and unpinned [HW sweep 2026-09-01/02, RK1, 600 MHz, governor `performance`, `-p 2048
+run pinned and unpinned [HW sweep 2026-09-01/02, RK1, ~816 MHz, governor `performance`, `-p 2048
 -n 0 -r 3`, **six** rotated passes, memory reset before every arm, ratios paired within a pass,
 24 of 24 `<!--DATA-->` rows, 0 failed arms, `pfn_zero_frac`=0.0000 and `pmu_enabled`=100.0 on all
 24, and all twelve resident-arm lines at 200 of 200 (13184 MB), 0 streamed; raw in

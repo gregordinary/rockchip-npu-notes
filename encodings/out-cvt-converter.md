@@ -171,8 +171,8 @@ speed optimization).
 
 ## Per-channel (per-axis) requant on the BS multiplier
 
-**Conditions:** RK3588 (Turing RK1), 600 MHz, 2026-09-27. The int8-out depthwise program, at
-two shapes, one a stride-2 plane.
+**Conditions:** RK3588 (Turing RK1), NPU clock ~816 MHz, 2026-09-27. The int8-out depthwise
+program, at two shapes, one a stride-2 plane.
 
 The output requant has one scale and one shift per task. A per-output-channel scale therefore
 goes on the BS stage's multiplier, which reads a per-channel operand [HW sweep]:
@@ -296,7 +296,7 @@ next channel's `C` would fall under 2048. A wide spread then costs tasks rather 
 resolution.
 
 Through `tflite-rocket`, EfficientDet-Lite0's 76 per-axis depthwise layers run on this entry
-[HW sweep, RK1, 600 MHz, 2026-09-27]. The model runs 1.095-1.104x warm, 133 -> 121 ms. COCO
+[HW sweep, RK1, ~816 MHz, 2026-09-27]. The model runs 1.095-1.104x warm, 133 -> 121 ms. COCO
 mAP over 100 images is 0.3019 against the CPU's 0.2996. The depthwise term falls from 43.2 to
 34.7 ms of the op sum, and most of that is the delegate's host stages around the call. The
 library call itself moves 28.6 -> 26.8 ms. Most of these layers are small enough that the fixed
@@ -319,7 +319,7 @@ element. The runs per SoC:
 - **RK3576**: 160 tie elements per setting at two shifts, both signs, through
   `rocket_matmul_int8_rk3576` [H96 MAX M9].
 - **RK3588**: 128 tie elements per setting at shifts 1 and 3, both signs [Turing RK1 at
-  600 MHz]. The test runs through the int8 matmul's integer convert
+  ~816 MHz]. The test runs through the int8 matmul's integer convert
   (`ROCKET_INT8_DEQ=1`, `CVTTYPE=0`, `SCALE=1`), whose fp32 output holds the rounded value
   exactly.
 

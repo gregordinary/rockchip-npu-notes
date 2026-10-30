@@ -1,4 +1,4 @@
-<!-- The FA_THREADS correctness gate, ministral3-3b F16, RK3588 600 MHz, governor ondemand,
+<!-- The FA_THREADS correctness gate, ministral3-3b F16, RK3588 at ~816 MHz, governor ondemand,
      taskset 0xf0 -t 4, llama-bench -p 2048 -n 0 -r 1 -v, one process per arm, cold page cache
      not reset between arms. Measured 2026-09-07 on the `.so` built from ggml-rocket HEAD plus
      the ROCKET_FA_CHECKSUM knob.

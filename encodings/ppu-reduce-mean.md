@@ -52,7 +52,7 @@ the chain is layout-consistent by construction.
 
 ## PPU-written sub-4 intermediates
 
-**Conditions:** RK3588, `rocket` 1.3.0, NPU clock 600 MHz, 2026-09-26.
+**Conditions:** RK3588, `rocket` 1.3.0, NPU clock ~816 MHz, 2026-09-26.
 
 **Not characterized:** a chain past two passes, an intermediate one row or one column wide,
 int8 pooling, and padded or overlapping windows.
@@ -79,7 +79,7 @@ reset, and still leaves the correct values [HW sweep].
 
 ## Accuracy
 
-**Conditions:** RK3588 (RK1), NPU clock 600 MHz.
+**Conditions:** RK3588 (RK1), NPU clock ~816 MHz.
 
 The mean is checked against an fp64 reference on these cases [HW sweep]:
 
@@ -169,7 +169,7 @@ The probe's method could not have found a failure in these cases:
 
 ### Accuracy
 
-`tests/reduce_mean_rocket.c` (CTest `reduce_mean_rocket`) runs on the RK1 @600 MHz and holds
+`tests/reduce_mean_rocket.c` (CTest `reduce_mean_rocket`) runs on the RK1 at ~816 MHz and holds
 these checks:
 
 - Factor-axis unit checks (16-smooth detect, products in `[2,16]`)

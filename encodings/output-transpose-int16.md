@@ -20,8 +20,8 @@ operands and writes four-byte results. The geometry is `size_e` 3 and a surface 
 destination stride times 4. The CNA and CORE side is the fp16 matmul's, with the precision
 fields at 1 and `qd_en` at 1.
 
-**Conditions:** RK3588, `rocket` 1.3.0, 600 MHz, 2026-09-26. Six shapes with M, K and N all
-different (M 4-100, K 32-1024, N 48-256).
+**Conditions:** RK3588, `rocket` 1.3.0, NPU clock ~816 MHz, 2026-09-26. Six shapes with M, K
+and N all different (M 4-100, K 32-1024, N 48-256).
 
 The int32 writer is bit-exact on every element against the int64 dot product saturated to
 int32 [HW sweep]. The operands cover all of int16 on A, on B, and on both, the last with sums

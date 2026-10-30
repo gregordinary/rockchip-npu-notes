@@ -16,7 +16,7 @@ per-column detail.
 
 **†** The MAC rate does not translate to wall-clock speed. fp16 is the baseline. int8 and
 int4 nominally multiply 2x and 4x faster in the array, and tf32 is half-rate. At the
-current operating point (resident weights, multicore, 600 MHz) the resident matmul
+operating point measured (resident weights, multicore, ~816 MHz) the resident matmul
 measures ~460 GOP/s across fp16, int8, and int4 alike. The path is bound by DMA and
 per-job dispatch, not by the MAC array, and the 2x and 4x integer advantages do not raise
 throughput.

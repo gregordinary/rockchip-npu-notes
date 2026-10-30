@@ -1,8 +1,10 @@
 <!-- Raw llama-bench + llama-perplexity output backing perf/benchmarks.md (Qwen3.5-9B).
      The clk=200 in each per-run header is an idle sample taken between the discarded
-     warmup and the measured run; the NPU rides to 600 MHz under load (module loaded with
-     rocket_npu_clk_hz=600000000, confirmed at 600 MHz by sampling during a run). Warm
-     medians, llama-bench -r 2 plus a discarded warmup. Quants at -b 2048 -ub 2048; F16 at
+     warmup and the measured run. Under load the NPU runs at ~816 MHz, the 600 MHz request at a
+     0.80 V rail (../clock.md). The module was loaded with rocket_npu_clk_hz=600000000, and sampling
+     during a run confirmed the request.
+
+     Warm medians, llama-bench -r 2 plus a discarded warmup. Quants at -b 2048 -ub 2048; F16 at
      defaults. IQ4_XS carried as a gap-finder (importance-matrix 4-bit). See ../benchmarks.md
      Method. Generator: bench-llm.sh + run_sweep_qwen35.sh (2026-07-02). -->
 

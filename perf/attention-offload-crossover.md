@@ -9,7 +9,7 @@ is the default. Without chaining, the NPU's fixed per-head dispatch overhead mov
 out to between 4K and 8K. Within the attention the handler implements, the offload is
 bit-faithful: per-head cosine is 1.0, and differential perplexity FA-NPU == FA-CPU.
 
-**Conditions:** RK3588, fp16, NPU clock 600 MHz, `performance` governor, Gemma-4-12B F16,
+**Conditions:** RK3588, fp16, NPU clock ~816 MHz, `performance` governor, Gemma-4-12B F16,
 `llama-bench` prefill throughput (t/s), chaining on, the NPU offloading every prefill attention
 op, 2026-06-26. The handler is `librocketnpu`'s multicore, host-softmax
 `rocket_flash_attn_fp16_mt` (§"Offload target"), on the library before the FA call's host-pass
@@ -73,7 +73,7 @@ dominates and the NPU is faster.
 
 The flat NPU curve is the product of three combined, independently measured optimizations. All
 are bit-faithful: per-head cosine is 1.0, and differential perplexity FA-NPU == FA-CPU held
-after each [HW sweep, F16, 600 MHz, performance governor]:
+after each [HW sweep, F16, ~816 MHz, performance governor]:
 
 1. **Multicore the heads.** Fanning the 16 heads across the 5 worker fds lifts pp512 from a
    single-fd 7.01 t/s to 13.05, and pp2048 from 5.73 to 11.04. Each fd is one DRM scheduling
@@ -139,7 +139,7 @@ local-layer `n_kv` is still below the window stay on the CPU.
 
 ### 8K and 16K at the default threshold
 
-With the default `n_kv >= 1024` threshold [HW sweep 2026-06-28, F16, 600 MHz, performance
+With the default `n_kv >= 1024` threshold [HW sweep 2026-06-28, F16, ~816 MHz, performance
 governor]:
 
 | context | CPU flash-attn | NPU offload (gated) | ratio |
@@ -211,7 +211,7 @@ matrix, not by the device. Each column below adds one library change to the colu
 | the FA call | 56.7-58.5 | 48.9-49.6 | 41.4-42.7 | 27.6-28.7 |
 
 **Conditions:** Depth Anything v2-small's layer: 1370 tokens, 6 heads of 64, unmasked, on three
-workers of two heads each. RK3588, 600 MHz, `ondemand` governor, A76-confined. Each column comes
+workers of two heads each. RK3588, NPU clock ~816 MHz, `ondemand` governor, A76-confined. Each column comes
 from its own comparison against the column before it. The last column's comparison is one build
 switched by `ROCKET_FA_ROWMAJOR`. Its cube handoff (the scores and P passed in the cube layout)
 measured 9.7-11.0 ms of device waits a range,
@@ -284,7 +284,7 @@ The call against the cube handoff [HW sweep 2026-10-11]:
 | 16384 | 32 KiB | 0.959-0.991x | 0.794-0.818x |
 | 32768 | 64 KiB | 0.958-0.991x | 0.765-0.772x |
 
-**Conditions:** five workers, RK3588, 600 MHz, `ondemand` governor, A76-confined. The table is its own
+**Conditions:** five workers, RK3588, NPU clock ~816 MHz, `ondemand` governor, A76-confined. The table is its own
 measurement series. The comparison in §"Scores and P as rows" measures the plain rows at
 0.636-0.690x at 1370 keys and 0.727-0.763x at 2048.
 
@@ -310,7 +310,7 @@ Through ort-rocket:
 | SigLIP, 196 tokens | 0.959-0.976x | 0.975-0.996x | 0.944-0.948x |
 | CLIP, 197 tokens | 0.955-0.988x | 0.965-0.974x | 0.933-0.945x |
 
-**Conditions:** 4 intra-op threads, spinning off, RK3588, 600 MHz, `ondemand` governor,
+**Conditions:** 4 intra-op threads, spinning off, RK3588, NPU clock ~816 MHz, `ondemand` governor,
 A76-confined.
 
 Every model's cosine against the CPU is unchanged [HW sweep, 2026-10-10 and 2026-10-11].
@@ -319,7 +319,7 @@ RF-DETR's backbone attention changes too: nano 0.939-0.945x and base 0.906-0.947
 Through llama.cpp, the row handoff lifts a whole prefill. Llama-3.2-3B-Instruct F16 under
 `llama-bench -fa 1` at the default `-b`/`-ub` measures 1.058-1.068x the tokens/s of the cube
 handoff at pp2048, and 1.080-1.116x at pp4096. Every attention op past 1024 keys offloads, and
-the micro-batches past 2048 keys run blocks [HW sweep 2026-10-11, RK3588, 600 MHz, governor
+the micro-batches past 2048 keys run blocks [HW sweep 2026-10-11, RK3588, ~816 MHz, governor
 `performance`].
 
 ### Remaining host terms
@@ -337,7 +337,7 @@ bit-faithful (cos = 1.000000 vs the fp64 oracle), and only one is faster. The sp
 the dispatch-bound pattern of this chip. Fewer, bigger submits are faster, and more, smaller
 submits are slower [HW sweep 2026-06-29].
 
-**Conditions:** fp16, 600 MHz, 512 queries, 5 worker threads.
+**Conditions:** fp16, NPU clock ~816 MHz, 512 queries, 5 worker threads.
 
 ### Online/tiled softmax
 
@@ -369,7 +369,7 @@ The masked-tile skip belongs to that tiled path alone, which engages from 8192 k
 (`ROCKET_FA_TILE_MIN_KV`). The default materialized path computes the dense score matrix on a
 sliding-window layer too. The ModernBERT encoder in `librocketnpu` bands its windowed layers
 itself, with query tiles of 128 rows against their own keys plus the window. The banding
-measures -13% at 639 tokens and -14% at 726 [HW sweep, RK1, 600 MHz, 2026-09-27].
+measures -13% at 639 tokens and -14% at 726 [HW sweep, RK1, ~816 MHz, 2026-09-27].
 
 ### Head chaining at long context
 

@@ -48,7 +48,7 @@ predicted idle of 1 ms or more. Disabling it makes offloaded prefill ~3% faster 
 CPU-only prefill unchanged [HW sweep 2026-09-26]. The bias has the governor's direction, and
 is smaller.
 
-**Conditions:** the mainline board, `rocket` 1.3.0, NPU clock 600 MHz, CPU governor
+**Conditions:** the mainline board, `rocket` 1.3.0, NPU clock ~816 MHz, CPU governor
 `performance` on every policy, `llama-bench -p 512 -n 0`.
 
 | model | configuration | ABBA blocks | disabled / enabled, per block |
@@ -105,7 +105,7 @@ governor, the deep idle state, and the core that each call's workers start on.
 Both the `ondemand` governor and `cpu-sleep` lengthen a single-layer call that follows an idle
 gap [HW sweep].
 
-**Conditions:** RK1, NPU clock 600 MHz, `rocket` 1.3.0, 2026-10-09 UTC. An idle gap is slept
+**Conditions:** RK1, NPU clock ~816 MHz, `rocket` 1.3.0, 2026-10-09 UTC. An idle gap is slept
 before each timed call, outside the timing.
 
 | Layer | `ondemand`, no gap / 100 ms gap | `performance` | `performance`, `cpu-sleep` off |

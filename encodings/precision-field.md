@@ -100,12 +100,15 @@ result. tf32 runs at about half the fp16/bf16 rate: big-Gemma `512×3840×4096` 
 
 tf32 is 1 sign, an 8-bit exponent (fp32 range) and a 10-bit mantissa (fp16 precision) in a
 4-byte fp32 container. fp16, bf16 and int16 inputs are 2-byte, int8 is 1-byte and int4 is
-½-byte. int32 and fp32 are only ever outputs. Software feeds raw fp32. The MAC rounds to a
-10-bit mantissa, multiplies, and accumulates in fp32.
+½-byte. int32 and fp32 are only ever outputs. Software feeds raw fp32. The MAC truncates
+each operand to a 10-bit mantissa, dropping the low 13 bits without rounding, then multiplies
+and accumulates in fp32 [HW sweep]. Software that needs round-to-nearest must round on the
+host before the scatter.
 
-The hardware confirms genuine NVIDIA-style tf32. A random matmul tracks a tf32-rounded
-reference to max rel ~1.5e-7 and differs from a full-fp32 reference by ~8e-4 (the
-10-bit-mantissa gap). A |values|>65504 run passes (fp32 range).
+A random matmul tracks a reference whose inputs are truncated to tf32 to max rel ~1.5e-7 and
+differs from a full-fp32 reference by ~8e-4 (the 10-bit-mantissa gap). A round-to-nearest
+reference differs from the truncated one on about half of its input elements, so it cannot
+also sit within 1.5e-7 of the hardware. A |values|>65504 run passes (fp32 range).
 
 ### Geometry
 
@@ -150,7 +153,7 @@ The bf16 tiled path (`rocket_matmul_bf16`) is bit-clean to 512×15360×3840.
 clone of the bf16 tiled path with the 4-byte geometry:
 
 - `float` slots K-aligned to 16
-- Raw fp32 scatter with no truncation, because the hardware rounds the mantissa
+- Raw fp32 scatter with no host-side reduction, because the hardware truncates the mantissa
 - Banks ×4
 - Kt <= 8192
 

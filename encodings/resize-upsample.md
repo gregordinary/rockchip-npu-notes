@@ -54,7 +54,7 @@ zero-padded. These are the FCN/segmentation "bilinear-deconv" init kernels.
 
 ## Accuracy
 
-**Conditions:** RK3588 (Turing RK1), kernel 7.1.0-1, NPU clock 600 MHz, 2026-06-22.
+**Conditions:** RK3588 (Turing RK1), kernel 7.1.0-1, NPU clock ~816 MHz, 2026-06-22.
 
 Nearest is bit-exact against block replication, and bilinear is within fp16 tolerance of an
 independent 2-tap gather [HW sweep]. The partition-of-unity and linear-exactness properties

@@ -191,7 +191,7 @@ predicts the DRAM traffic of a tiled matmul. The PMU measures it on the single-f
 path, which is the path the model describes, with no CPU reference [HW sweep 2026-08-28, RK1].
 
 **Conditions:** `512×3840×4096` fp16, KACC and data reuse on, the planner's default tiling for
-the shape (Mt 256, Kt 512, Nt 128: `nMt`=2, `nKt`=8, `nNt`=32), NPU clock 600 MHz. Each figure
+the shape (Mt 256, Kt 512, Nt 128: `nMt`=2, `nKt`=8, `nNt`=32), NPU clock ~816 MHz. Each figure
 is the difference between 45 and 5 repetitions, which is 40 matmuls and nothing else.
 
 | configuration | model total | measured read | measured write | measured total |
@@ -253,7 +253,7 @@ data touched.
 
 The counts are system-wide over the whole `llama-bench` process [HW sweep 2026-08-28, RK1].
 
-**Conditions:** NPU clock 600 MHz, CPU governor `performance`, `-p 2048 -n 0`, with a memory
+**Conditions:** NPU clock ~816 MHz, CPU governor `performance`, `-p 2048 -n 0`, with a memory
 reset before every configuration. `llama-bench` runs one warm-up plus the repetitions, so the
 token count is `(reps + 1) x 2048`. The counter covers model load and, in the MoE
 configuration, the expert ingest as well. The load is under 1% of either total.

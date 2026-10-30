@@ -1,5 +1,5 @@
 <!-- The FA output checksum's disagreement rate, and the op it starts at. RK3588 RK1, rocket 1.3.0,
-     600 MHz, governor ondemand, power/control=auto, board otherwise idle. gemma4-12b F16,
+     ~816 MHz, governor ondemand, power/control=auto, board otherwise idle. gemma4-12b F16,
      llama-bench -p 2048 -n 0 -r 1 -t 4 -v under taskset 0xf0, ROCKET_KACC=1,
      ROCKET_FA_THREADS=1, ROCKET_FA_CHECKSUM=2, page cache dropped before every run, one process
      per run. libggml-rocket.so 138de09d05f235f8c50c7d9d7df3eaa5, librocketnpu.a

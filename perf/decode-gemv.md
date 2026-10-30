@@ -38,6 +38,30 @@ The NEON quantized GEMV in llama.cpp is a hand-tuned, bandwidth-saturating kerne
 host-side optimization makes a fixed-function convolution pipeline beat a SIMD GEMV at the
 same DDR bandwidth.
 
+### Weight-streaming bandwidth on `rocket`
+
+The NPU's decode rate on `rocket` is the rate at which it streams resident weights through the
+CBUF ([../matmul-as-conv.md](../matmul-as-conv.md) §"CBUF weight streaming"). At M 4, one core
+streams ~5.4 GB/s, fp16 and int8 alike. Three cores driven from three processes on separate
+fds reach ~16.4 GB/s at fp16 and ~15.4 GB/s at int8 [HW sweep 2026-10-21].
+
+llama.cpp's CPU decode on the same board streams ~16-20 GB/s [host-computed]. Llama-3.2-3B
+decodes at 7.88 t/s on 1.87 GiB at Q4_K_M, 5.62 t/s on 3.18 GiB at Q8_0, and 3.15 t/s on
+5.98 GiB at F16, on 8 threads ([data/llama32-3b.md](data/llama32-3b.md)). At equal bytes per
+weight, the NPU's stream therefore only matches the CPU's before any per-matmul host cost, and
+decode stays on the CPU.
+
+**Conditions:** RK3588 (Turing RK1), kernel 7.2.9, `rocket` 1.3.0, NPU clock 928 MHz, CPU
+governor `performance`. Each NPU rate is the weight bytes over the median submit-to-fence time,
+one submit and fence a run. The mainline kernel on this board exposes no DDR devfreq, so the
+DDR runs at the rate the bootloader trained [live 2026-10-21].
+
+An external userspace runs decode on the NPU with per-channel int4 and int8 weights, at an
+implied ~24 GB/s over three cores [source-confirmed: `open_rknpu2_lm_infer`,
+[../SOURCES.md](../SOURCES.md)]. It runs on the vendor `rknpu` driver at 1 GHz with the DDR
+pinned at 2112 MHz. It also runs one task across all three cores, which `rocket` does not
+offer.
+
 ### GEMV-engine literature
 
 Published work on dedicated GEMV engines supports the same split (reviewed 2026-06-29). The
@@ -119,7 +143,7 @@ projection is padded to N 51872. LayerNorm, GELU and both attentions run on the 
 thread. The weights are random. Every step's logits match an fp32 host step at cosine
 1.00000, with the same argmax.
 
-**Conditions:** RK3588 (Turing RK1), mainline `rocket` 1.3.0, NPU clock 600 MHz,
+**Conditions:** RK3588 (Turing RK1), mainline `rocket` 1.3.0, NPU clock ~816 MHz,
 `ROCKET_KACC=1`, three workers, `taskset -c 4-7`, every CPU policy on `performance` with
 `cpu-sleep` off. The CPU baseline is whisper.cpp v1.9.4 with OpenMP, on the multilingual F16
 models and jfk.wav, greedy from `<|sot|><|en|><|transcribe|><|notimestamps|>`.
@@ -183,7 +207,7 @@ A step chained into one kick keeps the stream and the host part, and drops each 
 cost [expected]. The stream alone, the weight bytes at the fitted rate, is 4.2 ms at tiny,
 7.8 ms at base and 25.2 ms at small. Against whisper.cpp's 4-thread step, those stream times
 are 1.10-1.13x, 0.94-0.96x and 1.11-1.13x [host-computed]. Cross-attention on the NPU adds its
-own K/V stream: 9.2 MB, 18.4 MB and 55.3 MB a step. At 600 MHz a decoder step on this NPU
+own K/V stream: 9.2 MB, 18.4 MB and 55.3 MB a step. At ~816 MHz a decoder step on this NPU
 therefore stays slower than the CPU's 4-thread step, even with no host part and one kick
 [expected].
 
@@ -201,6 +225,13 @@ and daemon]. Its daemon re-sends every input each step: 12 MB for tiny, 24 MB fo
 constant within a window. None of its timings is reproduced here.
 
 ## Evidence
+
+### Weight-streaming bandwidth on `rocket`
+
+The NPU rates are `tests/gemv_bw_probe` at M 4, with each output scored exactly against an
+integer reference before the timed runs. The three-core figure ran three processes at once, and
+all three cores raised interrupts. The CPU rates are the `tg64` rows of
+[data/llama32-3b.md](data/llama32-3b.md), measured 2026-07-03, multiplied by each GGUF's size.
 
 ### Throughput at M=1
 

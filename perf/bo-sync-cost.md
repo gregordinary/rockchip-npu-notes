@@ -7,7 +7,7 @@ oversized output BO puts ~20% of wall-clock time in `sync`. Sizing the K-accumul
 BO to its live tiles, rather than to the 64-tile batch, raises resident fp16 matmul throughput
 by ~11% [HW sweep].
 
-**Conditions:** RK3588, NPU clock 600 MHz, resident multicore, `512×3840×4096`, fp16 + KACC +
+**Conditions:** RK3588, NPU clock ~816 MHz, resident multicore, `512×3840×4096`, fp16 + KACC +
 DATA_REUSE, idle board.
 
 **Not characterized:** int4 at a small-shape, many-call workload, and a reducible fixed
@@ -112,21 +112,21 @@ workload. The measured cases are:
   runs 126 job batches, and each syncs that BO four times. Capping the output and regcmd BOs
   at the call's tile count takes the matmul `sync` phase from 743 to 52 ms over 21 MobileDet
   invokes. MobileDet runs 1.15x and EfficientDet-Lite0 1.11x warm, with outputs
-  byte-identical [HW sweep, RK1, 600 MHz, governor pinned, through `tflite-rocket`,
+  byte-identical [HW sweep, RK1, ~816 MHz, governor pinned, through `tflite-rocket`,
   2026-09-27]. At an LLM shape resident int8 fills `BATCH`, and at detector shapes it does not.
 - A grow-only BO shared by calls of many sizes is the same trap. An RK3588 conv context
   that holds one BO per role, grown to its largest job, zeroes and syncs the whole BO on
   every job. With that sizing, MobileDet's int8 direct conv synced 2228 MB of output BO for
   449 MB of output over 21 invokes. One BO per power-of-two size class per role cuts that to
   643 MB, and its output zeroing from 207 to 77 ms. MobileDet then runs 1.08-1.10x warm, with
-  outputs byte-identical [HW sweep, RK1, 600 MHz, governor pinned, `rocket` 1.3.0,
+  outputs byte-identical [HW sweep, RK1, ~816 MHz, governor pinned, `rocket` 1.3.0,
   2026-09-27]. A class keeps up to 2x, and a kernel with the ranged forms (interface 1.5 and
   later, `rocket_bo_prep_ranges()`) syncs only the live bytes.
 - The flash-attention batch contexts have the same trap, by op. A worker that keeps one
   batched matmul context per op, grown to the largest shape seen, syncs the whole BO around
   every pack. With that sizing, a three-question 58-token batch cost 375 ms after a 726-token
   call and 244 ms alone. With one context per op and per 4x class of rows times keys, it
-  costs 241-242 ms either way [HW sweep, RK1, 600 MHz, `rocket` 1.3.0, 2026-09-27].
+  costs 241-242 ms either way [HW sweep, RK1, ~816 MHz, `rocket` 1.3.0, 2026-09-27].
 
 Count the syncs over the workload. Many small calls against an oversized BO cost the same as
 many syncs per matmul.

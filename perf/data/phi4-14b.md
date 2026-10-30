@@ -1,7 +1,9 @@
 <!-- Raw llama-bench + llama-perplexity output backing perf/benchmarks.md (Phi-4, 14B).
      The clk=200 in each per-run header is an idle sample taken between the discarded warmup and
-     the measured run; the NPU rides to 600 MHz under load (module loaded with
-     rocket_npu_clk_hz=600000000). Warm medians, llama-bench -r 2 plus a discarded warmup. Quants
+     the measured run. Under load the NPU runs at ~816 MHz, the 600 MHz request at a 0.80 V rail
+     (module loaded with rocket_npu_clk_hz=600000000, ../clock.md).
+
+     Warm medians, llama-bench -r 2 plus a discarded warmup. Quants
      at -b 2048 -ub 2048. F16 is intentionally absent: the F16 GGUF (29.3 GB) does not fit the
      31 GB board (29 GB free, no swap), so Q8_0 + Q4_K_M are the precisions that run. GGUFs from
      `unsloth/phi-4-GGUF` (base model microsoft/phi-4); no local convert. llama.cpp maps the 14 B

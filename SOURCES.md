@@ -390,10 +390,11 @@ The author conceded five review findings on patch 9, and a v3 waits on review.
 
 The series sets the clock in the runtime-PM callbacks, so it replaces the out-of-tree clock
 and voltage patches rather than combining with them. Adopted as posted, it changes the
-operating point in two ways [expected]. The rail at 600 MHz drops from 800 mV to the table's
-700 mV. The rate becomes governor-driven, with a window shorter than the host gaps inside one
-Whisper encode. Its statement about powering an island above the boot rate is in
-[perf/clock.md](perf/clock.md).
+operating point in two ways. The rail at the 600 MHz request drops from 800 mV to the table's
+700 mV, where the clock measures 638 MHz against ~816 MHz [HW sweep 2026-10-19]. The rate
+becomes governor-driven, with a window shorter than the host gaps inside one Whisper encode
+[expected]. Its
+statement about powering an island above the boot rate is in [perf/clock.md](perf/clock.md).
 
 ### drivercraft/rk3588-clk
 
@@ -1232,13 +1233,12 @@ destination base. Their `0x1040` leaves bits [10:8] zero, an independent instanc
 
 #### Machine parameters
 
-Three of its machine parameters match these notes. The first is `M % 4`: their guide states
-"M=1, 2, 3 produce completely wrong results", and `npu_cna_cache_run_m()` pads to `M4 = 4`
-before every submit. The trap and the workaround are the ones in
-[matmul-as-conv.md](matmul-as-conv.md). The repository is also a second RK3588 source for the
-row in [chips/porting-patterns.md](chips/porting-patterns.md) where the RK3576 has no M
-constraint. The second is CBUF = 12 banks × 32768 B, and the third is `nbuf_size=0` with
-`CONFIG_ROCKCHIP_RKNPU_SRAM` unset.
+Two of its machine parameters match these notes: CBUF = 12 banks × 32768 B, and `nbuf_size=0`
+with `CONFIG_ROCKCHIP_RKNPU_SRAM` unset. Its guide also states "M=1, 2, 3 produce completely
+wrong results", and `npu_cna_cache_run_m()` pads to `M4 = 4` before every submit. Its matmul
+program writes the feature surface stride as `4 × ((M/4) − 1)`, clamped at 0, which is correct
+only at `M%4==0` ([matmul-as-conv.md](matmul-as-conv.md) §"Feature surface stride"). Its M
+result therefore reproduces Erratum E3 and is not a second observation of a hardware limit.
 
 Their host weight scatter (`weight_fp16_off`, 16 outputs per group, 32 inputs per group) and
 feature scatter (`feature_data_off`, C2=8 fp16 input, C2=4 fp32 output) state the native cube
@@ -1474,6 +1474,26 @@ Three of its properties are specific to the RV1106 and its kernel, and do not tr
 - Its per-task costs at 420 MHz
 - The runtime's completion scheme for a vendor kernel built without fence support: a
   non-blocking submit drained by a blocking barrier job
+
+### happyme531/rknpu2_matmul_open and open_rknpu2_lm_infer
+
+Two AGPL-3.0 userspace projects for the RK3588 that program the NPU directly with their own
+register programs, on the vendor `rknpu` driver. `rknpu2_matmul_open` is a matmul library.
+`open_rknpu2_lm_infer` runs LLM inference on it, decode included. Read 2026-10-21. Neither was
+run on `rocket` for these notes.
+
+These notes take five facts from them:
+
+| Fact | Where it is used |
+|---|---|
+| fp16 tasks that stream a weight cube through the CBUF to N 4096, with the weight banks sized for one 32-kernel group [source-confirmed] | The streamed form, reproduced on `rocket` ([matmul-as-conv.md](matmul-as-conv.md) §"CBUF weight streaming") |
+| fp16 device time of ~2.6 TFLOPS over three cores at K 1024 and N 4096, at 1 GHz [source-confirmed] | The highest matmul rate reported for this silicon ([perf/not-mac-bound.md](perf/not-mac-bound.md) §"Streamed weights") |
+| M 1-8 laid along the CNA width at height 1, with a line stride of 0x200 and a surface stride of -3M [source-confirmed] | Reproduced on `rocket`. The -3M is the feature surface stride `width × (H − 4)` at width M and height 1 ([matmul-as-conv.md](matmul-as-conv.md) §"Feature surface stride") |
+| DCOMP as a lossless entropy codec over dense int8 weights, with its register values and stream layout [source-confirmed] | The leading description of the compressed format, and the compression it gives on real weights ([encodings/cna-dcomp-weight-decompression.md](encodings/cna-dcomp-weight-decompression.md)) |
+| Decode on the NPU with per-channel int4 and int8 weights, at an implied ~24 GB/s over three cores, with the DDR pinned at 2112 MHz and one task run across all three cores [source-confirmed] | The decode bound ([perf/decode-gemv.md](perf/decode-gemv.md) §"Weight-streaming bandwidth on `rocket`") |
+
+The vendor driver runs one task across the three cores, which `rocket` does not offer. The
+decode rate therefore does not transfer to `rocket` as it stands.
 
 ### Seeed-Solution/openvoicestream
 
@@ -1739,9 +1759,12 @@ byte count). The kernel group is 32 (int8) / 16 (fp16/int16), which matches the 
 groups here. CDMA decompresses into CBUF, skipping zero MACs. It compresses sparse (pruned)
 weights, and gives no gain on dense weights.
 
-It documents NVDLA's format, not the RK3588's. By the lineage it is the probable layout of the
-RK3588 CNA's DCOMP [expected]. The DPU is NVDLA's SDP, so the CNA is likely NVDLA's CC. No
-compressed RK3588 capture exists to confirm it
+It documents NVDLA's format, not the RK3588's. By the lineage it is one candidate layout of the
+RK3588 CNA's DCOMP [expected]. The DPU is NVDLA's SDP, so the CNA is likely NVDLA's CC. An
+external userspace drives DCOMP with a different, lossless codec over dense weights
+(§"happyme531/rknpu2_matmul_open and open_rknpu2_lm_infer"). That codec is the leading
+description, and this format the alternative. No compressed RK3588 capture exists to confirm
+either
 ([encodings/cna-dcomp-weight-decompression.md](encodings/cna-dcomp-weight-decompression.md)).
 
 ## Related RK3588 NPU work

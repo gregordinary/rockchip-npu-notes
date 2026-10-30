@@ -1,7 +1,7 @@
 # Per-symbol IPC on the A76s, and the lever ranking the instruction histogram had inverted
 
 `gemma4-12b` F16, PINNED as the published `pin76t4` arm: `GGML_BACKEND_PATH`, `taskset 0xf0`,
-`-t 4`, `-p 2048 -n 0 -r 3`, governor `performance`, NPU at 600 MHz, **streamed** (0 resident
+`-t 4`, `-p 2048 -n 0 -r 3`, governor `performance`, NPU at ~816 MHz, **streamed** (0 resident
 lines in the arm's teardown). Driver `perf/data/trackd27-a76-ipc-12b.sh` (md5
 `575fb2f775ec66b4d038009211af8e7c`). `libggml-rocket.so` md5
 `61f02a02345f3b2e27cef45de8ade0c2`. [HW readout 2026-09-03, RK1.]

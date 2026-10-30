@@ -1,5 +1,5 @@
 <!-- The FA handler's two output states: what the disagreeing op read, how far its output moved,
-     and a replay that reproduces it without the model. RK3588 RK1, rocket 1.3.0, 600 MHz,
+     and a replay that reproduces it without the model. RK3588 RK1, rocket 1.3.0, ~816 MHz,
      governor ondemand, power/control=auto, board otherwise idle. gemma4-12b F16, llama-bench
      -p 2048 -n 0 -r 1 -t 4 -v under taskset 0xf0, ROCKET_KACC=1, ROCKET_FA_THREADS=1,
      ROCKET_FA_CHECKSUM=3, ROCKET_FA_DUMP_OP=189, page cache dropped before every run, one

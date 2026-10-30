@@ -1,6 +1,6 @@
 # Raw data for [perf/asr-streaming-service.md](../../asr-streaming-service.md)
 
-RK3588 (Turing RK1), mainline `rocket` 1.3.0, NPU 600 MHz, CPU governor `performance`, the server
+RK3588 (Turing RK1), mainline `rocket` 1.3.0, NPU ~816 MHz, CPU governor `performance`, the server
 pinned `taskset -c 4-7` with 4 threads unless the arm says otherwise, `ROCKET_KACC=1`, whisper.cpp
 master `eacbd82`, `ggml-small` (multilingual). Every arm is one `whisper-server` process driven the
 way OpenWebRX+ drives it: one multipart `file` field holding a 12 kHz WAV, one request at a time.

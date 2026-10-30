@@ -1,7 +1,7 @@
 # The A76 symbol histogram, and the half of the libgomp cap that had never been measured
 
 `gemma4-12b` F16, PINNED as the published `pin76t4` arm: `GGML_BACKEND_PATH`, `taskset 0xf0`,
-`-t 4`, `-p 2048 -n 0 -r 3`, governor `performance`, NPU at 600 MHz. Driver
+`-t 4`, `-p 2048 -n 0 -r 3`, governor `performance`, NPU at ~816 MHz. Driver
 `perf/data/trackd24-a76-symbols-12b.sh` (md5 `f41ee75c8ceea96b145c2cee1815a35d`).
 `libggml-rocket.so` md5 `61f02a02345f3b2e27cef45de8ade0c2`. [HW readout 2026-09-02, RK1.]
 

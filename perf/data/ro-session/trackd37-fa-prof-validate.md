@@ -1,4 +1,4 @@
-<!-- ROCKET_FA_PROFILE validated before use, RK3588 RK1, 600 MHz, governor performance on all
+<!-- ROCKET_FA_PROFILE validated before use, RK3588 RK1, ~816 MHz, governor performance on all
      three policies, power/control=on, /dev/accel/accel0 otherwise free. The subject is the
      driver's own gate `tests/flash_attn_rocket`, run through both FA paths (ROCKET_FA_CHAIN=1
      and =0), knob ON and OFF, three passes with the knob order rotated between them so a board

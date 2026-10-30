@@ -1,6 +1,7 @@
 <!-- Raw llama-bench output backing perf/benchmarks.md (gpt-oss-20b, MXFP4, MoE).
 
-     One board, one session, clock pinned at 600 MHz throughout (power/control=on for all three
+     One board, one session, clock pinned at ~816 MHz throughout (the 600 MHz request, ../clock.md,
+     with power/control=on for all three
      NPU domains, restored to auto after). Nothing here is compared against a number from a
      previous session: the CPU and NPU-default baselines were re-measured alongside the thing
      under test. RK1 (RK3588), 31 GiB, kernel 7.1.1, llama.cpp a646006f0 (9932), 8 CPU threads.
@@ -25,7 +26,7 @@
        moe_fp16        ROCKET_MOE=1 ROCKET_MOE_NATIVE=0 -- experts on the NPU via the fp16
                        route (weight dequantized to fp16 on the host every micro-batch)
        moe_native      ROCKET_MOE=1 -- experts ingested once to resident int8 codes on the NPU
-     [HW sweep, 600 MHz, 2026-07-14].
+     [HW sweep, ~816 MHz, 2026-07-14].
 -->
 
 # gpt-oss-20b (MXFP4, MoE), raw data
@@ -167,7 +168,7 @@ ROCKET MoE native-quant cosine vs CPU fp64 reference (real weights, real activat
 
 # The default-on flip, raw data (2026-08-27)
 
-<!-- One board, one session, clock pinned at 600 MHz (power/control=on for all three NPU
+<!-- One board, one session, clock pinned at ~816 MHz (power/control=on for all three NPU
      domains), CPU governor `performance` on all three clusters. RK1 (RK3588), 31 GiB,
      kernel 7.2.0-1, llama.cpp 171974745 (b10558), rocket 1.3.0, rocket-userspace fc300d0.
 
@@ -435,7 +436,7 @@ DONE
 
      NPU die temperature is in each header (npu=<millidegC>); the board sat at 44-61 C
      throughout, well under the ~85 C throttle, and the CPU governor stayed `performance`
-     with scmi_clk_npu pinned at 600 MHz for every run in this file.
+     with scmi_clk_npu pinned at ~816 MHz for every run in this file.
 -->
 
 ```
@@ -567,7 +568,7 @@ after that map: the tile granule binds first on this architecture at every reach
      from the budget knob alone. Run behind a `drop_caches`, because the budget is MemAvailable
      minus 6 GiB read once at the first supports_op and it had drifted 24.6 -> 20.7 GB over the
      session -- an experiment that varies that budget cannot have its baseline sliding under it.
-     MemAvailable 31.7 GB after the drop, 30.8 GB by the first supports_op. RK1 @ 600 MHz pinned,
+     MemAvailable 31.7 GB after the drop, 30.8 GB by the first supports_op. RK1 @ ~816 MHz pinned,
      governor performance, -b 2048 -ub 2048, -r 3, one discarded warm-up process, same binary
      throughout. Every arm reported 0 streamed. -->
 

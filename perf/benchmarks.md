@@ -14,9 +14,10 @@ backend. The two effects are independent: the NPU shortens time-to-first-token, 
 raises the decode rate and determines whether a model fits in RAM. Each model's section below gives
 its prefill, decode, interactive and faithfulness results.
 
-**Conditions:** RK3588 on a Turing RK1 (4xA76 + 4xA55, shared LPDDR), NPU clock 600 MHz under the
-clock patch ([clock.md](clock.md)). Figures are warm medians, and each comparison runs the same
-GGUF or model on the NPU and on the CPU (8 threads) [HW sweep].
+**Conditions:** RK3588 on a Turing RK1 (4xA76 + 4xA55, shared LPDDR), NPU clock ~816 MHz
+(the clock patch's 600 MHz request at a 0.80 V rail, [clock.md](clock.md)). Figures are warm
+medians, and each comparison runs the same GGUF or model on the NPU and on the CPU (8 threads)
+[HW sweep].
 
 > [!NOTE]
 > The NPU clock returns to its 200 MHz idle rate between runs, so a cold run measures ~15% low.
@@ -213,9 +214,9 @@ Accuracy is COCO mAP.
 
 | Metric | Value |
 |---|---|
-| COCO mAP@[.5:.95] | 0.4040 NPU vs 0.3980 CPU over 100 images (2026-09-28) |
-| Single-stream latency, warm | 56 ms with the governor pinned, 76 ms on `ondemand` (2026-09-28) |
-| Multi-camera pool, P=1->4 | 3.20 -> 9.55 detection_fps (2.98x at P=4), measured at a ~336 ms single stream |
+| COCO mAP@[.5:.95] | 0.3325 NPU vs 0.3301 CPU over 500 images (2026-10-29) |
+| Single-stream latency, warm | 51.4 ms with the governor pinned, 73.5 ms on `ondemand`, NPU 928 MHz (2026-10-29) |
+| Multi-camera pool, P=1->4 | 3.33-3.51x at P=4 in the delegate's own pool test (2026-10-29); live in Frigate, 3.20 -> 9.55 detection_fps (2.98x) at a ~336 ms single stream |
 
 ## LLM (llama.cpp via ggml-rocket)
 
@@ -232,7 +233,7 @@ otherwise.
 
 Ministral-3-8B is Mistral's December-2025 8B (arch `mistral3`, GQA, interleaved sliding-window
 attention), with 8.49 B params. The GGUFs come from `unsloth/Ministral-3-8B-Instruct-2512-GGUF`,
-and F16 is derived from the published BF16. The results below were measured at 600 MHz on
+and F16 is derived from the published BF16. The results below were measured at ~816 MHz on
 2026-07-01 [HW sweep].
 
 **Prefill (prompt processing), t/s (the NPU's job).**
@@ -311,7 +312,7 @@ FLOPs (~75%). The dense attention projections and `lm_head` are the rest.
 
 **Prefill (prompt processing), t/s (MXFP4, `-b 2048 -ub 2048`).** The expert path is on by default
 from the 2026-08-27 build, behind a residency pre-flight. Setting `ROCKET_MOE=1` also claims what
-the pre-flight declines [HW sweep 2026-08-27, 600 MHz, governor `performance`, llama.cpp
+the pre-flight declines [HW sweep 2026-08-27, ~816 MHz, governor `performance`, llama.cpp
 171974745].
 
 | test | CPU | NPU, `ROCKET_MOE=0` | **NPU, default** | NPU, `ROCKET_MOE=1` |
@@ -351,7 +352,7 @@ residency: the fastest configuration measured is 91% resident. The crossover lie
 
 The headline table runs at `-b 2048 -ub 2048`, the setting for the expert path. At `-ub 512` the
 expert path measures 22.2 t/s (21.7-22.7) at pp512 and 22.5 (22.4-22.8) at pp2048 [HW sweep
-2026-08-27, 600 MHz]. With the experts on the CPU it measures 14.13 and 13.53. The expert path is
+2026-08-27, ~816 MHz]. With the experts on the CPU it measures 14.13 and 13.53. The expert path is
 therefore about 1.6x and 1.7x faster at the llama.cpp default micro-batch. Against the `-ub 2048`
 figures of 22.0 and 28.1, the smaller micro-batch costs ~20% at pp2048 and nothing at pp512.
 
@@ -396,7 +397,7 @@ MoE models.
 | | 144 | 4.15e8 | 22.33 | 27.20 | **1.22x** |
 | | 192 | 5.54e8 | 21.60 | 28.37 | **1.31x** |
 
-**Conditions:** RK1, NPU clock 600 MHz pinned, governor `performance`, `-b 2048 -ub 2048`. Every
+**Conditions:** RK1, NPU clock ~816 MHz pinned, governor `performance`, `-b 2048 -ub 2048`. Every
 offloaded test point is 100% resident with 0 streamed, so no ratio here is a residency effect.
 
 **Not characterized:** the `M_e` = 72 and 96 test points on the 2026-10-09 build. Its readback and
@@ -439,7 +440,7 @@ below. Forcing them onto the NPU with `ROCKET_MOE=1` measures 0.834x at `-ub` 20
 `-ub` 1024 [HW sweep 2026-08-27]. The decision is right on this model, and right for the reason
 the threshold was derived from: the work per dispatch.
 
-**Conditions:** RK1 (RK3588), NPU clock 600 MHz pinned, governor `performance`, Qwen3-30B-A3B,
+**Conditions:** RK1 (RK3588), NPU clock ~816 MHz pinned, governor `performance`, Qwen3-30B-A3B,
 `-b/-ub` as shown, 2026-08-27.
 
 **Not characterized:** the threshold's position. At 201 MMAC the test point is far enough below
@@ -490,7 +491,7 @@ declines.
 
 The threshold demands a material gain rather than `> 1.00`, because of the one-time expert ingest.
 The ingest takes ~18 s per `llama_context` on DeepSeek and ~21 s on gpt-oss [HW sweep 2026-10-09,
-RK1, 600 MHz, governor `ondemand`]. The ingest is charged only on an accepted offload, so the
+RK1, ~816 MHz, governor `ondemand`]. The ingest is charged only on an accepted offload, so the
 threshold is the one place where it can be avoided. An offload at ratio `r` saves `1 − 1/r` of
 prefill wall-clock time, so the ingest breaks even after:
 
@@ -520,7 +521,7 @@ The cost of the per-micro-batch dequantization, and why it does not shrink with 
 in [not-mac-bound.md](not-mac-bound.md) §"Quantized MoE experts and residency". That section also
 shows that the int8 GEMM's own traffic is not the source of the gain.
 
-**Conditions:** RK1 (RK3588), NPU clock 600 MHz, gpt-oss-20b MXFP4.
+**Conditions:** RK1 (RK3588), NPU clock ~816 MHz, gpt-oss-20b MXFP4.
 
 The native-quant path requires residency, and its gain depends on nearly all the experts fitting.
 At 99% resident it measures 17.57 at pp512 and 26.78 at pp2048 [HW sweep 2026-07-14]. At 82%
@@ -535,7 +536,7 @@ when it falls short.
 The ingest is a one-time cost per `llama_context`. It is lazy: an expert is ingested the first
 time the router sends it a row. On gpt-oss it is 20.6-21.7 s for ~1575 experts, 13 ms each:
 11.2-11.8 s of MXFP4->int8 decode and 9.4-9.9 s of NPU-BO pack. Measured 2026-10-09 on the RK1 at
-600 MHz, governor `ondemand`, `-p 512 -b 2048 -ub 2048` [HW sweep]. The pack runs ~1.3 GB/s and
+~816 MHz, governor `ondemand`, `-p 512 -b 2048 -ub 2048` [HW sweep]. The pack runs ~1.3 GB/s and
 grows with the bytes held resident, not with the expert count.
 
 DeepSeek-V2-Lite packs 3.0x as many experts, holding ~14.9 GB, in 11.7-11.8 s. Its Q4_K->int8
@@ -649,7 +650,7 @@ measures 1.016x the `ROCKET_MOE=0` configuration, and `ROCKET_MOE=1` measures 0.
 2026-08-28]. At only 1.19x the threshold, the test point tests its position rather than clearing it
 comfortably.
 
-**Conditions:** RK1 (RK3588), NPU clock 600 MHz pinned, governor `performance`, Qwen3-30B-A3B,
+**Conditions:** RK1 (RK3588), NPU clock ~816 MHz pinned, governor `performance`, Qwen3-30B-A3B,
 `-p 4096 -b 4096 -ub 4096`, 2026-08-28.
 
 **Not characterized:** the threshold's position apart from a residency term, and any other
@@ -871,7 +872,7 @@ throughput falls as `B` rises, with no turn at any step [HW sweep 2026-08-28]. E
 reports 100% resident, 0 streamed, and no OOM line in `dmesg`. Fewer stacks are placed, and the
 rest stay on the CPU, which the code calls "a partial offload and not a loss".
 
-**Conditions:** RK1 (RK3588), NPU clock 600 MHz pinned, governor `performance`, gpt-oss-20b MXFP4,
+**Conditions:** RK1 (RK3588), NPU clock ~816 MHz pinned, governor `performance`, gpt-oss-20b MXFP4,
 `-p 2048 -n 0 -r 1 -b 2048 -ub 2048`, one process per step, 2026-08-28. The page cache is dropped
 and `compact_memory` run before every step.
 
@@ -941,7 +942,7 @@ Qwen3.5-9B is Alibaba's Qwen3.5 9B (arch `qwen35`, dense, GQA), with 8.95 B para
 come from `unsloth/Qwen3.5-9B-GGUF` (base model `Qwen/Qwen3.5-9B`), and the F16 is derived from the
 published BF16. Three GGUFs are measured: F16, Q4_K_M and IQ4_XS, an importance-matrix 4-bit quant.
 
-**Conditions:** RK3588, NPU clock 600 MHz, the flags and 8-thread CPU baseline of §"Method",
+**Conditions:** RK3588, NPU clock ~816 MHz, the flags and 8-thread CPU baseline of §"Method",
 measured 2026-07-02 [HW sweep].
 
 **Prefill (prompt processing), t/s (the NPU's job).**
@@ -1024,7 +1025,7 @@ Microsoft's Phi-4-mini-instruct (arch `phi3`, dense, GQA) has 3.84 B params. The
 `unsloth/Phi-4-mini-instruct-GGUF` (base model `microsoft/Phi-4-mini-instruct`), and the F16 is
 derived from the published BF16.
 
-**Conditions:** RK3588, NPU clock 600 MHz, the flags and 8-thread CPU baseline of §"Method",
+**Conditions:** RK3588, NPU clock ~816 MHz, the flags and 8-thread CPU baseline of §"Method",
 measured 2026-07-02 [HW sweep].
 
 **Prefill (prompt processing), t/s (the NPU's job).**
@@ -1099,7 +1100,7 @@ Google's Gemma-4-12B-it (arch `gemma4`, dense, GQA) has 11.91 B params. The GGUF
 `unsloth/gemma-4-12b-it-GGUF` (base model `google/gemma-4-12b-it`), and the F16 is derived from the
 published BF16.
 
-**Conditions:** RK3588, NPU clock 600 MHz, the flags and 8-thread CPU baseline of §"Method",
+**Conditions:** RK3588, NPU clock ~816 MHz, the flags and 8-thread CPU baseline of §"Method",
 measured 2026-07-02 [HW sweep].
 
 **Prefill (prompt processing), t/s (the NPU's job).**
@@ -1181,7 +1182,7 @@ Gated-DeltaNet linear-attention / SSM-scan layers with dense GQA attention (GGUF
 Only Q4_K_M (15.92 GiB) is measured. At 27 B the F16 GGUF (~54 GB) and Q8_0 (~29 GB) do not fit the
 31 GB board.
 
-**Conditions:** RK3588, NPU clock 600 MHz, the flags and 8-thread CPU baseline of §"Method",
+**Conditions:** RK3588, NPU clock ~816 MHz, the flags and 8-thread CPU baseline of §"Method",
 measured 2026-07-03 [HW sweep].
 
 **Prefill (prompt processing), t/s (the NPU's job).**
@@ -1262,7 +1263,7 @@ Meta's Llama-3.2-3B-Instruct (arch `llama`, dense, GQA) has 3.21 B params, and i
 standard reference point. The GGUFs come from `unsloth/Llama-3.2-3B-Instruct-GGUF`, and the F16 is
 unsloth's published F16 (derived from the BF16).
 
-**Conditions:** RK3588, NPU clock 600 MHz, the flags and 8-thread CPU baseline of §"Method",
+**Conditions:** RK3588, NPU clock ~816 MHz, the flags and 8-thread CPU baseline of §"Method",
 measured 2026-07-03 [HW sweep].
 
 **Prefill (prompt processing), t/s (the NPU's job).**
@@ -1350,7 +1351,7 @@ Mistral's Ministral-3-3B-Instruct-2512 (arch `mistral3`, dense, GQA) has 3.43 B 
 sibling of Ministral-3-8B (§"Ministral-3-8B-Instruct-2512"). The GGUFs come from
 `unsloth/Ministral-3-3B-Instruct-2512-GGUF`, and the F16 is derived from the published BF16.
 
-**Conditions:** RK3588, NPU clock 600 MHz, the flags and 8-thread CPU baseline of §"Method",
+**Conditions:** RK3588, NPU clock ~816 MHz, the flags and 8-thread CPU baseline of §"Method",
 measured 2026-07-03 [HW sweep].
 
 **Prefill (prompt processing), t/s (the NPU's job).**
@@ -1438,7 +1439,7 @@ nope + 64 rope), value_length 128. The GGUF comes from `mradermacher/DeepSeek-V2
 base model `deepseek-ai/DeepSeek-V2-Lite`, 9.65 GiB). Only Q4_K_M is measured, because at 15.71 B
 the F16 GGUF (~31 GB) does not fit the 31 GB board.
 
-**Conditions:** RK3588, NPU clock 600 MHz, Q4_K_M, the flags and 8-thread CPU baseline of
+**Conditions:** RK3588, NPU clock ~816 MHz, Q4_K_M, the flags and 8-thread CPU baseline of
 §"Method", measured 2026-07-03, with the MoE offload re-measured 2026-07-04 [HW sweep]. A table
 measured under other conditions states them.
 
@@ -1505,7 +1506,7 @@ On the native-quant path, the default, the expert offload's effect depends on pr
 | pp512  | 19.54 | **26.04** | 19.09 (**0.73x the experts-on-CPU configuration**) |
 | pp2048 | 18.50 | 21.63 | **27.9 (1.29x)** |
 
-**Conditions:** RK3588, NPU clock 600 MHz, governor `performance`, llama.cpp b10558, 2026-08-27.
+**Conditions:** RK3588, NPU clock ~816 MHz, governor `performance`, llama.cpp b10558, 2026-08-27.
 
 **Not characterized:** what moves the experts-on-CPU configuration between the 2026-07-03 table and
 this one: 24.04 to 26.04 t/s at pp512, and 23.87 to 21.63 at pp2048.
@@ -1608,7 +1609,7 @@ GGUF (29.3 GB) does not fit the board. Q8_0 (14.51 GiB) is therefore the highest
 runs, as for the 27 B Qwen3.6 above, one size class down. In size the model lies between Gemma-4-12B
 and Qwen3.6-27B [HW sweep 2026-07-04].
 
-**Conditions:** RK3588 on the RK1 (31 GB, 29 GB free, no swap), NPU clock 600 MHz, the flags in
+**Conditions:** RK3588 on the RK1 (31 GB, 29 GB free, no swap), NPU clock ~816 MHz, the flags in
 §"Method", 2026-07-04. Q8_0 and Q4_K_M GGUFs from `unsloth/phi-4-GGUF` (base model
 `microsoft/phi-4`, arch `llama`).
 
@@ -1694,7 +1695,7 @@ has 1.81 B parameters, and "2.2B" is the combined vision and language count. The
 both a vision encoder and an LLM prefill, through two different paths that are measured
 separately [HW sweep 2026-07-04].
 
-**Conditions:** RK3588 on the RK1, NPU clock 600 MHz, 2026-07-04. GGUFs from
+**Conditions:** RK3588 on the RK1, NPU clock ~816 MHz, 2026-07-04. GGUFs from
 `ggml-org/SmolVLM2-2.2B-Instruct-GGUF`: the language model as F16, Q8_0 and Q4_K_M, and the vision
 tower as an fp16 `mmproj` GGUF.
 
@@ -1815,7 +1816,7 @@ configurations, as LLM decode does ([decode-gemv.md](decode-gemv.md)). The figur
 encoder latency, CPU against NPU, across the model sizes. Faithfulness is the transcript (WER) and
 the encoder-output cosine [HW sweep 2026-07-04].
 
-**Conditions:** RK3588 on the RK1, NPU clock 600 MHz, stock whisper.cpp with ggml-rocket, the
+**Conditions:** RK3588 on the RK1, NPU clock ~816 MHz, stock whisper.cpp with ggml-rocket, the
 encoder timed alone by `whisper-bench -w 0`, the warm mean of reps 2-4, 2026-07-04.
 
 **Encoder latency, ms (the NPU's job).**
@@ -2045,25 +2046,26 @@ Detection runs SSD-MobileDet (uint8) through the tflite-rocket external delegate
 compute or submits, so its latency follows the host path. The NPU's larger gain is throughput in a
 multi-camera pool, the configuration Frigate runs. Accuracy is COCO mAP rather than perplexity.
 
-**Conditions:** RK3588, NPU clock 600 MHz, `native_int8=1`.
+**Conditions:** RK3588, `native_int8=1`. Each table states its NPU clock.
 
 ### Single-stream latency
 
 Single-stream latency is set by host work. The measured host path gives these warm latencies, with
-COCO mAP at parity with the CPU [HW sweep 2026-09-28]:
+COCO mAP at parity with the CPU [HW sweep 2026-10-29]:
 
 | Model | Warm latency | COCO mAP, NPU | COCO mAP, CPU |
 |---|---:|---:|---:|
-| MobileDet | 55.7 ms | 0.4040 | 0.3980 |
-| SSD MobileNet v2 | 52.1 ms | 0.3229 | 0.3215 |
-| EfficientDet-Lite0 | 101.3 ms | 0.3023 | 0.2996 |
+| MobileDet | 51.4 ms | 0.3325 | 0.3301 |
+| SSD MobileNet v2 | 47.1 ms | 0.2634 | 0.2631 |
+| EfficientDet-Lite0 | 94.5 ms | 0.2810 | 0.2823 |
 
-**Conditions:** RK1, NPU clock 600 MHz, governor `performance`, the process on the A76 cores, four
-rotated passes, 2026-09-28. The host path is the last row of the change table in §"Evidence:
-Detection (tflite-rocket)". mAP is over 100 COCO images.
+**Conditions:** RK1, NPU clock 928 MHz (the 900 MHz request), governor `performance`, the process
+on the A76 cores, memory reset before every process, four rotated passes, 2026-10-29. Each latency
+is the median of 30 warm invokes on one image. mAP is over 500 COCO val2017 images. The change
+table in §"Evidence: Detection (tflite-rocket)" records how the host path came down.
 
-On `ondemand` with a 1.2 GHz minimum frequency and no `taskset`, the same build measures 75.8, 70.5
-and 135.0 ms. The governor lowers the clock of the cores that an offloading process leaves idle
+On `ondemand` with a 1.2 GHz minimum frequency and no `taskset`, the same build measures 73.5, 64.3
+and 127.8 ms. The governor lowers the clock of the cores that an offloading process leaves idle
 ([cpu-governor-and-offload.md](cpu-governor-and-offload.md)).
 
 Three host costs account for most of the difference between a per-element host path (205 ms on
@@ -2077,10 +2079,10 @@ MobileDet) and the measured one:
   int32 copy, 262 ms over 21 invokes against 19 ms of `FINI_BO`. The int8-out writer removes it
   ([../encodings/out-cvt-converter.md](../encodings/out-cvt-converter.md)).
 
-**Faithfulness: COCO-val mAP, the detection correctness check.** On the host path of
-§"Single-stream latency", COCO mAP over 100 val images is at parity with the CPU [HW sweep
-2026-09-28]. The table there gives all three detectors. Over 500 val images, an earlier delegate
-build also measures parity:
+**Faithfulness: COCO-val mAP, the detection correctness check.** On the host path of §"Single-stream
+latency", COCO mAP over 500 val images is at CPU parity for all three detectors [HW sweep
+2026-10-29]. The table there gives them. Over 500 val images, an earlier delegate build also
+measures parity:
 
 | | mAP@[.5:.95] |
 |---|---|
@@ -2089,8 +2091,6 @@ build also measures parity:
 
 **Conditions:** SSD-MobileDet, 500 COCO val images, the delegate build of 2026-06-21, with
 fp16-approximated depthwise, per-tensor depthwise int8 and the host requant on every conv.
-
-**Not characterized:** the 500-image mAP on the host path of §"Single-stream latency".
 
 The Δ is +0.0002, CPU parity. On that build the two depthwise approximations cost ~0 mAP, so the
 accelerated detector is numerically as good as the CPU int8 reference.
@@ -2104,7 +2104,7 @@ one.
 **Conditions:** RK1, the NPU IRQs pinned to the big cores (`npu_set_irq_affinity.sh throughput`),
 an earlier host path on which a single inference took ~336 ms.
 
-**Not characterized:** the pool on the host path of §"Single-stream latency".
+**Not characterized:** the live pool on the host path of §"Single-stream latency".
 
 | pool size P | detection_fps | scaling |
 |---|---|---|
@@ -2120,6 +2120,11 @@ rises 338->424 ms as the four contexts contend for bandwidth. The live pool ther
 the submit-bound limit of the delegate alone, which scales 1.00, 2.17, 3.11 and 3.56x at P=1 to 4.
 The pool needs no delegate or driver change, and it is how Frigate runs cameras (one process each).
 
+On the host path of §"Single-stream latency", the delegate's own pool test scales 3.33-3.51x at P=4,
+52.9-53.6 inferences a second [HW sweep 2026-10-29]. Every process's output hash equals the single
+process's. The test is `tools/pool_hash.py`, one SSD-MobileDet process per A76 core at `nthreads=1`,
+on `performance` at NPU 928 MHz.
+
 **Verdict.** For detection the FOSS-NPU delegate is an accelerator with CPU-parity accuracy, and
 its gain is throughput. One pinned process per camera serves ~3x the aggregate detection rate of a
 single stream. The NPU takes the conv/matmul work of four cameras. Each A76 core runs one
@@ -2132,25 +2137,27 @@ path.
 `ort-rocket` is an ONNX Runtime execution provider (EP) on `librocketnpu`. It claims whole encoders,
 and single ConvTranspose and Conv nodes (Conv behind a cost rule), and leaves the rest of a graph on
 the CPU EP. The ort-rocket README has the full per-model table. The table below gives each model's
-single-stream speedup and faithfulness against the CPU EP [HW sweep 2026-10-10, rocket-userspace
-`1401c46`, ort-rocket `3c50635`].
+single-stream speedup and faithfulness against the CPU EP [HW sweep 2026-10-27, rocket-userspace
+`88cae6d` without its Conv estimate refit, ort-rocket `fa7810f`]. The COCO mAP and mask IoU figures are from July 2026 builds.
 
-**Conditions:** for the vision rows, RK1, NPU clock 600 MHz, governor `performance`, warm medians
-over four passes with the configuration order rotated. The EP and the CPU EP both run under
-`taskset -c 4-7` at 4 intra-op threads. The CPU EP runs at `ORT_ENABLE_ALL`, and the EP session
-with spinning off. The pix2pix row also has spinning off. The Laya rows use ONNX Runtime's default
-thread pool and the default session (§"ONNX Runtime thread spinning").
+**Conditions:** for the vision rows, RK1, NPU clock 928 MHz (the 900 MHz request), governor
+`performance`, warm medians over four passes with the configuration order rotated. The EP and the
+CPU EP both run under `taskset -c 4-7` at 4 intra-op threads. The CPU EP runs at `ORT_ENABLE_ALL`,
+and the EP session with spinning off. The pix2pix row also has spinning off, over five passes. The
+Laya rows use ONNX Runtime's default thread pool and the default session (§"ONNX Runtime thread
+spinning").
 
 | Model | Offloaded | Single stream, x the CPU EP | Faithfulness against the CPU EP |
 |---|---|---:|---|
-| SigLIP-B/16 | plain ViT, d=768, 196 tokens | 2.44-2.52x | hidden-state cosine 0.9999864 |
-| CLIP ViT-B/16 | plain ViT, d=768, 197 tokens | 2.39-2.48x | hidden-state cosine 0.9999955 |
-| RF-DETR nano | windowed DINOv2 ViT-S, d=384 | 1.57-1.59x | COCO mAP 0.5049 against 0.5051 |
-| RF-DETR base | windowed DINOv2 ViT-S, d=384 | 1.61-1.65x | COCO mAP 0.564 against 0.564 |
-| SAM ViT-B | ViT-Det, d=768, 4096 tokens | 1.03-1.05x | mask IoU 0.9998 |
-| Depth Anything v2 Small | DINOv2 ViT-S, global attention over 1370 tokens | 1.33-1.35x | depth cosine 0.9999999 |
-| Laya English | ModernBERT-large, d=1024, 48-512 tokens | 1.99-3.95x | 4 of 4 answers agree |
-| pix2pix generator | ConvTranspose and Conv nodes | 2.91x at 4 threads, 1.86x with the ConvTranspose claim alone | PSNR 77.3 dB |
+| SigLIP-B/16 | plain ViT, d=768, 196 tokens | 3.05-3.09x | hidden-state cosine 0.9999868 |
+| CLIP ViT-B/16 | plain ViT, d=768, 197 tokens | 3.01-3.04x | hidden-state cosine 0.9999890 |
+| Depth Anything v2 Base | DINOv2 ViT-B, global attention over 1370 tokens | 2.25-2.28x | depth cosine 0.9999999 |
+| RF-DETR base | windowed DINOv2 ViT-S, d=384 | 1.83-1.88x | COCO mAP 0.564 against 0.564 |
+| RF-DETR nano | windowed DINOv2 ViT-S, d=384 | 1.70-1.73x | COCO mAP 0.5049 against 0.5051 |
+| Depth Anything v2 Small | DINOv2 ViT-S, global attention over 1370 tokens | 1.63-1.65x | depth cosine 0.9999998 |
+| SAM ViT-B | ViT-Det, d=768, 4096 tokens | 1.08-1.10x | mask IoU 0.9998 |
+| Laya English | ModernBERT-large, d=1024, 48-512 tokens | 2.34-5.05x | 4 of 4 answers agree |
+| pix2pix generator | ConvTranspose and Conv nodes | 3.09x at 4 threads, 1.92x with the ConvTranspose claim alone | PSNR 77.3 dB |
 
 A model's single-stream ratio falls as its attention-to-projection ratio, `ntok / 4d`, rises. The
 ratio is averaged over the layers, with a windowed layer counted at its window length:
@@ -2160,12 +2167,16 @@ ratio is averaged over the layers, with a windowed layer counted at its window l
 | SigLIP-B/16, CLIP ViT-B/16 | 0.06 |
 | RF-DETR nano | 0.17 |
 | RF-DETR base | 0.33 |
+| Depth Anything v2 Base | 0.45 |
 | SAM ViT-B | 0.49 |
 | Depth Anything v2 Small | 0.89 |
 
-The ratio orders the vision models coarsely, and SigLIP and CLIP lead. RF-DETR base measures
-slightly above nano on this build, so the ratio does not separate values that close. SAM measures
-lowest of all.
+The ratio orders the global-attention encoders: SigLIP and CLIP lead, then Depth Anything Base,
+then Small. The two Depth Anything variants run the same 1370 tokens, and Base's d=768 halves the
+ratio and raises the speedup from 1.63-1.65x to 2.25-2.28x. The windowed encoders measure below a
+global encoder at a similar ratio: RF-DETR (0.17, 0.33) measures below Depth Anything Base (0.45).
+RF-DETR base measures slightly above nano, so the ratio does not separate values that close. SAM
+measures lowest of all.
 
 SAM's four global layers attend over 4096 tokens, 16.8 million scores per head, the largest single
 attention in the set. They are the likely cause of its low ratio [hypothesis]. Its attention also
@@ -2215,19 +2226,20 @@ cores that the EP's host threads and NPU workers need [hypothesis].
 | pix2pix, 4 threads, CPU EP | 145.5 ms | 146.6 ms |
 | SAM mask decoder, EP, x the CPU EP | 1.017x | 1.049x |
 
-Three of the six vision encoders gain as well, and three do not move [HW sweep 2026-10-10]:
+Four of the seven vision encoders gain as well, and three move by 4% or less [HW sweep 2026-10-27]:
 
 | Encoder | Time with spinning off, x the default session |
 |---|---:|
-| SigLIP-B/16 | 0.84-0.88x |
-| Depth Anything v2 Small | 0.89-0.92x |
-| RF-DETR nano | 0.90-0.93x |
-| CLIP ViT-B/16 | 0.98-1.02x |
-| RF-DETR base | 0.98-1.01x |
-| SAM ViT-B | 0.98-1.02x |
+| SigLIP-B/16 | 0.81-0.84x |
+| Depth Anything v2 Small | 0.84-0.91x |
+| RF-DETR nano | 0.90-0.91x |
+| Depth Anything v2 Base | 0.91-0.95x |
+| RF-DETR base | 0.96-0.99x |
+| SAM ViT-B | 0.96-1.00x |
+| CLIP ViT-B/16 | 0.99-1.01x |
 
-**Conditions:** RK1, governor `performance`, `taskset -c 4-7`, 4 threads, the build of the
-ort-rocket table above, 2026-10-10.
+**Conditions:** RK1, NPU clock 928 MHz (the 900 MHz request), governor `performance`,
+`taskset -c 4-7`, 4 threads, the build of the ort-rocket table above, 2026-10-27.
 
 At 2 threads pix2pix shows no difference. A 726-token Laya request varies +-10% between passes
 either way, so its effect is not characterized. An execution provider cannot change a session's
@@ -2247,8 +2259,9 @@ the offloading configuration and leave the CPU-only configuration unchanged.
 
 #### Method
 
-- **Board and operating point.** The NPU clock boots at 200 MHz and rises under load. The 600 MHz
-  rate is set at module load with `rocket_npu_clk_hz=600000000` and confirmed during the run,
+- **Board and operating point.** The NPU clock boots at 200 MHz and rises under load. The clock
+  patch's 600 MHz request, set at module load with `rocket_npu_clk_hz=600000000`, runs at
+  ~816 MHz at the 0.80 V rail ([clock.md](clock.md)). The request is confirmed during the run,
   because a sample taken while idle between repetitions measures 200. The CPU baseline runs
   unpinned. F16 decode is LPDDR-bandwidth-bound, so the A55 cores add bandwidth, and confining the
   process to the A76 cluster starves it ([decode-gemv.md](decode-gemv.md)).
@@ -2285,7 +2298,7 @@ experts-on-CPU configuration of each run's session. The native-quant table of
 #### Tuning per model
 
 Each figure is a mean over three rotated interleaved passes. The memory is reset before every
-configuration, and the governor pinned [HW sweep 2026-08-28..31, RK1, 600 MHz].
+configuration, and the governor pinned [HW sweep 2026-08-28..31, RK1, ~816 MHz].
 
 The below-4 B residues of 0.79-0.86 are measured under the dqc mechanism control, the same `-ub`
 pair with the dequantization cache on.
@@ -2310,7 +2323,7 @@ the TTFT and streaming decomposition to ~10%.
 #### gpt-oss-20b
 
 The 2026-07-14 measurements come from one board in one session, clock pinned, with every baseline
-re-measured alongside the configuration under test [HW sweep, 600 MHz, 2026-07-14].
+re-measured alongside the configuration under test [HW sweep, ~816 MHz, 2026-07-14].
 
 The 2026-08-27 prefill table comes from one board and one `.so`. Its default column is a mean of
 six runs. One run directly after a rebuild fell at the bottom of that spread, and looked like a 10%
@@ -2374,7 +2387,7 @@ The DeepSeek `M_e` = 72 test point has four pairs, every one under 1.00 and none
 
 ### The third architecture, and the threshold declines it correctly
 
-The decline-side test points are [HW sweep 2026-08-27, RK1, 600 MHz pinned, governor
+The decline-side test points are [HW sweep 2026-08-27, RK1, ~816 MHz pinned, governor
 `performance`]. Each is `-r 3`, over three process-pairs with the configurations alternated. The
 warm-up process is discarded and the page cache dropped first.
 
@@ -2420,7 +2433,7 @@ three rotated passes each, they measure pp512 at 21.18 and 22.67 t/s.
 
 At gpt-oss's expert (K=N=2880, group 576, three workers), `moe_gw_bench` measures the group-wise
 call across the 2026-10-09 build. It moves 4.16-4.19 -> 3.40-3.52 ms at M 64 and 12.05-12.09 ->
-8.92-10.26 ms at M 256. Each is two rotated runs a build [HW sweep 2026-10-09, RK1, 600 MHz,
+8.92-10.26 ms at M 256. Each is two rotated runs a build [HW sweep 2026-10-09, RK1, ~816 MHz,
 governor `ondemand`].
 
 End to end, the build before it measured gpt-oss pp512 at 22.78-22.99 t/s. The 1.093-1.098x is
@@ -2437,7 +2450,7 @@ that the expert path adds nothing. On the default placement the two configuratio
 
 ### The accept side of the same floor, and the budget above it
 
-The accept-side test point is [HW sweep 2026-08-28, RK1, 600 MHz pinned, governor `performance`].
+The accept-side test point is [HW sweep 2026-08-28, RK1, ~816 MHz pinned, governor `performance`].
 It is `-r 2`, over three process-triples (configuration order a balanced Latin square). The warm-up
 process is discarded and the page cache dropped before every test point. A single-test-point run
 first showed the configuration is reachable. The default's placement line is identical in all three processes,
@@ -2615,7 +2628,7 @@ process per run and two runs a configuration. Q8 and F16 were char-identical CPU
 the CPU, and NAR diverged slightly.
 
 The 2026-10-12 re-run used the same frontend commit, rebuilt with GCC 16.2 on kernel 7.2.9, with
-ggml-rocket `6bf55cc` and rocket-userspace `ffd4ccc`, `rocket` 1.3.0 at 600 MHz. It ran both clips,
+ggml-rocket `6bf55cc` and rocket-userspace `ffd4ccc`, `rocket` 1.3.0 at ~816 MHz. It ran both clips,
 both precisions, CPU and NPU, two fresh processes each, and both runs of every configuration
 matched. jfk is char-identical everywhere. On the hard clip, F16 is char-identical CPU==NPU, and Q8
 differs by one word (word 13, 246 against 249 characters). The Q8 NPU and both F16 transcripts are
@@ -2625,8 +2638,9 @@ byte-identical to the 2026-07-21 ones. The Q8 CPU transcript is the one that cha
 ### Detection (tflite-rocket)
 
 Host-path changes, and moving the requant on chip, took MobileDet from 205 to 56 ms. Each row of the
-change table is the warm latency once that change is in. All rows share the operating point of
-§"Single-stream latency" [HW sweep, 2026-09-27 and 2026-09-28]:
+change table is the warm latency once that change is in. All rows ran at ~816 MHz (the 600 MHz
+request), governor `performance`, the process on the A76 cores [HW sweep, 2026-09-27 and
+2026-09-28]:
 
 | Host path | MobileDet | SSD MobileNet v2 | EfficientDet-Lite0 |
 |---|---:|---:|---:|
@@ -2648,14 +2662,41 @@ the per-change ratios.
 The 500-image COCO mAP is from tflite-rocket's `tools/coco_map.py`. The submit-bound scaling of the
 delegate alone is from `tools/pool_throughput.py`.
 
+The 2026-10-29 latencies are medians over four passes, one process per configuration, with the
+governor order and the model order rotated. On 2026-09-28, at ~816 MHz, the single-stream table
+measured 55.7, 52.1 and 101.3 ms on `performance` and 75.8, 70.5 and 135.0 ms on `ondemand`. Its mAP
+over 100 images was 0.4040 against the CPU's 0.3980 (MobileDet), 0.3229 against 0.3215 (SSD
+MobileNet v2) and 0.3023 against 0.2996 (EfficientDet-Lite0).
+
 ### ONNX Runtime (ort-rocket)
 
 The 2026-10-10 build shortened the head range's host passes. Against the 2026-10-09 build, SAM moved
-1.02-1.03x -> 1.03-1.05x, while the ratio of every family on the head range rose 5-17%.
+1.02-1.03x -> 1.03-1.05x, while the ratio of every family on the head range rose 5-17%. The
+2026-10-11 build hands the scores and P between attention's two matmuls as rows. On the 2026-10-10
+build the table's ratios were SigLIP 2.44-2.52x, CLIP 2.39-2.48x, RF-DETR nano 1.57-1.59x and base
+1.61-1.65x. Depth Anything was 1.33-1.35x and Laya English 1.99-3.95x. The CPU EP's times did not
+change, and the outputs are bit-identical.
+
+On the 2026-10-11 build (rocket-userspace `ffd4ccc`, ort-rocket `3c50635`) at ~816 MHz (the 600 MHz
+request), the table's ratios were SigLIP 2.64-2.67x and CLIP 2.58-2.64x. They were RF-DETR nano
+1.65-1.70x and base 1.77-1.79x, SAM 1.03-1.04x, Depth Anything Small 1.58-1.61x and Laya English
+2.03-4.16x. The hidden-state cosines were 0.9999864 (SigLIP) and 0.9999955 (CLIP), and the depth
+cosine 0.9999999. On the 2026-10-10 build at ~816 MHz the pix2pix row measured 2.91x and 1.86x.
+
+The 2026-10-27 table is a newer library (CBUF weight streaming as the fp16 default and
+the K-accumulation stride, both in rocket-userspace `88cae6d`) at the 900 MHz request, and the two changes are not separated.
+The CPU EP's times are the same on both builds, so the change is the EP's. The NPU's PVTPLL counter
+read 927.8 MHz before the 2026-10-27 run.
+
+The Depth Anything rows ran under the `Conv` cost rule's earlier NPU estimate, fitted at ~816 MHz.
+The current estimate, refitted at 928 MHz, admits 16 of Small's 30 head convs where the earlier one
+admits 10. It runs Small in 0.975-1.008x the earlier one's time [HW sweep 2026-10-29].
 
 Each CPU EP process in §"The CPU EP baseline on the RK3588" started after a memory reset.
 
 ### ONNX Runtime thread spinning
 
-Each vision-encoder ratio is paired within one of four passes. On the 2026-10-09 build, with 8
-unconfined threads, the same split measured SigLIP 0.75-0.79x and RF-DETR nano 0.83-0.85x.
+Each vision-encoder ratio is paired within one of four passes. On the 2026-10-10 build at ~816 MHz
+(the 600 MHz request), the split measured SigLIP 0.84-0.88x, Depth Anything Small 0.89-0.92x and
+RF-DETR nano 0.90-0.93x. CLIP, RF-DETR base and SAM measured 0.98-1.02x. On the 2026-10-09 build,
+with 8 unconfined threads, it measured SigLIP 0.75-0.79x and RF-DETR nano 0.83-0.85x.

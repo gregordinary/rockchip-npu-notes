@@ -1,7 +1,8 @@
 <!-- Raw llama-bench + llama-perplexity output backing perf/benchmarks.md (DeepSeek-V2-Lite). The
      clk=200 in each per-run header is an idle sample taken between the discarded warmup and the
-     measured run; the NPU rides to 600 MHz under load (module loaded with
-     rocket_npu_clk_hz=600000000). Warm medians, llama-bench -r 2 plus a discarded warmup. Q4_K_M
+     measured run. Under load the NPU runs at ~816 MHz, the 600 MHz request at a 0.80 V rail (module
+     loaded with rocket_npu_clk_hz=600000000, ../clock.md). Warm medians, llama-bench -r 2 plus a
+     discarded warmup. Q4_K_M
      only: at 15.71B the F16 GGUF (~31 GB) does not fit the 31 GB board; Q4_K_M (9.65 GiB) fits with
      headroom. Quant and PPL both at -b 2048 -ub 2048. GGUF from mradermacher/DeepSeek-V2-Lite-GGUF
      (the base model deepseek-ai/DeepSeek-V2-Lite; converted 2024-05, MLA tensors in the pre-split
@@ -81,7 +82,7 @@ PPL is inflated); the NPU-CPU delta is the faithfulness measure. Per-run stderr 
 
 <!-- This is the model that showed a MoE placement failure mode residency cannot see.
      RK1 (RK3588), 31 GiB, kernel 7.2.0-1, llama.cpp 171974745 (b10558), rocket 1.3.0,
-     clock pinned at 600 MHz, CPU governor `performance`, -b 2048 -ub 2048, -r 2,
+     clock pinned at ~816 MHz, CPU governor `performance`, -b 2048 -ub 2048, -r 2,
      ROCKET_KACC=1. Arms: cpu (no backend), ROCKET_MOE=0 (dense graph on the NPU, experts on
      the CPU), default (ROCKET_MOE unset).
 
@@ -124,7 +125,7 @@ build: 171974745 (10558)
 
 <!-- one experiment across both MoE models, filed here because the defect it found lives on this
      one. RK1 (RK3588), 31 GiB, kernel 7.2.0-1, rocket 1.3.0, llama.cpp 171974745 (b10558), NPU
-     clock pinned at 600 MHz, CPU governor `performance` on cpu0/4/6, -b 2048 -ub 2048, -r 3 with
+     clock pinned at ~816 MHz, CPU governor `performance` on cpu0/4/6, -b 2048 -ub 2048, -r 3 with
      a discarded warm-up process per model, ROCKET_KACC=1. Arms interleaved per point so clock and
      thermal drift are charged to both equally. Every offloaded cell reported 100% resident and 0
      streamed, so nothing here is a residency effect.

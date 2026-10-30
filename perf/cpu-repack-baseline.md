@@ -6,7 +6,7 @@ these notes before 2026-09-29 ran both configurations on a llama.cpp built with 
 Without the repack, the CPU configuration is 1.26-1.71x slower at pp2048. The NPU's lead over a
 repacked CPU is therefore smaller than the published ratios [HW sweep 2026-09-29].
 
-**Conditions:** an RK1 (RK3588), NPU clock 600 MHz, `rocket` 1.3.0, kernel 7.2.8, CPU governor
+**Conditions:** an RK1 (RK3588), NPU clock ~816 MHz, `rocket` 1.3.0, kernel 7.2.8, CPU governor
 `performance`. The host is llama.cpp b11242 built with `GGML_CPU_REPACK=ON`, and the backend is ggml-rocket as of 2026-09-28. Prefill t/s at pp2048, with `-b 2048 -ub 2048` in every configuration.
 The NPU configuration runs the MoE experts through the native-quant path, with all 4746 of
 DeepSeek's experts resident.
@@ -60,7 +60,7 @@ A quantized prefill shorter than `ROCKET_MIN_M_QUANT` (512 rows) stays on the CP
 `-nr` that CPU work runs the unrepacked GEMM. A short prompt is therefore slower in the NPU
 configuration than on a repacked CPU, and a long one is faster [HW sweep 2026-07-17].
 
-**Conditions:** Ministral-3-8B `Q4_K_M`, 8 threads, warm, RK1, NPU clock 600 MHz, kernel 7.1.
+**Conditions:** Ministral-3-8B `Q4_K_M`, 8 threads, warm, RK1, NPU clock ~816 MHz, kernel 7.1.
 The test points predate llama.cpp b11242 and the later host-side cost reductions, so the
 absolute rates are those of the earlier build.
 

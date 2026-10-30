@@ -1,7 +1,8 @@
 <!-- Raw llama-bench + llama-perplexity output backing perf/benchmarks.md (Phi-4-mini-instruct).
      The clk=200 in each per-run header is an idle sample taken between the discarded warmup and
-     the measured run; the NPU rides to 600 MHz under load (module loaded with
-     rocket_npu_clk_hz=600000000). Warm medians, llama-bench -r 2 plus a discarded warmup. Quants
+     the measured run. Under load the NPU runs at ~816 MHz, the 600 MHz request at a 0.80 V rail
+     (module loaded with rocket_npu_clk_hz=600000000, ../clock.md). Warm medians, llama-bench -r 2
+     plus a discarded warmup. Quants
      at -b 2048 -ub 2048; F16 at defaults. F16 derived from the published BF16 via llama-quantize.
      llama.cpp maps Phi-4-mini onto the `phi3` arch (shown as "phi3 3B" in the rows). See
      ../benchmarks.md Method. -->

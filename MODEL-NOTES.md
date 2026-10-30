@@ -37,7 +37,7 @@ the use case, the precision, the prompt size and the RAM or disk each opt-in nee
 | DeepSeek-V2-Lite, MoE and MLA | Q4_K_M | Supported | `-b 2048 -ub 2048`. The expert offload is on by default | | 1.33x at pp512, 1.53x at pp2048 | [HW sweep 2026-08-27] |
 | Qwen3-30B-A3B, MoE | Q4_K_M | Supported | Defaults | Every tuned configuration is slower | | [HW sweep 2026-08-30] |
 
-**Conditions:** RK3588 on a Turing RK1 (31 GiB), NPU clock 600 MHz. Each tuning figure dated
+**Conditions:** RK3588 on a Turing RK1 (31 GiB), NPU clock ~816 MHz. Each tuning figure dated
 2026-08-28 to 2026-08-31 is from three passes per model, with the configuration order rotated.
 
 The gain is prefill with the recommended options against prefill with the defaults, both on the
@@ -59,7 +59,7 @@ The settings every ASR model needs are under
 
 ## NPU role and operating point
 
-**Conditions:** RK3588 on a Turing RK1, NPU clock 600 MHz, governor `performance`.
+**Conditions:** RK3588 on a Turing RK1, NPU clock ~816 MHz, governor `performance`.
 
 - Prefill (prompt eval, batched GEMM) runs on the NPU, and decode (token generation, M=1
   GEMV) stays on the CPU. Generation throughput is therefore CPU-bound, and is ~identical with
@@ -73,8 +73,8 @@ The settings every ASR model needs are under
   from a short interactive prompt, whose `Prompt: N t/s` figure mostly measures overhead. See
   [perf/asr-cpu-relief.md](perf/asr-cpu-relief.md) §"Where the floor comes from" and
   [perf/not-mac-bound.md](perf/not-mac-bound.md).
-- Discard the first, cold-clock run. The NPU idles at 200 MHz and ramps under load, so a
-  cold run measures ~15% low. A short job finishes before the clock reaches 600 MHz. Compare
+- Discard the first, cold-clock run. The NPU idles at 198 MHz and ramps under load, so a
+  cold run measures ~15% low. A short job finishes before the clock reaches ~816 MHz. Compare
   warm runs. `llama-bench` discards the cold run, so use `-r 3`.
 
 ## Baseline invocation
@@ -93,7 +93,7 @@ Every NPU run needs these settings:
   all eight cores for their bandwidth.
 - For a quantized GGUF, consider `-b 2048 -ub 2048`. A quantized GGUF re-dequantizes to fp16
   per micro-batch, and the larger micro-batch amortizes that. Its gain depends on the model:
-  0.91-1.53x over eleven models, and a loss on two [HW sweep 2026-08-29/30, 600 MHz]. Use the
+  0.91-1.53x over eleven models, and a loss on two [HW sweep 2026-08-29/30, ~816 MHz]. Use the
   model's own row. Where the fp16 image fits in RAM, `ROCKET_QUANT_RESIDENT=auto` gives a
   larger gain.
 - Confirm that the NPU ran the prefill. Prepend `ROCKET_MM_PROFILE=1`, and look for a
@@ -131,7 +131,7 @@ ordinal it uses against the host's op names at load, and refuses a mismatch.
 
 ## Per-model notes
 
-**Conditions:** RK3588 on a Turing RK1 (31 GiB), NPU clock 600 MHz, unless an entry states
+**Conditions:** RK3588 on a Turing RK1 (31 GiB), NPU clock ~816 MHz, unless an entry states
 otherwise.
 
 In these notes `-ub 2048` stands for `-b 2048 -ub 2048`. The combined recipe is
@@ -428,7 +428,7 @@ settings:
   2880×2880 one, at the same row count.
 - **Expert offload, measured:** at `M_e` = 72 the offload measures 0.94x the experts-on-CPU
   configuration over four pairs, a loss, where gpt-oss at `M_e` = 64 measures 1.64x. Past the threshold it
-  gains: 1.22x at `M_e` = 144 and 1.31x at `M_e` = 192 [HW sweep 2026-08-27, 600 MHz
+  gains: 1.22x at `M_e` = 144 and 1.31x at `M_e` = 192 [HW sweep 2026-08-27, ~816 MHz
   pinned]. Whole-model prefill under the default is 26.0 t/s at pp512 and 28.4 at pp2048, in
   the same measurement series.
   A 2026-10-09 build measures pp2048 at 32.69-32.83 t/s, against 28.82-29.99 for the build
@@ -700,5 +700,5 @@ Readings that later measurements replace:
 
 | Measured | Quantity | Value | Conditions |
 |---|---|---|---|
-| 2026-07-14 | Qwen3.5-0.8B F16 prefill against the CPU | 0.36x at pp16, 0.83x at pp64, 1.04x at pp96, 1.15x at pp128, crossing at ~86 rows | Warm, 600 MHz, the build of that date. The 2026-10-09 measurement in §"NPU role and operating point" crosses at 21-25 rows |
+| 2026-07-14 | Qwen3.5-0.8B F16 prefill against the CPU | 0.36x at pp16, 0.83x at pp64, 1.04x at pp96, 1.15x at pp128, crossing at ~86 rows | Warm, ~816 MHz, the build of that date. The 2026-10-09 measurement in §"NPU role and operating point" crosses at 21-25 rows |
 | 2026-07-03 | gpt-oss-20b, experts on the CPU, pp2048 | 13.11 t/s at `-ub 512`, 11.31 at `-ub 2048` | A build that offloaded gpt-oss's attention with no sink term, which the handler declines from 2026-07-14. The 2026-08-27 table in §"gpt-oss-20b `-ub` setting" measures 13.53 and 13.63 |

@@ -104,7 +104,7 @@ correctness constraints invert outright.
 | Axis | RK3588 | RK3576 |
 |---|---|---|
 | Matmul precision | fp16 is faster. Resident int8 prefill is 0.60x fp16 | int8 is faster. A resident fp16 GEMM costs 2.0-2.2x the resident int8 one. The convolution-form fp16 program contracts 16 input channels a task, and is 30-299x slower |
-| M alignment | `M % 4`. `M == 1` is padded to 4 | No constraint. `M = 1` is bit-exact |
+| M alignment | No constraint once the feature surface stride is `width × (H − 4)` ([matmul-as-conv.md](../matmul-as-conv.md)). `M = 1` is bit-exact | No constraint. `M = 1` is bit-exact |
 | Matmul output | raw int32 readback | int8 through the DPU requant |
 | Integer partials | No on-chip integer K-accumulation is implemented. The eltwise ALU adds integers exactly under the whole precision bundle, and a K-accumulation on it is not measured | An int32 output writer exists, so a K split writes exact integer partials out |
 | M=1 GEMV | fp16 throughput ~82x below the batched-GEMM peak, through the vendor RKNN API ([decode-gemv.md](../perf/decode-gemv.md)). Decode stays on the host | bit-exact and unconstrained (still submit-bound) |

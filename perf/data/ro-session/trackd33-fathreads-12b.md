@@ -1,5 +1,5 @@
 <!-- gemma4-12b F16 streamed, PINNED (PIN_MASK=0xf0, -t 4), governor performance on all three
-     policies, NPU 600 MHz, one job in flight. llama-bench -p 2048 -n 0 -r 2 -v, three arms
+     policies, NPU ~816 MHz, one job in flight. llama-bench -p 2048 -n 0 -r 2 -v, three arms
      (ROCKET_FA_THREADS 1 / 2 / 4) x three passes, arm order rotated each pass, ratios paired
      within a pass. 9 of 9 rows. Measured 2026-09-07, RK1, rocket 1.3.0 on kernel 7.2.0-1-arm64,
      llama.cpp b10558, libggml-rocket.so md5 0c716831d47055d1a99749b79fc10bf5.

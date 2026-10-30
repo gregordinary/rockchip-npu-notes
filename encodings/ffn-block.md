@@ -69,8 +69,8 @@ pieces:
 
 ## Accuracy
 
-**Conditions:** RK3588. The host-handoff block at 600 MHz and kernel 7.1.0-1. The geglu at n
-up to 100000, and the full FFN block up to M=128, H=2048, I=1024 (Gemma-ish). The
+**Conditions:** RK3588. The host-handoff block at NPU clock ~816 MHz and kernel 7.1.0-1. The
+geglu at n up to 100000, and the full FFN block up to M=128, H=2048, I=1024 (Gemma-ish). The
 cube-resident FFN over shapes of multiple M, N and K tiles, including the SigLIP fc geometry.
 
 The host-handoff block measures cos = 1.000000 with 0 coarse misses against an fp64 oracle
@@ -85,7 +85,7 @@ host-handoff path [HW sweep].
 
 ## Performance
 
-**Conditions:** RK3588, 600 MHz.
+**Conditions:** RK3588, NPU clock ~816 MHz.
 
 The cube-resident path's gain depends on the workload [HW sweep]. For the LLM, the round
 trips are already cheap (NEON de-tile + KACC), and the FFN-internal subset that cross-op

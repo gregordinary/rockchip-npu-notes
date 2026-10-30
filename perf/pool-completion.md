@@ -11,7 +11,7 @@ the right values. Only wall-clock time shows the delay.
 With the flag, the same submits cost microseconds. The flag comes with DRM interface version
 1.3, which userspace reads to tell a kernel that honors the flag from one that rejects it.
 
-**Conditions:** Turing RK1 (RK3588), NPU pinned at 600 MHz, the same binaries in both columns.
+**Conditions:** Turing RK1 (RK3588), NPU pinned at ~816 MHz, the same binaries in both columns.
 Interface 1.1.0 is kernel `7.1.7-1-arm64`. Interface 1.3.0 is kernel `7.2.0-1-arm64` with
 `patches/rocket/093-rocket-drv-ppu-completion.patch`, measured 2026-08-24, warm. The two
 columns differ in kernel version as well as in the flag.
@@ -58,7 +58,7 @@ Both userspace pool entries, at one geometry, per call [HW sweep]:
 | `rocket_global_avgpool_fp16()` | 506.8, 506.6, 506.8, 533.2, 506.8, 506.5 ms |
 
 **Conditions:** Turing RK1, kernel `7.1.7-1-arm64`, `rocket` DRM interface 1.1.0, NPU pinned
-at 600 MHz. C=8, a 7×7 plane, a 7×7 average window at stride 1, a whole-plane mean either way.
+at ~816 MHz. C=8, a 7×7 plane, a 7×7 average window at stride 1, a whole-plane mean either way.
 
 Each submit logs one `NPU job timed out` line in `dmesg`. Both entries return the same value
 (1.4229), which is the value the host reference gives. The minimum per-call cost is

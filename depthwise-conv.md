@@ -146,7 +146,7 @@ the int8 program:
 | Bias | `bias − (Z_in − 0x80)·Σ(u_w − Z_w)` | `bias − in_zp·Σ_kernel w` |
 | Output | `npu_byte + 0x80` | the raw int8 byte |
 
-This program computes TFLite's int8 depthwise [HW sweep, RK1, 600 MHz, measured
+This program computes TFLite's int8 depthwise [HW sweep, RK1, ~816 MHz, measured
 2026-09-23]. Against TFLite's reference kernels on one model layer with a random input, 11
 of 4096 outputs differ by one and none by more. The difference is mostly TFLite's own
 double rounding: its fixed-point multiply rounds, then its shift rounds again, where the
@@ -267,7 +267,7 @@ A channel group whose own plane is too large for one pass needs spatial tiling. 
 `rocket_conv2d_dw_int8` cuts such a plane into row bands, and into columns where one row still
 does not fit. Each band runs as one job over a sub-input whose halo is the input zero point.
 That halo is the byte the hardware pad writes, so a band computes what the whole plane would.
-Three banded shapes are bit-exact against the host model [HW sweep, RK1, 600 MHz,
+Three banded shapes are bit-exact against the host model [HW sweep, RK1, ~816 MHz,
 2026-09-27]:
 
 | Channels × plane | Kernel, stride, pad | Weight zero point |
@@ -299,7 +299,7 @@ A uint8 tensor reaches it recentered by 128.
 
 The entry's host pack decides its cost at these shapes. A pack indexed per element is 83%
 of the call, and a blocked pack makes the call 2.9x shorter [HW sweep, RK1]. MobileDet runs
-1.19x warm at 600 MHz over two changes together: its depthwise layers on this entry, and the
+1.19x warm at ~816 MHz over two changes together: its depthwise layers on this entry, and the
 blocked pack.
 
 `rocket_conv2d_dw_int8_perc` takes a per-channel filter on the BS stage's per-channel

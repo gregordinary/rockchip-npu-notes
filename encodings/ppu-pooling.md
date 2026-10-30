@@ -87,7 +87,7 @@ The PPU's fields set these limits:
 
 ## Accuracy
 
-**Conditions:** RK3588 (RK1), NPU clock 600 MHz.
+**Conditions:** RK3588 (RK1), NPU clock ~816 MHz.
 
 MAX is bit-exact against the CPU, and AVG is within a small tolerance from the reciprocal and
 fp16 rounding, <= 0.002 [HW sweep]. The reciprocal's precision is ~3-4 significant figures.
@@ -213,8 +213,8 @@ faster than host pooling at either precision.
 - Global pooling
 - Padded max
 
-All pass on the RK1 (@600 MHz). The `tflite-rocket` `convert_test` NPU-PPU path (`pool_npu`)
-is bit-exact, including max 3×3 SAME + ReLU.
+All pass on the RK1 (NPU clock ~816 MHz). The `tflite-rocket` `convert_test` NPU-PPU path
+(`pool_npu`) is bit-exact, including max 3×3 SAME + ReLU.
 
 End-to-end, `libtflite_rocket.so` (the external delegate, `pool_npu` branch) builds and runs
 on the RK1. `tflite-rocket/tools/run_pool_delegate.py` loads it via `tf.lite` on float pool

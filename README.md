@@ -113,7 +113,7 @@ column links to the note with the mechanism and the evidence.
 |---|---|---|---|
 | E1 | [The MRDMA block](encodings/mrdma-trap.md): a plain convolution or matmul with `mrdma_disable` clear in `DPU_RDMA_FEATURE_MODE_CFG` (`0x5044`) | The DPU read DMA waits for data that never arrives. The job times out with its output untouched [HW sweep, source-confirmed] | Software must set `mrdma_disable` |
 | E2 | [Output stride](encodings/size-e-quirk.md): the output of an int8 or int4 matmul (int32 and int16) programmed with its natural `size_e` | Most of the output is not written [HW sweep] | Software must program `size_e=7` for the int32 output of an int8 matmul and the int16 output of an int4 matmul. An int16 matmul's int32 output takes the natural `size_e=3`, and hangs at 7 |
-| E3 | [Matmul height](matmul-as-conv.md): a matmul whose rows, the convolution's spatial height, number fewer than 4 | Incorrect output at every datatype [HW sweep] | Software must keep `M%4==0`, and pad a single-row matmul to 4 rows |
+| E3 | [Feature surface stride](matmul-as-conv.md): a feature cube whose height is not a multiple of 4, with the surface stride in `CNA_DMA_CON2` computed as `line_stride × (H/4 − 1)` in integer arithmetic | Incorrect output. A matmul programmed this way is incorrect at every M that is not a multiple of 4 [HW sweep] | Software must program the surface stride as `width × (H − 4)`, a 28-bit two's complement below four rows |
 | E4 | [CBUF bank slack](encodings/cbuf-bank-slack.md): the int8 feature DMA at some tile geometries | The DMA over-reads by one CBUF bank and returns garbage in the tile's last rows [HW sweep]. The fp16 cube is not affected | Software must reserve `data_bank = fd_banks+1` |
 | E5 | [LUT table entries](encodings/dpu-lut-activation.md): a shifted LUT table entry of exactly `q=0` | The entry decodes to ~4.0 rather than 0 [HW sweep] | Software must clamp every shifted-table entry to `q>=1` |
 | E6 | [Requant rounding and sign](encodings/out-cvt-converter.md): the output converter's scale and the BS stage's shift | A tie rounds to even unless bit 30 of `OUT_CVT_SHIFT` is set. Bit 15 of the scale is a sign, and Mesa's derivation of the scale drops a carry, which halves or negates one scale in 16384 [HW sweep]. The BS stage's shift is split by sign across two fields, and one field alone scales negative products wrongly | Software must keep the carry when it derives the scale, and must program both shift fields |
@@ -121,10 +121,12 @@ column links to the note with the mechanism and the evidence.
 | E8 | [Convolution tile limits](matmul-as-conv.md): a convolution task wider than 1022 input rows by 2047 columns | The tile wraps its field, and the output has the correct size and incorrect values [HW sweep] | Software must keep each task within 1022 input rows by 2047 columns |
 | E9 | [Cube-dimension limit](encodings/dpu-lut-activation.md): a cube-dimension field at the 13-bit maximum of 8191 | A LUT chunk at exactly that width corrupts ~54 positions [HW sweep], and SHARD reports a `REGTASK Overflow` for any operand index past it [source-confirmed] | Software must keep every cube-dimension field below 8191. The CNA's input width and height are 11 bits, narrower still |
 | E10 | [NPU clock](perf/clock.md): setting the NPU clock rate while the power domain is off | The SCMI firmware hangs [HW sweep] | Software must raise the rate from inside the driver, after runtime PM powers the domain |
+| E11 | [Streamed weight banks](matmul-as-conv.md): a matmul task that streams its weights through fewer weight banks than one whole 32-kernel group needs, or through one bank. An int8 task also at exactly that minimum | The task never completes. The watchdog retires it, the fence signals as if it had completed, and the output is not written [HW sweep] | Software must program at least two weight banks, enough banks for one whole 32-kernel group, and for int8 one bank more |
+| E12 | [K-accumulation surface stride](encodings/k-accumulation.md): the EW operand's `EW_SURF_STRIDE` and `SURF_NOTCH` floored at 12, `MAX(M, 12)`, with M below 12 and N above 16 | The sum reads the wrong partial surfaces from the third onward, and the output is a full, plausible surface [HW sweep] | Software must program both fields as the partial's own surface stride, M |
 
 ## Performance
 
-**Conditions:** RK3588, [resident weights](GLOSSARY.md), three cores, NPU clock 600 MHz.
+**Conditions:** RK3588, [resident weights](GLOSSARY.md), three cores, NPU clock ~816 MHz.
 
 - **[Matmul throughput](perf/not-mac-bound.md).** A matmul is bound by DMA and dispatch rather
   than by the MAC array [HW sweep]. fp16, int8 and int4 all measure near 460 GOP/s, so
@@ -134,9 +136,12 @@ column links to the note with the mechanism and the evidence.
   NPU shares with the CPU, so decode stays on the CPU. The NPU's fp16 throughput at M=1 is ~82x
   below its batched-GEMM peak, as an external benchmark measured it through the vendor RKNN
   matmul API.
-- **[Clock](perf/clock.md).** The NPU clock boots at 200 MHz, one fifth of its 1 GHz maximum
-  [source-confirmed]. Raising it to 600 MHz gives ~1.43x on prefill, and 900 MHz gives no
-  further speedup. Known issue E10 is the hazard in raising it.
+- **[Clock](perf/clock.md).** The NPU clock boots at 198 MHz, one fifth of its 1 GHz maximum
+  [source-confirmed]. Above that it is a PVTPLL whose frequency follows the rail voltage, so a
+  requested rate is not the clock. The 600 MHz request at a 0.80 V rail runs at ~816 MHz and
+  gives ~1.43x on prefill. The 900 MHz request at the same rail runs at 928 MHz, the vendor's
+  900 MHz pairing, and is the operating point. A 1 GHz request at 0.85 V runs at 1019 MHz,
+  1.083x on matmul device time [HW sweep]. Known issue E10 is the hazard in raising it.
 
 ## Reading paths
 
@@ -221,7 +226,7 @@ column links to the note with the mechanism and the evidence.
 | [perf/iova-and-multicore.md](perf/iova-and-multicore.md) | The per-fd 4 GB IOVA window, and one fd per core |
 | [perf/bo-sync-cost.md](perf/bo-sync-cost.md) | The `PREP_BO`/`FINI_BO` cache-sync cost, which scales with BO size |
 | [perf/pool-completion.md](perf/pool-completion.md) | Why a pool submit on mainline `rocket` waits ~507 ms and resets a core |
-| [perf/clock.md](perf/clock.md) | The 200 MHz boot clock, raising it safely to 600 MHz, and the limits past it |
+| [perf/clock.md](perf/clock.md) | The boot clock, the requested rate against the physical PVTPLL clock, raising it safely, and the gain to 1019 MHz |
 | [perf/cpu-governor-and-offload.md](perf/cpu-governor-and-offload.md) | How the CPU governor biases an NPU-against-CPU comparison, what it costs a per-layer offload inside a model, and how to pin it |
 | [perf/cpu-repack-baseline.md](perf/cpu-repack-baseline.md) | Why a quantized CPU baseline needs llama.cpp's weight repack, and the NPU's lead over a repacked CPU |
 | [perf/hw-byte-counters.md](perf/hw-byte-counters.md) | The NPU's missing DMA byte counters, and the DDR controller PMU that measures board traffic instead |
@@ -268,6 +273,13 @@ A claim has a tag that says how it was established:
 Where a fact is measured and a source agrees, both tags appear. Performance figures state the
 SoC, the NPU clock and the tensor shape, in a **Conditions:** line under the section or table
 they apply to.
+
+On the RK3588, the NPU clock in a Conditions line is the physical frequency, not the requested
+rate. Above 200 MHz the two differ, because the clock is a PVTPLL that follows the rail voltage
+([perf/clock.md](perf/clock.md)). On the Turing RK1, ~816 MHz is the 600 MHz request
+(`rocket_npu_clk_hz=600000000`) at a 0.80 V rail, and 928 MHz is the 900 MHz request, the
+operating point. A rate named for the vendor kernel is that driver's OPP, whose
+physical frequency is not characterized.
 
 A note's record, where it has one, is an Evidence section at its end. It states how each fact
 was established, including the fields and values a negative result searched. A hazard is marked as

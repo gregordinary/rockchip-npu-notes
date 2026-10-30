@@ -94,9 +94,11 @@ spread across the N cores [HW sweep, source-confirmed]. See
 ## CBUF
 
 Each core has a CBUF of 12 banks × 32 KB = 384 KB [source-confirmed: Mesa / SHARD]. During
-a conv or matmul task the CBUF must hold both the input-feature tile and the weight tile.
-That constraint sets the K-tile size. With the input and weight both resident, the banks
-bound the contraction depth `Kt` that fits at a given output tile (Mt × Nt).
+a conv or matmul task the CBUF holds the input-feature tile in its data banks and the weight
+tile in its weight banks. With the input and weight both resident, the banks bound the
+contraction depth `Kt` that fits at a given output tile (Mt × Nt). A matmul task can instead
+stream a larger weight cube through the weight banks while the input stays resident
+([matmul-as-conv.md](matmul-as-conv.md) §"CBUF weight streaming").
 
 The size limits that the SHARD paper ([SOURCES.md](SOURCES.md)) reports for its ViT encoder
 are rknn-toolkit2's, not the CBUF's. Its `0xe010 "REGTASK Overflow"` is a separate limit, the
@@ -146,15 +148,15 @@ The theoretical 3-core MAC peak scales with the datatype: ~3 TFLOPS fp16, ~6 TOP
 ~12 TOPS int4 (2x again). Measured RKNN matmul benchmarks (clehaxze, external) reach only
 ~0.5-1 TFLOPS fp16.
 
-On the `rocket` path, the matmul measures ~460 GOP/s at 600 MHz at fp16, int8 and int4 alike
+On the `rocket` path, the matmul measures ~460 GOP/s at ~816 MHz at fp16, int8 and int4 alike
 [HW sweep]. DMA and dispatch bound it, rather than the MAC array
 ([perf/not-mac-bound.md](perf/not-mac-bound.md)).
 
 ## Clock
 
-The NPU compute clock (`scmi_clk_npu`) boots at 200 MHz, 1/5 of the 1 GHz maximum, and stays
-there. Mainline `rocket` has no NPU devfreq, and 200 MHz is the vendor's `POWER_DOWN_FREQ`.
-Raising the clock gives ~1.43x.
+The NPU compute clock (`scmi_clk_npu`) boots at 198 MHz (the 200 MHz request), 1/5 of the
+1 GHz maximum, and stays there. Mainline `rocket` has no NPU devfreq, and 200 MHz is the
+vendor's `POWER_DOWN_FREQ`. Raising the clock to ~816 MHz gives ~1.43x.
 
 > [!CAUTION]
 > The NPU power domain is off at cold boot. Setting the PLL while the domain is off hangs the

@@ -46,7 +46,7 @@ coincide, so no conversion is needed there.
 
 The DPU writes exactly what the CNA reads. The first matmul's raw output BO is
 byte-identical to `C1` de-tiled then re-packed as the second matmul's input [HW sweep]. The
-test point is a single tile at 600 MHz.
+test point is a single tile at ~816 MHz.
 
 ### Elementwise ops and the cube layout
 
@@ -105,7 +105,7 @@ fragmentation.
 ## Accuracy
 
 A second matmul that reads the first's output BO directly is bit-exact to the host round-trip,
-at cosine 0.999999 against an fp64 oracle [HW sweep]. The test point is a single tile at 600 MHz.
+at cosine 0.999999 against an fp64 oracle [HW sweep]. The test point is a single tile at ~816 MHz.
 
 The cube-resident encoder FFN leaves fidelity unchanged: SigLIP mean-layer cos 0.999984,
 against the host-handoff 0.999983 [HW sweep]. The conditions are those of
@@ -115,7 +115,7 @@ against the host-handoff 0.999983 [HW sweep]. The conditions are those of
 
 ### Transform share by workload
 
-**Conditions:** RK3588, NPU clock 600 MHz, KACC, resident weights. Each figure is
+**Conditions:** RK3588, NPU clock ~816 MHz, KACC, resident weights. Each figure is
 `ROCKET_MM_PROFILE` aggregated over a whole forward pass.
 
 **Not characterized:** a higher clock, a layout that defeats the NEON de-tile, and smaller LLM
@@ -141,7 +141,7 @@ reduces wall-clock time.
 
 ### Encoder measurement
 
-**Conditions:** RK3588, NPU clock 600 MHz, governor `performance`. The workload is the
+**Conditions:** RK3588, NPU clock ~816 MHz, governor `performance`. The workload is the
 SigLIP-B/16 simple-path encode (12 blocks), with `ROCKET_MM_PROFILE` aggregated.
 
 The cube-resident FFN is `rocket_mlp_fp16_fused`, wired into `rocket_encoder_block_fp16`. The
@@ -195,7 +195,7 @@ See [ffn-block.md](ffn-block.md) (the FFN composition and the resident-cube hand
 
 In `rocket_matmul.c` the one `feat_idx` helper is commented "input/output cube".
 
-The test is `tests/crossop_chain_rocket.c`, single-tile, at 600 MHz. It runs matmul A, then
+The test is `tests/crossop_chain_rocket.c`, single-tile, at ~816 MHz. It runs matmul A, then
 runs matmul B with its input BO aliased to A's output BO (same handle, same IOVA, zero host
 touch of the intermediate). It compares against the host-round-trip reference, in two checks:
 

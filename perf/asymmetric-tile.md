@@ -11,7 +11,7 @@ can reach 384. Halving Nt to 128 while keeping Mt=256 frees CBUF, so Kt grows to
 option is `ROCKET_MM_ASYM`. It is on by default (`asym_on()` defaults to 1), and
 `ROCKET_MM_ASYM=0` forces the symmetric plan.
 
-**Conditions:** RK3588 (RK1), NPU clock 600 MHz, KACC on, warm median, idle board,
+**Conditions:** RK3588 (RK1), NPU clock ~816 MHz, KACC on, warm median, idle board,
 2026-06-30. The asymmetric plan is `Mt=256, Nt=128, Kt grown`.
 
 **Not characterized:** which of the two proposed mechanisms produces the gain (§"Cause").

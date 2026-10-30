@@ -1,4 +1,4 @@
-<!-- ROCKET_FA_PROFILE read on the model, gemma4-12b F16 streamed, RK3588 RK1 600 MHz, governor
+<!-- ROCKET_FA_PROFILE read on the model, gemma4-12b F16 streamed, RK3588 RK1 at ~816 MHz, governor
      performance on all three policies, PIN_MASK=0xf0 with -t 4, llama-bench -p 2048 -n 0 -r 2 -v,
      two arms x three passes rotated, ratios paired within a pass, memory reset before every arm.
      Measured 2026-09-07. libggml-rocket.so 138de09d05f235f8c50c7d9d7df3eaa5 against

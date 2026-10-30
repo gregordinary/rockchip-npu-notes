@@ -8,7 +8,7 @@ the matmul, sets quantized prefill throughput [HW sweep]. Three settings follow 
 micro-batch size (`-ub`), the resident dequant cache (`ROCKET_QUANT_RESIDENT`), and the routing
 threshold (`ROCKET_MIN_M_QUANT`).
 
-**Conditions:** RK3588, NPU clock 600 MHz, Qwen3.5-9B and Qwen3.6-27B unless a section names
+**Conditions:** RK3588, NPU clock ~816 MHz, Qwen3.5-9B and Qwen3.6-27B unless a section names
 other models.
 
 **Not characterized:** the dequant crossover at shapes far from the 9B and the 27B, and where
@@ -84,7 +84,7 @@ submit and placement are exactly the default path's. Greedy output is byte-ident
 Comparing `-ub 512` with `-ub 2048` under the cache gives the `-ub` gain with the dequant term
 removed [HW sweep 2026-08-31]:
 
-**Conditions:** RK3588 (RK1), NPU clock 600 MHz, six `Q4_K` models, idle board.
+**Conditions:** RK3588 (RK1), NPU clock ~816 MHz, six `Q4_K` models, idle board.
 
 | model | full `-ub` gain | dequant component | non-dequant remainder |
 |---|---:|---:|---:|
@@ -228,7 +228,7 @@ threshold applies to the dequant path alone.
 The NPU prefill gain grows with the model [HW sweep 2026-06-27/28]. The canonical per-model
 warm medians are in [benchmarks.md](benchmarks.md), for example 9B pp2048 ~24.9 t/s / 3.5x.
 
-**Conditions:** NPU clock 600 MHz, F16 prefill against the CPU, best run per model.
+**Conditions:** NPU clock ~816 MHz, F16 prefill against the CPU, best run per model.
 
 | model | params | best NPU prefill | CPU | speedup |
 |---|---|---:|---:|---:|
@@ -262,7 +262,7 @@ CPU [HW sweep 2026-06-28]:
 ## Applicability
 
 The `-ub` results hold on the default path: resident F16 weights, per-call quant re-pack,
-600 MHz. The resident dequant cache reaches F16, not past it. It does not beat the
+~816 MHz. The resident dequant cache reaches F16, not past it. It does not beat the
 datatype-independent dispatch limit of [not-mac-bound.md](not-mac-bound.md).
 
 The resident cache is bounded by the fp16 footprint against RAM, and by the NPU IOVA window. A
@@ -287,9 +287,9 @@ The `-ub 2048` gain over the `-ub 512` default, on the 9B at pp2048:
 
 | Date | Value | Conditions |
 |---|---|---|
-| 2026-06-28 | ~2.1x | 600 MHz, the build of that date |
+| 2026-06-28 | ~2.1x | ~816 MHz, the build of that date |
 
-The 2026-06-28 sweep, 9B at pp2048, by `-ub` [HW sweep 2026-06-28, 600 MHz]:
+The 2026-06-28 sweep, 9B at pp2048, by `-ub` [HW sweep 2026-06-28, ~816 MHz]:
 
 | `-ub` | Q4_K_M | IQ4_XS | Q8_0 |
 |---|---:|---:|---:|

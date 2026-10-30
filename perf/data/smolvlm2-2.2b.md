@@ -20,8 +20,9 @@
          patch on the reference llama.cpp checkout, not in our repos): CLIP_ENC_REPEAT=N,
          rep 0 = cold, reps 1..N-1 warm. performance CPU governor.
 
-     RK3588 @ 600 MHz (module loaded rocket_npu_clk_hz=600000000). build 7d2b45b4f (9568).
-     [HW sweep, 600 MHz, 2026-07-04]. See ../benchmarks.md Method. -->
+     RK3588 @ ~816 MHz (module loaded rocket_npu_clk_hz=600000000, the 600 MHz request at a
+     0.80 V rail, ../clock.md). build 7d2b45b4f (9568). [HW sweep, ~816 MHz, 2026-07-04]. See
+     ../benchmarks.md Method. -->
 
 == SmolVLM2-2.2B vision encoder (SigLIP-SO400M): clip encode, CPU vs NPU, per-rep ms ==
 

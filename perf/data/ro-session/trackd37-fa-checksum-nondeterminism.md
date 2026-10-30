@@ -1,5 +1,5 @@
 <!-- The FA handler's output checksum moved between runs that differed in nothing, RK3588 RK1,
-     600 MHz, governor performance, power/control=on, board otherwise idle. gemma4-12b F16,
+     ~816 MHz, governor performance, power/control=on, board otherwise idle. gemma4-12b F16,
      llama-bench -p 2048 -n 0 -r 1 -t 4 -v under taskset 0xf0, ROCKET_KACC=1, page cache dropped
      before every run, one process per run. Measured 2026-09-07 across two ggml-rocket builds
      (libggml-rocket.so c66ef3e8b67437779daf0e73595e5ba9 and 138de09d05f235f8c50c7d9d7df3eaa5)

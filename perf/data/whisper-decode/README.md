@@ -1,7 +1,7 @@
 # Raw data for the Whisper decoder step on resident weights
 
 Behind [perf/decode-gemv.md](../../decode-gemv.md) §"A Whisper decoder step on resident weights".
-Turing RK1 on mainline `rocket` 1.3.0 at 600 MHz, `ROCKET_KACC=1`, `taskset -c 4-7`, every CPU
+Turing RK1 on mainline `rocket` 1.3.0 at ~816 MHz, `ROCKET_KACC=1`, `taskset -c 4-7`, every CPU
 policy on `performance` with `cpu-sleep` off, memory reset before every arm, 2026-10-10. The NPU
 arm is `rocket-userspace` `tests/whisper_decode_step_probe.c`. The CPU arm is whisper.cpp v1.9.4
 built with OpenMP, on its multilingual F16 models and `samples/jfk.wav`.

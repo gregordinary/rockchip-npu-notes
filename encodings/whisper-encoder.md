@@ -171,8 +171,8 @@ LUT (`ROCKET_ACTIVATION_GELU_GATE`), then `f1·Φ(f1)` on the DPU EW-mul.
 
 ## Accuracy
 
-**Conditions:** RK3588 (Turing RK1), NPU 600 MHz, against an fp64 oracle unless a row names
-another reference.
+**Conditions:** RK3588 (Turing RK1), NPU clock ~816 MHz, against an fp64 oracle unless a row
+names another reference.
 
 | Operation | Result | Tested range |
 |---|---|---|
@@ -238,7 +238,7 @@ channels grow large. The effects:
 
 ### In-model fused integration
 
-**Conditions:** RK3588 (Turing RK1), NPU 600 MHz, jfk.wav, encode time.
+**Conditions:** RK3588 (Turing RK1), NPU clock ~816 MHz, jfk.wav, encode time.
 
 The fused block is wired into whisper.cpp and measured on hardware [HW sweep]. Each encoder
 layer becomes one `ggml_map_custom1`, which calls `rocket_encoder_block_fp16`. The build

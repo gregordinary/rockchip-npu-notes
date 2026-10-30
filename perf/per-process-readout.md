@@ -8,7 +8,7 @@ one `<!--RO pass arm k=v ...-->` line per timed configuration, beside the `<!--D
 it belongs to.
 
 **Conditions:** an RK3588 (Turing RK1, 31 GiB, kernel 7.2.0-1-arm64,
-`CONFIG_TRANSPARENT_HUGEPAGE` not set), NPU clock 600 MHz, CPU governor `performance` on all
+`CONFIG_TRANSPARENT_HUGEPAGE` not set), NPU clock ~816 MHz, CPU governor `performance` on all
 three policies. The board is audited idle, with a `drop_caches` + `compact_memory` reset before
 each configuration.
 
@@ -216,7 +216,7 @@ next allocation more contiguous:
 
 ### Variation between processes
 
-In the reset measurement, within-run spreads were 0.01-0.9% [HW sweep, RK1, 600 MHz, governor
+In the reset measurement, within-run spreads were 0.01-0.9% [HW sweep, RK1, ~816 MHz, governor
 `performance`, 2026-08-28]. The low state could not be induced again on demand.
 
 ### Placement control

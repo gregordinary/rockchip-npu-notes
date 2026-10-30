@@ -69,7 +69,7 @@ Register state persists within a register group [HW sweep, RK3588, 2026-09-25]. 
 `S_POINTER` selects the group that register writes go to and the group the executer reads. The
 register file is not re-latched per task: a task computes with whatever its group holds.
 
-**Conditions:** RK3588, `rocket` 1.3.0, 600 MHz. int8 × int8 -> int32 at 64×256×64 and
+**Conditions:** RK3588, `rocket` 1.3.0, NPU clock ~816 MHz. int8 × int8 -> int32 at 64×256×64 and
 128×1024×128. Each job is gapped tasks, one kick a task, on cores 0 and 1.
 
 **Not characterized:** other generators (fp16, convolution, the DPU elementwise stage, the PPU),
@@ -168,7 +168,7 @@ data-independent 126 words for fp16, int8 and int4 alike (even, so stride == cou
 | int8 | Independent int8 × int8 -> int32 matmul tasks are bit-exact against a CPU model [HW sweep, RK1, 2026-09-25] |
 | int4 | Not characterized. Its output stage writes int16 |
 
-**Conditions:** int8 row: RK1, `rocket` 1.3.0, 600 MHz, 4 tasks of 64×256×64 and 8 of
+**Conditions:** int8 row: RK1, `rocket` 1.3.0, NPU clock ~816 MHz, 4 tasks of 64×256×64 and 8 of
 128×1024×128.
 
 A chained job raises one NPU interrupt, and a gapped job raises one per task

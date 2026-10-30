@@ -6,10 +6,13 @@ at the top of the file, which a rendered view hides: open the raw file to read i
 
 ## LLM records
 
-Common conditions, unless a record's header states otherwise: Turing RK1 (RK3588), NPU clock
-600 MHz (`rocket_npu_clk_hz=600000000`), warm medians of `llama-bench -r 2` after a discarded
-warm-up, quantized GGUFs at `-b 2048 -ub 2048` and F16 at the defaults. The `clk=200` in each
-per-run header is an idle sample taken between the warm-up and the measured run.
+Common conditions apply unless a record's header states otherwise. The board is a Turing RK1
+(RK3588), with the NPU clock at ~816 MHz (`rocket_npu_clk_hz=600000000` at a 0.80 V rail).
+Throughputs are warm medians of `llama-bench -r 2` after a discarded warm-up. Quantized GGUFs
+run at `-b 2048 -ub 2048`, and F16 at the defaults. The
+`clk=` field in each per-run header is a sample of the requested rate, which the SCMI read-back
+reports in place of the frequency ([../clock.md](../clock.md)). Its `clk=200` is an idle sample
+taken between the warm-up and the measured run, and its `clk=600` is the ~816 MHz clock.
 
 | Record | Model | Backs |
 |---|---|---|

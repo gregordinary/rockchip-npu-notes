@@ -110,7 +110,7 @@ compute) and returns `-2`, so the caller re-packs rather than miscomputing.
 A caller with many short, varied lengths asks for the canonical plan outright:
 `rocket_ctx_create_ex(n, ROCKET_CTX_TILING_CANONICAL)`. A small M then keeps the M=256 `Kt` and
 `Nt`, so one pack serves every length. The cost falls at the small end, where the per-M plan
-would have picked larger K tiles. It is 1.16-1.42x at M 48-128 [HW sweep, RK1, 600 MHz,
+would have picked larger K tiles. It is 1.16-1.42x at M 48-128 [HW sweep, RK1, ~816 MHz,
 2026-09-27].
 
 ### N-tile sizing on a worker slice
@@ -367,14 +367,14 @@ For such a layer, the per-core setting with an effect is IRQ affinity. Set CPU/D
 frequency, pin the app to a CPU big core, and bind the three NPU interrupts to that big core
 (`/proc/irq/<npu-irq>/smp_affinity_list`). App `taskset` alone leaves the per-submit overhead
 unchanged. On llama.cpp prefill, whole-process `taskset 0xf0` is a host-side 1.05-1.13x
-[HW sweep, RK1, 600 MHz] ([data/tuning-matrix.md](data/tuning-matrix.md) §"Pinning to the
+[HW sweep, RK1, ~816 MHz] ([data/tuning-matrix.md](data/tuning-matrix.md) §"Pinning to the
 A76s"). On a path bound by submit overhead, the IRQ binding gives a large reduction
 (§"IRQ affinity").
 
 ## IRQ affinity
 
 **Conditions:** RK3588 (Turing RK1), kernel 7.2.9-1-arm64, the image's `rocket` 1.3.0, which keeps
-the IOMMU domain attached between jobs, NPU clock 600 MHz, CPU governors pinned to `performance`.
+the IOMMU domain attached between jobs, NPU clock ~816 MHz, CPU governors pinned to `performance`.
 A tiny 1-task job at the `8 64 16` shape, 2026-10-12.
 
 The default IRQ affinity services the NPU completion IRQ on an A55 little core. Binding the IRQ
@@ -434,7 +434,7 @@ single big tiled prefill matmul (one submit per batch of up to 64 tiles).
 
 ## Busy-polling the completion fence
 
-**Conditions:** RK3588, kernel 7.1.0-1-arm64, NPU clock 600 MHz, A76 governors pinned to
+**Conditions:** RK3588, kernel 7.1.0-1-arm64, NPU clock ~816 MHz, A76 governors pinned to
 `performance`, a `64 256 512` submit, 2026-06-29.
 
 Busy-polling is redundant with the IRQ-affinity binding. A blocking wait (`PREP_BO` with a real
@@ -487,7 +487,7 @@ core) and reduces the same term.
 
 ## Per-job IOMMU cost
 
-**Conditions:** RK3588, kernel 7.1.0-1-arm64, NPU clock 600 MHz, stock `rocket` against
+**Conditions:** RK3588, kernel 7.1.0-1-arm64, NPU clock ~816 MHz, stock `rocket` against
 patch-5, 2026-06-22.
 
 Stock `rocket` calls `iommu_attach_group()` in `rocket_job_run()` on every `drm_sched` job. It
@@ -626,7 +626,7 @@ and the saving does not depend on the datatype. Per-task against chained [HW swe
 | The same, kernel 7.1.1-1, interleaved warm pairs, 2026-06-25 | ~68 -> ~46 ms | ~85 -> ~93 GFLOP/s median |
 | Resident weights, 512×4096×4096, 2026-06-29 | 556 -> 510 ms | not recorded |
 
-**Conditions:** RK1, NPU clock 600 MHz, governor `performance`. The two `512×3840×4096` rows
+**Conditions:** RK1, NPU clock ~816 MHz, governor `performance`. The two `512×3840×4096` rows
 use the symmetric tiling of the time (Nt 256, Kt 384: 320 tiles).
 
 The chained output has cosine 1.000000 against the per-task path, and the resident case is
@@ -692,7 +692,7 @@ does drive, are a separate mechanism.
 
 ## Context-pool throughput
 
-**Conditions:** RK3588, kernel 7.1.0-1-arm64, NPU clock 600 MHz, `performance` governor,
+**Conditions:** RK3588, kernel 7.1.0-1-arm64, NPU clock ~816 MHz, `performance` governor,
 2026-06-24. Each context runs a full "inference" of small prepacked fp16 matmuls (the
 1×1-conv-as-matmul detection unit), and each call is a real A-pack -> submit -> readback.
 
@@ -810,7 +810,7 @@ every completion.
 
 #### Revision history
 
-On 2026-06-22, on kernel 7.1.0-1-arm64 at 600 MHz, the same shape gave these medians [HW sweep]:
+On 2026-06-22, on kernel 7.1.0-1-arm64 at ~816 MHz, the same shape gave these medians [HW sweep]:
 
 | config | IRQ affinity | app taskset | median µs/submit |
 |---|---|---|---|

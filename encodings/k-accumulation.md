@@ -35,7 +35,7 @@ An integer K-accumulation built on it is not characterized.
 
 ## Registers
 
-**Conditions:** fp16, validated at `N=16…384` (2 to 48 surfaces) and `M` up to 512.
+**Conditions:** fp16, validated at `N=16…384` (2 to 48 surfaces) and `M` 1 to 512.
 
 The fp16 geometry follows Mesa's working `add_tensor` residual-add geometry
 [HW sweep, source-confirmed]. All the fields below are register bits [4:31], that is, the
@@ -46,7 +46,7 @@ geometric value `<< 4`:
 | `DPU_EW_CFG` | `0x108202C0` | Per-pixel EW mode (bit28), `EDATA_SIZE=2` (16-bit), `EW_ALU_ALGO=2` (add), RELU and LUT bypassed, `EW_OP_SRC=1` |
 | `DPU_RDMA_ERDMA_CFG` | `0x40000008` | ERDMA per-pixel mode (bit30), `DATA_SIZE=2` (16-bit fp16) |
 | `DPU_RDMA_FEATURE_MODE_CFG` | `0x17D40` | `COMB_USE(5)` combines the convolution's main data with the ERDMA operand. The MRDMA is enabled here, unlike on the plain path |
-| `SURF_NOTCH`, `EW_SURF_STRIDE` | `MAX(out_w·out_h, 12) << 4` | The planar pointer advance |
+| `SURF_NOTCH`, `EW_SURF_STRIDE` | `(out_w·out_h) << 4` | The planar pointer advance, from the third surface on |
 | ERDMA `EW_BASE` | `add_dma + out_w·out_h·16` | One surface offset: 16 B per position, which is 8 fp16 channels, the atomic K block |
 | MRDMA `SRC_BASE` | `add_dma` | No offset |
 
@@ -81,7 +81,15 @@ Software must program three things together: per-pixel (not per-channel) mode, a
 > Software must alternate the running sum between two output BOs, with the K-steps as the
 > outer loop.
 
-The `MAX(.,12)` minimum over-states the stride for M<12, so validate this path with M>=12.
+Software must program `SURF_NOTCH` and `EW_SURF_STRIDE` as the partial's own surface stride,
+`out_w·out_h`, at every height. The fields place the third surface onward. MRDMA and ERDMA read
+the first two surfaces from their own bases, so an output of 16 channels or fewer never uses
+them.
+
+> [!CAUTION]
+> A stride floored at 12, `MAX(out_w·out_h, 12)`, reads the wrong surfaces at every M below 12
+> once N exceeds 16. The sum is a full, plausible surface. That stride is correct only at M 12
+> and up.
 
 For an integer EW add, software must set the whole precision bundle to one integer code. The
 bundle is the three precision fields in DPU `0x4010`, the DPU_RDMA `FEATURE_MODE_CFG`, and the
@@ -131,7 +139,7 @@ on the integer types, grow Kt through the convolution's own K-reduction, by shri
 
 ## Software support
 
-**Conditions:** RK3588, 600 MHz.
+**Conditions:** RK3588, NPU clock ~816 MHz.
 
 `ROCKET_KACC=1`, the EW path, is the default for fp16. It gains +19% on Gemma-4-12B prefill
 (pp2048, 2026-06-15). Across pp512-2048 on 0.8B and 9B F16 models it gains +5-20% over the host
@@ -140,6 +148,14 @@ stays coherent.
 
 CBUF DATA_REUSE follows automatically, for ~+7% more. `ROCKET_KACC=0` selects the byte-exact
 host sum.
+
+`librocketnpu` accumulates on the NPU at every M tile, including a last M tile of 4 or 8 rows.
+At a 160-row M tile, 2 in every 40 values of M end in such a tile. At K 3072 and N 8192, M 484
+and 488 run 1.19-1.23x faster with the NPU sum than with the host sum [HW sweep 2026-10-22].
+
+**Conditions:** RK3588, kernel 7.2.9, `rocket` 1.3.0, NPU clock 928 MHz, CPU governor
+`performance`. Resident weights over five worker fds, best of five calls, three passes with the
+order rotated, the system memory reset before every process. Measured 2026-10-22.
 
 ### ki-fence chaining (`ROCKET_KACC_CHAIN`)
 
@@ -151,7 +167,7 @@ data dependency").
 
 The K-steps are serially dependent, so a chained kick pipelines only the independent tiles
 within each K-step. The net effect tracks `gcap = BATCH/nKt` (BATCH=64)
-[HW sweep 2026-06-30, 600 MHz]:
+[HW sweep 2026-06-30, ~816 MHz]:
 
 | gcap = BATCH/nKt | example | vs per-ki |
 |---|---|---|
@@ -171,6 +187,19 @@ The three fp16 requirements interact. If any one is wrong, `EW_SURF_STRIDE` look
 path looks impossible, so no sweep of one field at a time converges. The working geometry came
 from copying Mesa's `add_tensor` geometry wholesale. With all three matching, `N=16…384` and `M`
 up to 512 all pass.
+
+The stride at small M was measured with `tests/msmall_probe` under `MSP_KACC=1`. Two fp16 tasks
+run in two submits. The first contracts half of K into an fp16 partial. The second contracts the
+rest and adds the partial. Operands are integers in [-3, 3], so every sum is exact in fp16.
+The output is stamped with NaN [HW sweep 2026-10-22]:
+
+| `EW_SURF_STRIDE`, `SURF_NOTCH` | K 128, N 64 | K 192, N 128 | K 64, N 16 |
+|---|---|---|---|
+| `MAX(M, 12)` | Incorrect at every M below 12: 48·M of 64·M outputs, surfaces 2-7; bit-exact at 12 and up | Incorrect below 12, bit-exact at 12 and up | Bit-exact at every M |
+| `M` | Bit-exact at every M | Bit-exact at every M | Bit-exact at every M |
+
+**Conditions:** RK3588, kernel 7.2.9, `rocket` 1.3.0, NPU clock 928 MHz. M 1-17, 31, 33, 63 and
+64, each M twice with different operands.
 
 ### Integer and float paths
 

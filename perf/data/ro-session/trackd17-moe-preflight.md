@@ -1,7 +1,7 @@
 <!-- MoE residency pre-flight: WHICH LIMIT DOES IT NAME?   PROMPT='-p 2048 -n 0 -r 1 -b 2048 -ub 2048'
      Two MoE models, gpt-oss-20b MXFP4 and Qwen3-30B-A3B Q4_K_M, at ROCKET_N_THREADS default (5)
      and 8, everything else default.
-     so=61f02a02345f3b2e27cef45de8ade0c2   board: RK1, 600 MHz, governor performance, no swap
+     so=61f02a02345f3b2e27cef45de8ade0c2   board: RK1, ~816 MHz, governor performance, no swap
 
      WHY -r 1. This is a readout of placement and of the announced limit, not a timing run. The
      pp2048 figures below are single reps and MUST NOT be quoted as measurements; they are here

@@ -34,6 +34,12 @@ A 1-D task order makes only one operand "the same as the previous task". The wei
 the data tile cannot both be identical to the prior task while the third index still
 advances. Pick the bit whose reuse depth is larger.
 
+A task that streams its weight cube through the weight banks
+([../matmul-as-conv.md](../matmul-as-conv.md) §"CBUF weight streaming") ends with only the
+cube's last 32-kernel groups in the banks. A following task with `WEIGHT_REUSE` set would read
+those groups as its whole weight tile [expected]. Software must clear `WEIGHT_REUSE` on a
+streamed task.
+
 ### The one-job precondition
 
 A reuse bit asserts that the operand the task wants is still in the CBUF. Anything else that
@@ -84,12 +90,16 @@ must program `FC_DATA_BANK` to 0.
 **Conditions:** RK3588, a 256×2048×1024 fp16 matmul. The execution time stays at ~30.2-30.8 ms
 across all values, within noise.
 
+> [!CAUTION]
+> `fc=2..5` hang a task that streams its weight cube until the driver's watchdog retires it
+> [HW sweep, RK3588, `rocket` 1.3.0, 2026-10-21].
+
 The field likely selects a starting data bank that aliases once it runs past the populated
 banks [hypothesis].
 
 ## Performance
 
-**Conditions:** RK3588, Gemma prefill at pp2048, NPU clock 600 MHz, fp16 EW K-accumulation on.
+**Conditions:** RK3588, Gemma prefill at pp2048, NPU clock ~816 MHz, fp16 EW K-accumulation on.
 
 | Bit | Prefill gain |
 |---|---|

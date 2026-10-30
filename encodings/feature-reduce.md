@@ -115,7 +115,7 @@ the full reduce, the weighted reduce and the prefix scan.
 
 ## Accuracy
 
-**Conditions:** RK3588, NPU clock 600 MHz, kernel 7.1.0-1.
+**Conditions:** RK3588, NPU clock ~816 MHz, kernel 7.1.0-1.
 
 ### Feature reduce
 

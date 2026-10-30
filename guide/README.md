@@ -53,10 +53,11 @@ and is usable on its own.
 
 ## 2. (Optional) Raise the NPU clock
 
-The NPU compute clock boots pinned at 200 MHz, one-fifth of its 1 GHz spec max (one-third
-of the 600 MHz operating point). The clock patch in `patches/rocket` raises it safely to a
-600 MHz operating point (~1.43x prefill). The patch is a module rebuild that never touches
-the kernel image or device tree. Apply it before benchmarking. The background is in
+The NPU compute clock boots pinned at 198 MHz, one-fifth of its 1 GHz spec max. The clock
+patch in `patches/rocket` raises it with a 900 MHz request (`rocket_npu_clk_hz=900000000`),
+which runs at 928 MHz at the 0.80 V rail. The 600 MHz request, ~816 MHz at that rail, gives
+~1.43x on prefill over the boot clock. The patch is a module rebuild that never touches the kernel image or device tree. Apply it
+before benchmarking. The background is in
 [../perf/clock.md](../perf/clock.md).
 
 ## 3. Choose a frontend

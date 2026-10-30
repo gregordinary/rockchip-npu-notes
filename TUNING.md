@@ -10,7 +10,7 @@ Each project's `API.md` is the per-flag reference, with a table of each flag's m
 [MODEL-NOTES.md](MODEL-NOTES.md). For the full benchmarks, see
 [perf/benchmarks.md](perf/benchmarks.md).
 
-**Conditions:** RK3588, NPU clock 600 MHz, warm medians [HW sweep]. The baseline is the same
+**Conditions:** RK3588, NPU clock ~816 MHz, warm medians [HW sweep]. The baseline is the same
 model on the CPU at 8 threads. A section states any other conditions. pp*N* is
 `llama-bench`'s [prefill](GLOSSARY.md) test over *N* tokens, and `-ub` is llama.cpp's
 micro-batch size.
@@ -22,7 +22,7 @@ do not depend on the model. A gain measured on one model names that model, and
 ## Quick start
 
 1. Complete the [prerequisites](#prerequisites), which include raising the NPU clock to
-   600 MHz.
+   ~816 MHz.
 2. Leave the [default options](#default-settings) on.
 3. For a quantized GGUF whose fp16 size fits in free RAM, set `ROCKET_QUANT_RESIDENT=auto`.
    Keep the default `-ub`, and do not add `-b 2048 -ub 2048`.
@@ -37,10 +37,13 @@ do not depend on the model. A gain measured on one model names that model, and
 
 ## Prerequisites
 
-Do these once. Every figure in this guide assumes the following steps:
+Do these once. Every figure in this guide assumes the following steps, and its Conditions
+block states the NPU clock it was measured at:
 
-1. Raise the NPU clock to 600 MHz with the `patches/rocket` clock patch. Load the module with
-   `rocket_npu_clk_hz=600000000`.
+1. Raise the NPU clock with the `patches/rocket` clock patch. Load the module with
+   `rocket_npu_clk_hz=900000000`. At the 0.80 V rail this 900 MHz request runs at 928 MHz,
+   because the clock follows the rail voltage ([perf/clock.md](perf/clock.md)). Most figures
+   here were measured at the 600 MHz request, ~816 MHz.
 2. Run under `sudo -E`. Plain `sudo` strips the environment, which drops the `/dev/accel`
    privilege context and every `ROCKET_*` and `GGML_BACKEND_PATH` setting. `-E` keeps them.
 3. Set `GGML_BACKEND_PATH` to the absolute path of `libggml-rocket.so`.
@@ -48,13 +51,14 @@ Do these once. Every figure in this guide assumes the following steps:
 5. Confirm that each option took effect. Run once with `ROCKET_LOG_STDERR=1`, and look for the
    mode and budget line. Add `ROCKET_MM_PROFILE=1` for the phase breakdown.
 
-The NPU boots at 200 MHz (one-fifth speed). Raising the clock to 600 MHz gives ~1.43x:
-Gemma-4-12B pp2048 goes 7.98 -> 11.40 t/s [HW sweep]. A 900 MHz clock gives no further gain
-([perf/clock.md](perf/clock.md)).
+The NPU boots at 198 MHz (one-fifth speed). Raising the clock to ~816 MHz gives ~1.43x:
+Gemma-4-12B pp2048 goes 7.98 -> 11.40 t/s [HW sweep]. The 900 MHz request runs at 928 MHz, a
+1.13x clock step that gives 1.044x on matmul device time. On the June 2026 library it measured
+no prefill speedup ([perf/clock.md](perf/clock.md) §"Rates from ~816 to 1019 MHz").
 
 > [!CAUTION]
-> With `power/control=on` pinned, an `rmmod` at 900 MHz hard-locks the board
-> ([perf/clock.md](perf/clock.md)).
+> With `power/control=on` pinned, an `rmmod` at the 900 MHz request (928 MHz) hard-locks the
+> board ([perf/clock.md](perf/clock.md)).
 
 > [!NOTE]
 > With a wrong `GGML_BACKEND_PATH`, the run falls back to the CPU silently. It prints one
@@ -79,7 +83,8 @@ Each gain is over a baseline with that option off.
 |---|---|---|---|---|
 | `ROCKET_KACC` | `ROCKET_KACC=1` | fp16 [K-accumulation](GLOSSARY.md) on the NPU | +19% | Gemma-4-12B [HW sweep] |
 | `ROCKET_REUSE` | `ROCKET_REUSE=2` | CBUF DATA_REUSE | +7% more | Gemma-4-12B [HW sweep] |
-| `ROCKET_MM_ASYM` | `ROCKET_MM_ASYM=1` | Asymmetric tiling | +6-9% on F16 | Qwen3.5-9B, Gemma-4-12B [HW sweep] |
+| `ROCKET_MM_STREAM` | `ROCKET_MM_STREAM=1` | fp16 matmul plans that stream the weights through the CBUF, with far fewer tasks. `=0` selects the whole-tile plan | 1.07-1.17x at pp512 (928 MHz) | Llama-3.2-3B F16 and Q4_K_M, Ministral-3-3B F16, Qwen3.5-9B Q4_K_M, each with resident weights [HW sweep 2026-10-21] |
+| `ROCKET_MM_ASYM` | `ROCKET_MM_ASYM=1` | Asymmetric tiling of the whole-tile plan | +6-9% on F16 | Qwen3.5-9B, Gemma-4-12B [HW sweep] |
 | `ROCKET_FLASH_ATTN` | On | Attention offload | Gains above ~2K context (measured 2026-06-26) | Gemma-4-12B F16 ([Attention offload](#attention-offload)) |
 | `ROCKET_DEQUANT_THREADS` | On | Threaded dequantization of quantized weights | +19-33% | [perf/quant-prefill-microbatch.md](perf/quant-prefill-microbatch.md) |
 | MoE expert offload | On | Mixture-of-experts FFNs on the NPU | [MoE routed experts on the NPU](#moe-routed-experts-on-the-npu) | gpt-oss-20b [HW sweep] |
@@ -370,7 +375,7 @@ prefill gains:
 | `Qwen3.5-9B` held quant-resident | 1.06x |
 | `Gemma-4-12B` F16 streaming every weight | 1.05-1.06x |
 
-**Conditions:** RK1, 600 MHz, governor `performance` [HW sweep 2026-09-01].
+**Conditions:** RK1, NPU clock ~816 MHz, governor `performance` [HW sweep 2026-09-01].
 
 The NPU time is identical with and without pinning, so the gain is on the host, and it does
 not depend on residency. Adding `-t 4` gains a little more on the smaller models and nothing on
@@ -417,12 +422,12 @@ RK1].
   admits 63 of its 72 expert stacks. The remaining 9 stay on the CPU, which is a partial
   offload and not a loss.
 - **Time:** a one-time expert ingest inside the first prefill, per `llama_context`. It takes
-  ~21 s on gpt-oss-20b and ~18 s on DeepSeek-V2-Lite [HW sweep 2026-10-09, 600 MHz]. Its NPU-BO
+  ~21 s on gpt-oss-20b and ~18 s on DeepSeek-V2-Lite [HW sweep 2026-10-09, ~816 MHz]. Its NPU-BO
   pack runs ~1.3 GB/s, so it grows with the bytes held resident rather than with the expert
   count.
 - **Gain:** gpt-oss-20b MXFP4 at `-b 2048 -ub 2048` measures 1.81x the CPU at pp512 and 2.38x
   at pp2048. It measures 1.64x -> 2.08x over the experts-on-CPU configuration across
-  pp512-pp2048 [HW sweep 2026-08-27, 600 MHz pinned]. At the llama.cpp default `-ub 512` it is
+  pp512-pp2048 [HW sweep 2026-08-27, ~816 MHz pinned]. At the llama.cpp default `-ub 512` it is
   ~1.6x/1.7x over experts-on-CPU, with no collapse: the `-ub 512` loss belongs to the fp16
   path.
 - **Confirm:** `ROCKET_LOG_STDERR=1` prints the resident and streamed expert split at teardown.
@@ -490,7 +495,7 @@ cache, activations). It is a setting for a known working set, not a new default.
 On an expert-dominated model the direction inverts, and a larger `ROCKET_MOE_CACHE_MB` lowers
 the gain. Qwen3-30B-A3B holds 29 of its 30.5 B parameters in the experts (17.28 GiB GGUF). At
 `-ub` 4096 on the same board, its gain over experts-on-CPU is a plateau, then a fall to parity
-[HW sweep 2026-08-28, RK1, 600 MHz]. The plateau is 18000-21000 MB
+[HW sweep 2026-08-28, RK1, ~816 MHz]. The plateau is 18000-21000 MB
 ([measured budget series](#budget-series-on-qwen3-30b-a3b)).
 
 The cause is in the admission charge. It counts the GGUF source bytes of the experts it
@@ -617,7 +622,9 @@ not list, treat it as a projection, not a measurement.
 
 | Option | Measured on | Not characterized |
 |---|---|---|
-| NPU clock at 600 MHz | Gemma-4-12B [HW sweep] | |
+| NPU clock at the 600 MHz request (~816 MHz) | Gemma-4-12B [HW sweep] | |
+| NPU clock at the 900 MHz request (928 MHz) | The fp16 matmul [HW sweep 2026-10-19], Gemma-4-12B on the June 2026 library [HW sweep] | Prefill on the current library |
+| `ROCKET_MM_STREAM` | Four models with resident weights at pp512, one also at pp2048 [HW sweep 2026-10-21] | Non-resident weights, re-packed on every call. The int8, int4 and bf16 planners, which do not stream |
 | `ROCKET_MM_ASYM`, `ROCKET_KACC` and DATA_REUSE | A few models, mostly Gemma-4-12B and Qwen3.5 | Every other model, which takes the default without a measurement |
 | `-b 2048 -ub 2048` | Eleven models, 0.75-30.53 B [HW sweep 2026-08-29/30] | |
 | `ROCKET_QUANT_RESIDENT` | Combined with `-ub 2048`, nine quantized models of 0.75-11.91 B [HW sweep 2026-08-28..31]. Alone and combined, seven models of 1.8 to 11.9 B | How the gain falls with the placed fraction. `gemma4-12b` is the only partly placed model on the board, at 83-87% alone against 73-74% combined, a two-point contrast on one model rather than a curve |
@@ -694,7 +701,7 @@ at 6.3%. Its sign is resolved, and its size is not.
 #### Budget series on gpt-oss-20b
 
 Every step is n=1: one `-r 3` process per configuration, behind a `drop_caches`, with 0
-streamed in every configuration [HW sweep 2026-08-27, 600 MHz].
+streamed in every configuration [HW sweep 2026-08-27, ~816 MHz].
 
 | setting | budget | stacks | pp512 | pp2048 | vs default |
 |---|---|---:|---:|---:|---|
@@ -715,7 +722,7 @@ against auto (n=3) is deep enough to quote as a size.
 
 #### Budget series on Qwen3-30B-A3B
 
-At `-ub` 4096 [HW sweep 2026-08-28, RK1, 600 MHz]:
+At `-ub` 4096 [HW sweep 2026-08-28, RK1, ~816 MHz]:
 
 | budget | stacks | vs experts-on-CPU baseline | processes |
 |---|---:|---:|---|

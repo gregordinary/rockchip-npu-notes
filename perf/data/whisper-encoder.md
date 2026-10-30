@@ -4,7 +4,7 @@
      both backends). CPU baseline = stock whisper-bench with the backend unloaded (8-thread
      CPU); NPU = GGML_BACKEND_PATH=<libggml-rocket.so> ROCKET_KACC=1. Warm discipline: 4
      whisper-bench invocations per (model, backend), discard rep 1 (cold clock), warm mean of
-     reps 2-4. RK3588 @ 600 MHz. whisper-bench -t 4. [HW sweep, 600 MHz, 2026-07-04].
+     reps 2-4. RK3588 @ ~816 MHz (../clock.md). whisper-bench -t 4. [HW sweep, ~816 MHz, 2026-07-04].
 
      FAITHFULNESS/CONFIG note: the resident-weight cache and whisper's tensor names. whisper.cpp
      leaves its weight tensors unnamed, so ggml auto-names them "leaf_%d" by graph position, and
@@ -70,7 +70,7 @@ build: whisper.cpp v1.8.6-56-g84bd03a4; ggml-rocket DL against whisper's bundled
 
 == Re-measured 2026-09-26: base.en at the 30 s and 20 s windows ==
 
-Turing RK1, mainline `rocket` 1.3.0, 600 MHz, CPU governor `performance` on every policy,
+Turing RK1, mainline `rocket` 1.3.0, ~816 MHz, CPU governor `performance` on every policy,
 `taskset -c 4-7`, `-t 4`, flash attention on (whisper.cpp's default; the unmasked encoder
 attention stays on the CPU). whisper.cpp `eacbd82`, shared and DL-capable; ggml-rocket
 `cfcc0f5` and rocket-userspace `c7e7c47`, built against it; `ROCKET_KACC=1`. Five

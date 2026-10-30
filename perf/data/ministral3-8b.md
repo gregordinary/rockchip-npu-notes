@@ -1,7 +1,8 @@
 <!-- Raw llama-bench output backing perf/benchmarks.md (Ministral-3-8B-Instruct-2512).
      The clk=200 in each per-run header is an idle sample taken between the discarded
-     warmup and the measured run; the NPU rides to 600 MHz under load (confirmed by
-     sampling the clock during a run). See ../benchmarks.md Method. -->
+     warmup and the measured run. Under load the NPU runs at ~816 MHz, the 600 MHz request at a
+     0.80 V rail (../clock.md). Sampling the requested rate during a run confirmed the request. See
+     ../benchmarks.md Method. -->
 
 == mistral3-8B F16  Wed Jul  1 22:40:57 UTC 2026 ==
 ### mistral3-8B F16  [cpu]  22:43:29  clk=200 MHz

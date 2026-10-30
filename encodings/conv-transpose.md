@@ -32,7 +32,7 @@ size. It must be `< stride`. It appears only in the trailing pad, never the lead
 
 ## Registers
 
-**Conditions:** RK3588 (Turing RK1). The geometry decode ran at NPU clock 600 MHz.
+**Conditions:** RK3588 (Turing RK1). The geometry decode ran at NPU clock ~816 MHz.
 
 The CNA register map contains a transposed-convolution mode that no reference driver
 programs [source-confirmed: Mesa `registers.xml`, allbilly `rkt_registers.h`, both naming all
@@ -70,7 +70,7 @@ channel transpose, the output is bit-exact against a host scatter-add reference 
 
 ### The programmed output extent
 
-**Conditions:** RK3588 (Turing RK1), NPU clock 600 MHz, `rocket` 1.3.0, 2026-09-23.
+**Conditions:** RK3588 (Turing RK1), NPU clock ~816 MHz, `rocket` 1.3.0, 2026-09-23.
 
 When software programs the output geometry as the transposed extent, the mode computes the
 whole transposed convolution in one task [HW sweep, 2026-09-23]. The CNA walks whatever extent
@@ -157,7 +157,7 @@ and a host scatter-add. At model shapes it is the fastest of the three
 
 ### Speed against the lowering
 
-**Conditions:** RK3588 (Turing RK1), NPU clock 600 MHz, `rocket` 1.3.0, governor
+**Conditions:** RK3588 (Turing RK1), NPU clock ~816 MHz, `rocket` 1.3.0, governor
 `performance`, `taskset 0xf0`, 2026-09-23. Both paths run per call with no resident context,
 and the hardware path includes the host's kernel flip.
 
@@ -176,7 +176,7 @@ paths' outputs are identical, and bit-exact against the reference.
 
 ### The lowering onto the forward conv
 
-**Conditions:** RK3588 (Turing RK1), kernel 7.1.0-1, NPU clock 600 MHz, 2026-06-22.
+**Conditions:** RK3588 (Turing RK1), kernel 7.1.0-1, NPU clock ~816 MHz, 2026-06-22.
 
 The lowering covers what the hardware mode does not:
 
@@ -275,7 +275,7 @@ model's wall-clock time and accuracy through ONNX Runtime are in
 | SAM upscaler 1, 256×64×64 -> 64 | 2.94 | 13.3 | 0.22 | 24.1 |
 | SAM upscaler 2, 64×128×128 -> 32 | 4.87 | 10.3 | 0.47 | 16.1 |
 
-**Conditions:** RK3588 (RK1), NPU clock 600 MHz, `rocket` 1.3.0, governor `performance`,
+**Conditions:** RK3588 (RK1), NPU clock ~816 MHz, `rocket` 1.3.0, governor `performance`,
 2026-09-27. The NPU configuration ran on cores 4-7. The CPU configuration is ONNX Runtime
 1.27.0's CPU time for the same layer at two threads, on cores 6-7 of the same board. Each CPU
 time is that node's share of a whole-model profile. Every weight is packed outside the timing.
@@ -328,7 +328,7 @@ These results show:
   evidence that the mode is a transposed convolution rather than a corrupted fetch.
 
 The geometry decode is `tests/deconv_geometry_probe.c` and `tests/deconv_arith_probe.c`, on
-the Turing RK1 at 600 MHz. The instrument is an impulse: one non-zero input element at
+the Turing RK1 at ~816 MHz. The instrument is an impulse: one non-zero input element at
 `(r,c)`, one non-zero filter `(oc0,ic0)` holding 1..9, everything else zero. Output channel 0
 then holds exactly one copy of the kernel, and its address is the measurement. A count of
 differing elements, which is all the table above has, cannot say where the mode puts its
@@ -348,7 +348,7 @@ the accumulation where two scattered copies overlap.
 
 ### Programming requirements
 
-The output extent is `tests/deconv_extent_probe.c`, run on the Turing RK1 at 600 MHz with
+The output extent is `tests/deconv_extent_probe.c`, run on the Turing RK1 at ~816 MHz with
 rocket 1.3.0, against `rocket_conv_transpose2d_ref_fp16`. Every test point ran twice with
 identical output, and the device logged no job timeout.
 
@@ -385,6 +385,6 @@ page cache dropped before every process. It measures the resident-to-CPU ratio a
 Its lowering or deconvolution mode column is 40.3 ms at up1, 305.4 at up6, 134.7 at up7 and
 54.5 at up8. At SAM's two upscalers it is 25.8 and 16.8 ms.
 
-The three-thread scatter in ONNX Runtime is six rotated passes, on the RK1 at 600 MHz, with
+The three-thread scatter in ONNX Runtime is six rotated passes, on the RK1 at ~816 MHz, with
 `ROCKET_CONV_PROFILE`. The resident accuracy test is `tests/conv_transpose_resident.c`, on the
 RK1.
