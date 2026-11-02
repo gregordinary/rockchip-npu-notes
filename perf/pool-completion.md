@@ -24,7 +24,7 @@ that the regcmd encoder emits is measured.
 | Workload | interface 1.1.0 | interface 1.3.0 |
 |---|---|---|
 | fp16 pool (11 submits) | 5.867, 5.872 s | 0.038, 0.036 s |
-| int8 pool | 6.952 s | 0.041 s |
+| int8 pool (`rocket_pool_int8()`, which submits the fp16 pool program) | 6.952 s | 0.041 s |
 | Mean reduction (33 submits) | 21.956, 21.993 s | 0.095, 0.088 s |
 | Feature reduction, no PPU program | 0.162 s | 0.161 s |
 
@@ -45,8 +45,7 @@ Without the flag, `rocket` enables and tests exactly the DPU pair [source-confir
 The PPU's own completion, two bits over in the same register, is therefore masked off and
 ignored. `drm_sched` then times the job out at `JOB_TIMEOUT_MS` and resets the core.
 
-The deadline is what a stock driver falls back on. No patch in `patches/rocket/` other than 093
-touches `INTERRUPT_MASK` or the handler.
+The deadline is what a stock driver falls back on.
 
 ## The cost without the flag
 
@@ -67,8 +66,10 @@ dependence, because the wait depends on nothing about the program.
 
 On the vendor `rknpu` driver, the same mean-reduction test takes 0.027 s, with the same
 reductions, the same library and the same regcmd program. Userspace tells that driver which
-block finishes the job, and the driver waits for that one [HW sweep]. The ratio between the two
-drivers is the size of what the deadline costs.
+block finishes the job, and the driver waits for that one [HW sweep]. The driver programs
+`INT_MASK` from the last task's `int_mask` [source-confirmed, `rknpu_job.c`
+`rknpu_job_subcore_commit_pc()` in `rknpu` 0.9.8]. The ratio between the two drivers is the size
+of what the deadline costs.
 
 ## The cost with the flag
 

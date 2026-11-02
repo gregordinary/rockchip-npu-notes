@@ -3,11 +3,13 @@
 llama.cpp's CPU backend repacks a quantized weight into an interleaved layout for its GEMM
 kernels (`GGML_CPU_REPACK`, on by default). Every quantized CPU-against-NPU comparison in
 these notes before 2026-09-29 ran both configurations on a llama.cpp built with the repack off.
-Without the repack, the CPU configuration is 1.26-1.71x slower at pp2048. The NPU's lead over a
-repacked CPU is therefore smaller than the published ratios [HW sweep 2026-09-29].
+With the repack, the CPU configuration prefills 1.26-1.71x as fast at pp2048 as without it. The
+NPU's lead over a repacked CPU is therefore smaller than the published ratios
+[HW sweep 2026-09-29].
 
 **Conditions:** an RK1 (RK3588), NPU clock ~816 MHz, `rocket` 1.3.0, kernel 7.2.8, CPU governor
-`performance`. The host is llama.cpp b11242 built with `GGML_CPU_REPACK=ON`, and the backend is ggml-rocket as of 2026-09-28. Prefill t/s at pp2048, with `-b 2048 -ub 2048` in every configuration.
+`performance`. The host is llama.cpp b11242 built with `GGML_CPU_REPACK=ON`, and the backend is ggml-rocket as of 2026-09-28. Prefill t/s at pp2048, with `-b 2048 -ub 2048` in every configuration,
+the CPU at 8 threads.
 The NPU configuration runs the MoE experts through the native-quant path, with all 4746 of
 DeepSeek's experts resident.
 
@@ -29,8 +31,9 @@ a host buffer.
 On the A76, which has dotprod and no i8mm, the repack covers every weight type here: `Q4_K`,
 `Q6_K`, `Q8_0` and `MXFP4`. It also covers the 3-D expert stacks under `MUL_MAT_ID` (ggml 0.25.3
 `ggml-cpu/repack.cpp`) [source-confirmed]. It does not apply to F16, so the F16 comparisons
-stand. Decode is a separate question. A repacked GEMV reads the same bytes per token, and it
-measured no faster (Ministral-3-8B `Q4_K_M`, 3.30 against 3.72 t/s) [HW sweep 2026-07-17].
+stand. Decode is a separate question, because a repacked GEMV reads the same bytes per token.
+At `taskset 0xf0 -t 4` the repack speeds Ministral-3-8B `Q4_K_M` decode 1.05-1.06x, 4.73
+against 4.48 t/s [HW sweep 2026-11-02, llama.cpp b11539].
 
 ## Running both configurations from one build
 
@@ -74,15 +77,19 @@ The repacked CPU prefill is 1.60x the unrepacked one at pp2048, 9.81 against 6.1
 below `ROCKET_MIN_M_QUANT` still applies on later builds, because it follows from which kernel
 runs the CPU work.
 
-Over whole turns the NPU configuration is still faster or about equal, because decode dominates
-a short turn and the repack does not speed decode. These are `llama-bench -pg` turns, with the
-NPU configuration at `-b 2048 -ub 2048`:
+Over whole turns the NPU configuration wins a long prompt and loses a short one. Decode
+dominates a short turn, its prompt runs the unrepacked GEMM, and the repack speeds decode
+slightly. These are `llama-bench -pg` turns, with the NPU configuration at `-b 2048 -ub 2048`
+[HW sweep 2026-11-02]:
+
+**Conditions:** Ministral-3-8B `Q4_K_M`, RK1, NPU clock 928 MHz, governor `performance`,
+llama.cpp b11539, both configurations at `taskset 0xf0 -t 4`, one process each.
 
 | Turn (prompt, generated) | CPU, repack on | NPU configuration, repack off | NPU / CPU |
 |---|---:|---:|---:|
-| 2048, 256 | 6.71 t/s, 343 s | 9.98 t/s, 231 s | 1.49x |
-| 512, 1024 | 3.40 t/s, 452 s | 3.88 t/s, 396 s | 1.14x |
-| 128, 512 | 3.49 t/s, 183 s | 3.69 t/s, 173 s | 1.06x |
+| 2048, 256 | 6.63 t/s, 347 s | 13.60 t/s, 169 s | 2.05x |
+| 512, 1024 | 4.58 t/s, 335 s | 4.96 t/s, 310 s | 1.08x |
+| 128, 512 | 4.86 t/s, 132 s | 4.41 t/s, 145 s | 0.91x |
 
 ## Difference from the earlier tuning-matrix figures
 
@@ -122,10 +129,19 @@ does load.
 
 ### Short prompts and whole turns
 
-The decode controls from the same measurement: `Q8_0` decodes at 2.45 t/s repacked against
-2.48 unrepacked, and F16, which is never repacked, at 1.41 both ways.
+The decode controls of the 2026-07-17 measurement: `Q8_0` decoded at 2.45 t/s repacked against
+2.48 unrepacked, and F16, which is never repacked, at 1.41 both ways. The 2026-11-02 decode pair
+ran two passes with the order rotated, `llama-bench -r 3`, `tg64`. Each turn's seconds are its
+tokens over its rate [host-computed].
 
 ### Difference from the earlier tuning-matrix figures
 
 A same-session A/B on the NPU configuration separates the causes. It ran three configurations,
 rotated over three passes, all on the same ggml-rocket source.
+
+### Revision history
+
+| Date | Superseded reading | Conditions | Current reading |
+|---|---|---|---|
+| 2026-07-17 | The repack does not speed decode: Ministral-3-8B `Q4_K_M` 3.30 t/s repacked against 3.72 | 8 threads unpinned, ~816 MHz, kernel 7.1 | 1.05-1.06x faster at `taskset 0xf0 -t 4`, 2026-11-02 |
+| 2026-07-17 | Turns 2048+256 1.49x, 512+1024 1.14x, 128+512 1.06x (NPU over the repacked CPU) | 8 threads unpinned, ~816 MHz, kernel 7.1 | 2.05x, 1.08x and 0.91x at `taskset 0xf0 -t 4`, 2026-11-02 |

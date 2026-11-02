@@ -39,8 +39,8 @@ under the vendor `rknpu` driver [HW sweep 2026-09-26].
 ### The accumulator and the saturation
 
 The accumulator holds at least 36 bits, and the writer saturates on the way out [HW sweep].
-NVDLA's note that Mesa cites (`rkt_coefs.c:152`) gives a 48-bit CACC for INT16 that rounds
-and saturates to 32 bits, which agrees [source-confirmed].
+NVDLA's note that Mesa cites (`rkt_fill_biases()` in `rkt_coefs.c`) gives a 48-bit CACC for
+INT16 that rounds and saturates to 32 bits, which agrees [source-confirmed].
 
 **Not characterized:** dot products past 2^35.5.
 
@@ -135,8 +135,7 @@ N=32.
 For an int64-exact result over full-range operands, decompose into int8.
 `rocket_matmul_int16_exact` runs four int8 matmuls and recombines in int64, as
 [tile-layouts.md](tile-layouts.md) describes. It costs four int8 matmuls where the int32
-writer costs one int16 matmul, and it does not saturate. The two have not been timed
-against each other.
+writer costs one int16 matmul, but it does not saturate.
 
 ## Evidence
 

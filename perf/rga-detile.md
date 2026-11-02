@@ -37,12 +37,12 @@ The RGA produces output byte-identical to the NEON `detile_store_f16` and to the
 
 ## Cost against the CPU
 
-The RGA's throughput ceiling already loses to the CPU. Its best case is a single wide
-full-image copy (width >= 68 so it can use the fast RGA3 cores, one submit, no per-tile
-overhead). That copy runs at ~½ the bandwidth of one CPU core's `memcpy` (and < ⅓ of LPDDR's
-~17 GB/s), while the NEON de-tile already fans across 3 A76 cores. Even an idealized batched
-RGA de-tile therefore cannot beat the CPU, and the wide-copy figure bounds all RGA schemes,
-batched or not.
+The RGA's throughput ceiling already loses to the CPU. Its best case is a single wide full-image
+copy (width >= 68 so it can use the fast RGA3 cores, one submit, no per-tile overhead). That
+copy runs at 0.43x the bandwidth of one CPU core's `memcpy` (and about a third of LPDDR's
+~17 GB/s) [host-computed], while the NEON de-tile already fans across 3 A76 cores. Even an
+idealized batched RGA de-tile therefore cannot beat the CPU, and the wide-copy figure bounds all
+RGA schemes, batched or not.
 
 The de-tile is latency/index-bound, not bandwidth-bound. Per
 [not-mac-bound.md](not-mac-bound.md), the host de-tile runs at ~5 % of LPDDR. The cost is

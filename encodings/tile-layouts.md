@@ -126,13 +126,11 @@ which int16's int32 output does not share. See [size-e-quirk.md](size-e-quirk.md
 
 ### int16 output
 
-int16's int32 output is the same `[N/4,M,4]` cube as fp16's fp32, written with `size_e` 3,
-and it **saturates** to int32. The transposed writer (`tp_org_en`) is the one int16 output
-that is not a cube: 8- or 16-bit elements at
-`slot = 4m + (na%4) + (na/4)·4M + (n%4)·16M` (`na=n/4`), verified at N<=32. See
-[output-transpose-int16.md](output-transpose-int16.md). For an int64-exact matmul over
-full-range operands, where int32 saturates, the byte decomposition avoids the native
-output.
+int16's int32 output is the same `[N/4,M,4]` cube as fp16's fp32, and it **saturates** to
+int32. The transposed writer (`tp_org_en`) is the one int16 output that is not a cube
+([output-transpose-int16.md](output-transpose-int16.md) gives its layout). For an int64-exact
+matmul over full-range operands, where int32 saturates, the byte decomposition avoids the
+native output.
 
 ### int16 through int8 byte decomposition
 
@@ -156,13 +154,14 @@ the full `[-7,7]`.
 > [!CAUTION]
 > Any tile whose `|Σ qA·qB|` exceeds 32767 saturates silently (lossy, unrecoverable on the
 > host). For symmetric `[-7,7]` int4 a partial grows at <= `49·Kt`, so any `Kt > 668` can
-> overflow. Software that feeds real `[-7,7]` quantized data must cap Kt.
+> overflow. Over the full `[-8,7]` range it grows at <= `64·Kt`, and any `Kt > 511` can
+> overflow [host-computed]. Software that feeds real quantized data must cap Kt.
 
 ## Consequence for quantization
 
 The denser feature C2 and weight packing are why int4 fits ~4x the K per CBUF bank. That
 density lets int4 reach single-pass K (`nKt=1`) where fp16 needs many K-passes. The layouts
-reduce RAM use and model size, and do not raise matmul throughput
+reduce RAM use and model size, but do not raise matmul throughput
 ([../perf/not-mac-bound.md](../perf/not-mac-bound.md)).
 
 ## `data_entries` divisor
@@ -190,8 +189,8 @@ packB result.
 
 The tiling plan sizes Kt from CBUF alone and can pick the whole K (single-pass).
 `rocket_matmul_int4_ex(…, kt_cap)` caps it (the W4A4 LLM path uses 480,
-`49·480 < 32767`). `rocket_matmul_int4_groupwise` forces `Kt = group` (<=128, the
-per-K-group quant slice). With the cap, Gemma-4-12B int4 generates char-identically to fp16,
+`49·480 < 32767`). `rocket_matmul_int4_groupwise` forces `Kt = group`, one quant group a K
+tile, and requires `49·group < 32767`. With the cap, Gemma-4-12B int4 generates char-identically to fp16,
 and uncapped large-K int4 saturates [HW sweep].
 
 `librocketnpu` has the diagnostic environment variables `ROCKET_*_DENTRIES_DIV`.

@@ -27,8 +27,11 @@ These fields differ from a direct convolution.
 > The mode bits alone are not sufficient. A depthwise job that is otherwise a copy of a
 > direct-conv job produces output that is plausible per channel and incorrect.
 
-Mesa's `rocket` driver, which runs depthwise correctly, branches on `depthwise` for these
-fields:
+The depthwise column is the program of Mesa's `rocket` driver, which runs depthwise
+correctly. Mesa branches on `depthwise` only for `weights_kernels`, `size_e` and
+`surfaces_per_row` [source-confirmed: Mesa `rkt_regcmd.c`, `rkt_task.c`]. It writes
+`OD_BYPASS`, `FEATURE_GRAINS` and `BS_OW_OP` the same way for a direct convolution. For those
+three, the direct column gives the validated direct fp16 program of rocket-userspace:
 
 | Field (register) | direct conv | depthwise | source |
 |---|---|---|---|
@@ -118,7 +121,7 @@ The int8-output writer is Mesa's (`rkt_regcmd.c`). Its deltas from the int32-raw
 | `OUT_CVT` scale and shift | The formula below | The requant ([encodings/out-cvt-converter.md](encodings/out-cvt-converter.md) documents the converter) |
 | `OUT_CVT` offset | The output zero point | |
 | `CNA_PAD_CON1` | §"`CNA_PAD_CON1` byte lanes" | Read per byte lane |
-| `DPU_BS_OW_OP` | §"`DPU_BS_OW_OP` is the CPEND operand" | The CPEND operand |
+| `DPU_BS_OW_OP` | §"CPEND and `DPU_BS_OW_OP`" | The CPEND operand |
 
 ```
 conv_scale = in_scale·w_scale / out_scale;  bits = float_bits(conv_scale);
@@ -135,7 +138,7 @@ Mesa's copy of it drops the carry on the last line, which halves or negates one 
 Mesa's rocket driver is a uint8 driver: its formulas take a uint8 tensor `u` with zero
 point `Z` [source-confirmed, `rkt_ml.c`, `rkt_coefs.c`, `rkt_regcmd.c`]. An int8 tensor is
 the uint8 tensor `u = x + 0x80` with `Z = zp + 0x80`, at the same scale. Substituting gives
-the int8 program:
+the int8 program, where `b` is the byte the NPU writes:
 
 | Field | Mesa's uint8 formula | int8 value |
 |---|---|---|
@@ -144,7 +147,7 @@ the int8 program:
 | `OUT_CVT` offset | `Z_out − 0x80` | `out_zp` |
 | `DPU_BS_OW_OP` | `0x80 − Z_w` | 0 for symmetric weights |
 | Bias | `bias − (Z_in − 0x80)·Σ(u_w − Z_w)` | `bias − in_zp·Σ_kernel w` |
-| Output | `npu_byte + 0x80` | the raw int8 byte |
+| Output | `b + 0x80` | `b`, the int8 output |
 
 This program computes TFLite's int8 depthwise [HW sweep, RK1, ~816 MHz, measured
 2026-09-23]. Against TFLite's reference kernels on one model layer with a random input, 11
@@ -188,7 +191,7 @@ The last three rows of the table run that way, and complete.
 
 The rows of the table use symmetric weights. A nonzero weight zero point adds `-w_zp·Σx`,
 which depends on the input and cannot fold into the bias. CPEND adds it on chip (see
-§"`DPU_BS_OW_OP` is the CPEND operand").
+§"CPEND and `DPU_BS_OW_OP`").
 
 ### `CNA_PAD_CON1` byte lanes
 
@@ -207,7 +210,7 @@ therefore write the pad byte in every lane.
 With the byte in every lane the question does not arise, and the 128-channel shape in
 §"The int8 domain" is bit-exact.
 
-### `DPU_BS_OW_OP` is the CPEND operand
+### CPEND and `DPU_BS_OW_OP`
 
 The TRM names `DPU_BS_OW_OP` the CPEND operand, and `DPU_BS_OW_CFG.OD_BYPASS` bypasses CPEND
 [TRM]. On the int8 depthwise path software must program it to 0 for symmetric weights, Mesa's
@@ -276,8 +279,19 @@ Three banded shapes are bit-exact against the host model [HW sweep, RK1, ~816 MH
 | 96×151×151 | 3×3, 2, 0 | 0 |
 | 64×75×90 | 5×5, 1, 2 | 17 |
 
-The fp16 entry has no spatial tiling. `rocket_conv2d_plan` returns `<0` for a plane past one
-pass, and the layer falls back to the CPU.
+The fp16 entry bands a channel chunk the same way, over output rows and then columns, with a
+zero halo. `rocket_conv2d_plan` refuses a depthwise descriptor only where one group's weight
+cube passes a CBUF bank, or a one-output tile passes the feature budget. Six banded fp16 shapes
+are bit-exact against the host reference [HW sweep, RK1, 928 MHz, 2026-11-02]:
+
+| Channels × plane | Kernel, stride, pad, dilation |
+|---|---|
+| 32×96×96 | 3×3, 1, 1, 1 |
+| 64×128×128 (two channel chunks) | 3×3, 1, 1, 1 |
+| 32×160×160 | 5×5, 1, 2, 1 |
+| 32×200×200 | 3×3, 1, 1, 2 |
+| 32×256×256 | 3×3, 1, 1, 1 |
+| 32×256×256 | 3×3, 2, 1, 1 |
 
 ### int8 entries
 
@@ -298,9 +312,7 @@ CPEND. The entry is bit-exact against the host model in these cases [HW sweep, R
 A uint8 tensor reaches it recentered by 128.
 
 The entry's host pack decides its cost at these shapes. A pack indexed per element is 83%
-of the call, and a blocked pack makes the call 2.9x shorter [HW sweep, RK1]. MobileDet runs
-1.19x warm at ~816 MHz over two changes together: its depthwise layers on this entry, and the
-blocked pack.
+of the call, and a blocked pack makes the call 2.9x shorter [HW sweep, RK1].
 
 `rocket_conv2d_dw_int8_perc` takes a per-channel filter on the BS stage's per-channel
 multiplier (see [encodings/out-cvt-converter.md](encodings/out-cvt-converter.md)
@@ -345,7 +357,7 @@ unit scales and the input equal to `in_zp` everywhere. Each channel's corner out
 therefore `pad − in_zp`. At `in_zp` 37, -2, 100 and -100 over 64 channels at 6×10, those 16
 lanes read byte 1 and the other 48 read byte 0.
 
-### `DPU_BS_OW_OP` is the CPEND operand
+### CPEND and `DPU_BS_OW_OP`
 
 The CPEND model covers 69 int8 depthwise test points at three shapes, in
 `rocket-userspace/tests/cpend_wzp_probe`. The direct int8-out measurement is
@@ -353,8 +365,16 @@ The CPEND model covers 69 int8 depthwise test points at three shapes, in
 
 ### Software support
 
-The banded shapes and the entry's cases are `tests/conv_dw_int8_runtime`. The pack cost is
-`tests/dw_int8_cost_probe`.
+The banded int8 shapes and the entry's cases are `tests/conv_dw_int8_runtime`. The banded fp16
+shapes ran through `tests/conv2d_fp16_rocket` with depthwise set, one process a shape, and the
+library's debug log confirmed a spatial band on each. The pack cost is
+`tests/dw_int8_cost_probe`, at nine MobileDet shapes, where the blocked pack takes the call sum
+from 21.8 to 7.4 ms.
+
+Through `tflite-rocket`, MobileDet's warm time went from 204.9 to ~171.6 ms (1.19x) over two
+changes together [HW sweep, RK1, ~816 MHz, 2026-09-27]. Its depthwise layers moved from the
+fp16 depthwise entry to this one, and the pack was blocked. The governor was pinned, over four
+rotated passes.
 
 ### Excluded causes
 

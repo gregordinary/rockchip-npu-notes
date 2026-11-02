@@ -24,8 +24,8 @@ The pipeline is a fixed sequence of blocks, CNA→CORE→DPU:
   contains the MAC gating register, `MAC_GATING` (`0x300C`) [TRM].
 - **DPU**: the post-processing (data-processing) unit, which is the NVDLA SDP.
 
-The DPU has the BS, BN and EW affine stages, an NVDLA-style LUT for nonlinear activations,
-and its read DMA, DPU_RDMA. EW is the eltwise sub-unit.
+The DPU has three affine stages, BS, BN and the element-wise EW, an NVDLA-style LUT for
+nonlinear activations, and its read DMA, DPU_RDMA.
 
 The register bases are [source-confirmed: Mesa `registers.xml`]:
 
@@ -37,7 +37,7 @@ The register bases are [source-confirmed: Mesa `registers.xml`]:
 | DPU | `0x4xxx` |
 | DPU_RDMA | `0x5xxx` |
 
-The DPU computes more than multiply-accumulate. The EW unit runs elementwise add and mul
+The DPU computes more than multiply-accumulate. The EW stage runs elementwise add and mul
 (residuals, gated activations). The LUT runs sigmoid, tanh, SiLU, GELU, sqrt, rsqrt,
 reciprocal and exp on-chip.
 
@@ -75,29 +75,26 @@ It is like the host `1/s` of softmax: M scalar lookups, correct and free. A gath
 contraction (matmul) nor a pool (PPU), so no on-chip block supplies it.
 
 Anything linear along the contraction axis is a matmul against a ones weight, which can be
-triangular, and needs no new regcmd. The ones-weight matmul covers a full reduce, a weighted
+triangular, and needs no new register program. The ones-weight matmul covers a full reduce, a weighted
 reduce, and a prefix scan (cumsum). See [encodings/feature-reduce.md](encodings/feature-reduce.md).
 
 ## Cores
 
-The NPU has 3 cores (`npu@fdab0000`, `fdac0000`, `fdad0000` in the device tree). They run
-concurrently and independently: with one file descriptor per core, throughput is ~3x one
-core's [HW sweep].
+The NPU has 3 cores (`npu@fdab0000`, `fdac0000`, `fdad0000` in the device tree), which run
+concurrently and independently [HW sweep].
 
-Under `rocket`, software reaches the cores by opening 3+ file descriptors, rather than by a
-core mask in the submit. The driver creates one `drm_sched` per core but one scheduling entity
-per fd. An entity stays on one core while it has a job queued or running. One fd's jobs
-run one at a time, and a lone fd that waits on each job alternates between cores 0 and 1. N fds
-spread across the N cores [HW sweep, source-confirmed]. See
-[perf/iova-and-multicore.md](perf/iova-and-multicore.md).
+Under `rocket`, software reaches the cores by opening several file descriptors, rather than by
+a core mask in the submit [HW sweep, source-confirmed]. One fd's jobs run one at a time, and N
+fds spread across the N cores
+([perf/iova-and-multicore.md](perf/iova-and-multicore.md#multicore-dispatch-through-worker-fds)).
 
 ## CBUF
 
 Each core has a CBUF of 12 banks × 32 KB = 384 KB [source-confirmed: Mesa / SHARD]. During
 a conv or matmul task the CBUF holds the input-feature tile in its data banks and the weight
-tile in its weight banks. With the input and weight both resident, the banks bound the
-contraction depth `Kt` that fits at a given output tile (Mt × Nt). A matmul task can instead
-stream a larger weight cube through the weight banks while the input stays resident
+tile in its weight banks. With both tiles in the CBUF, the banks bound the contraction depth
+`Kt` that fits at a given output tile (Mt × Nt). A matmul task can instead stream a larger
+weight cube through the weight banks while the input tile stays in the data banks
 ([matmul-as-conv.md](matmul-as-conv.md) §"CBUF weight streaming").
 
 The size limits that the SHARD paper ([SOURCES.md](SOURCES.md)) reports for its ViT encoder
@@ -117,8 +114,8 @@ The measured rule is `Kt ∝ 1/element-bytes` [HW sweep]. With its denser pack, 
 reach `nKt=1` (single-pass K, no readback K-accumulation) on Gemma's `K=3840` by shrinking
 the output tile to 64×64. See [encodings/k-accumulation.md](encodings/k-accumulation.md).
 
-The CBUF also has operand-reuse bits. They let a task reuse a tile already resident from
-the previous task on the same core, instead of re-fetching it from DRAM. See
+The CBUF also has operand-reuse bits. They let a task reuse a tile that the previous
+task on the same core left in the CBUF, instead of re-fetching it from DRAM. See
 [encodings/cbuf-reuse.md](encodings/cbuf-reuse.md).
 
 > [!CAUTION]
@@ -144,19 +141,24 @@ types, MAC rates, and the use of each datatype. The encoding detail is in
 
 ## Throughput
 
-The theoretical 3-core MAC peak scales with the datatype: ~3 TFLOPS fp16, ~6 TOPS int8 (2x),
-~12 TOPS int4 (2x again). Measured RKNN matmul benchmarks (clehaxze, external) reach only
+The theoretical 3-core MAC peak at 1 GHz scales with the datatype: ~3 TFLOPS fp16, ~6 TOPS
+int8 (2x), ~12 TOPS int4 (2x again). Measured RKNN matmul benchmarks (clehaxze, external) reach only
 ~0.5-1 TFLOPS fp16.
 
-On the `rocket` path, the matmul measures ~460 GOP/s at ~816 MHz at fp16, int8 and int4 alike
-[HW sweep]. DMA and dispatch bound it, rather than the MAC array
-([perf/not-mac-bound.md](perf/not-mac-bound.md)).
+On the `rocket` path, the fp16 matmul with CBUF weight streaming measures 947-966 GOP/s at
+`512×3840×4096`, with resident weights on three cores at 928 MHz. int8 with streamed weights and
+int4 run 1.14-1.20x that [HW sweep 2026-11-02]. DMA and dispatch bound the matmul, rather than the
+MAC array ([perf/not-mac-bound.md](perf/not-mac-bound.md)). A task that
+streams its weights through the CBUF runs `160×1024×4096` at 766 GFLOP/s on one core at
+928 MHz [HW sweep 2026-10-21]. That core's fp16 MAC peak at 928 MHz is ~0.93 TFLOPS
+[host-computed].
 
 ## Clock
 
 The NPU compute clock (`scmi_clk_npu`) boots at 198 MHz (the 200 MHz request), 1/5 of the
-1 GHz maximum, and stays there. Mainline `rocket` has no NPU devfreq, and 200 MHz is the
-vendor's `POWER_DOWN_FREQ`. Raising the clock to ~816 MHz gives ~1.43x.
+1 GHz maximum. Mainline `rocket` has no NPU devfreq, so the clock stays there unless a driver
+patch raises it. 200 MHz is the vendor's `POWER_DOWN_FREQ`. Above it the clock follows the rail
+voltage, and the 900 MHz request at the 0.80 V rail runs at 928 MHz.
 
 > [!CAUTION]
 > The NPU power domain is off at cold boot. Setting the PLL while the domain is off hangs the
@@ -171,8 +173,8 @@ regcmd_count}`.
 
 The kernel runs any register program it is handed. Mesa Teflon's CNN op set is a limit of
 Teflon, in userspace, not of the kernel. Software emits its own register program, and the
-kernel DMAs its BOs and starts the blocks. `SUBMIT` is asynchronous, and `PREP_BO` on the
-output BO is the fence barrier.
+kernel DMAs its BOs and starts the blocks. `SUBMIT` is asynchronous, and `PREP_BO` on an
+output BO waits for the job that writes it.
 
 > [!NOTE]
 > `PREP_BO`'s `timeout_ns` is an absolute `CLOCK_MONOTONIC` deadline, not a relative timeout.

@@ -2,10 +2,13 @@
 
 Two values set the DPU's output-surface stride: the `size_e` field,
 `DPU_BS_OW_CFG.SIZE_E_{0,1,2}` (`0x4050`), and a surface multiplier. The multiplier scales the
-surface add, `DPU_SURFACE_ADD` (`0x40C0`) [source-confirmed: Mesa `registers.xml`]. For a
-floating-point output of a direct convolution or a matmul on a floating-point input, `size_e`
-takes its natural value, the output's `bytes - 1`. The int8 matmul's int32 output and the int4
-matmul's int16 output instead take `size_e = 7`, whatever the byte width. Each strides as if
+surface add, `DPU_SURFACE_ADD` (`0x40C0`) [source-confirmed: Mesa `registers.xml`]. The TRM
+describes each `SIZE_E` field as "How many 8 channels in a row" of an output line, minus one
+[TRM].
+
+For a floating-point output of a direct convolution or a matmul on a floating-point input,
+`size_e` takes its natural value, the output's `bytes - 1`. The int8 matmul's int32 output and
+the int4 matmul's int16 output instead take `size_e = 7`, whatever the byte width. Each strides as if
 its elements were 8 bytes (Erratum E2). A depthwise convolution does not follow the natural
 value either: its fp16 output takes `size_e = 3`.
 
@@ -15,7 +18,9 @@ Software must program `size_e` by the input type and the convolution mode [HW sw
 
 - **int8 input (int32 output):** `size_e = 7`, with the surface add × 8.
 - **int4 input (int16 output):** `size_e = 7`.
-- **int16 input (int32 output):** the natural `size_e = 3`, with the surface add × 4.
+- **int16 input (int32 output):** the natural `size_e = 3`, with the surface add × 4. At
+  int8's `size_e` 7 the task never completes
+  ([output-transpose-int16.md](output-transpose-int16.md)).
 - **Floating-point input and output, direct convolution or matmul:** the natural value. An
   fp16 output (2 bytes) takes `size_e = 1`, and an fp32 output (4 bytes) takes `size_e = 3`.
 - **fp16 depthwise convolution, fp16 output:** `size_e = 3`, with the surface add × 4
@@ -31,13 +36,6 @@ int8 (int32-acc) datapath".
 | int4×int4 | int16 | 2 | 1 | **7** |
 | int16×int16 | int32 | 4 | 3 | 3 *(natural)* |
 | fp16×fp16 | fp32 | 4 | 3 | 3 *(natural)* |
-
-The int16 path is bit-exact at N from 48 to 256 with `size_e` 3 [HW sweep].
-
-> [!CAUTION]
-> An int16 task programmed with the int8 geometry, `size_e` 7 and the surface add × 8, never
-> completes. It writes row 0's first sixteen channels. The kernel's watchdog retires it
-> ([output-transpose-int16.md](output-transpose-int16.md)).
 
 > [!NOTE]
 > A wrong `size_e` has no visible effect on an output that fits in one surface. A test shape
@@ -74,10 +72,6 @@ int4 paths.
 - **Status:** Open. No source documents it.
 
 ## Evidence
-
-### Programming requirements
-
-The int16 measurement is `tests/int16_native_probe`.
 
 ### Known issues
 

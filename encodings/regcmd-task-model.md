@@ -1,8 +1,9 @@
 # regcmd and task model
 
-A job (one `drm_rocket_submit`) contains one or more tasks, each a
-`{regcmd IOVA, regcmd_count}` descriptor. The [PC](../GLOSSARY.md) executes a task's
-[regcmd](../GLOSSARY.md), a stream of `NPUOP(op, value, reg)` words, ending in the control
+A [submit](../GLOSSARY.md) (one `DRM_IOCTL_ROCKET_SUBMIT`, `struct drm_rocket_submit`)
+contains one or more jobs (`struct drm_rocket_job`). A job contains one or more tasks, each a
+`{regcmd IOVA, regcmd_count}` descriptor (`struct drm_rocket_task`) [source-confirmed: the
+`rocket` uAPI, `rocket_accel.h`]. The [PC](../GLOSSARY.md) executes a task's [register program](../GLOSSARY.md), a stream of [regcmds](../GLOSSARY.md), `NPUOP(op, value, reg)` words, ending in the control
 trailer:
 
 ```
@@ -12,7 +13,7 @@ NPUOP(OP_40, 0, 0)
 NPUOP(OP_ENABLE, 0x1D, PC_OPERATION_ENABLE)   # 0x1D = bits 0,2,3,4 -> fires CNA+CORE+DPU+DPU_RDMA
 ```
 
-Each task's regcmd opens with `DPU_S_POINTER = 0xE` and `DPU_RDMA_S_POINTER = 0xE`
+Each task's register program opens with `DPU_S_POINTER = 0xE` and `DPU_RDMA_S_POINTER = 0xE`
 (`POINTER_PP_MODE | EXECUTER_PP_EN | POINTER_PP_EN`), which enables the NVDLA-style
 ping-pong register groups in those two blocks. The kernel sets the CNA and CORE pointers the
 same way before every task, writing `0xE | (0x10000000 * core index)` [source-confirmed,
@@ -26,8 +27,8 @@ Each regcmd word is 64 bits, `(target << 48) | (value << 16) | offset`: a 16-bit
 | Block | PC | CNA | CORE | DPU | DPU_RDMA | PPU | PPU_RDMA |
 |---|---|---|---|---|---|---|---|
 | Target | `0x0101` | `0x0201` | `0x0801` | `0x1001` | `0x2001` | `0x4001` | `0x8001` |
- The trailer's enable word has
-target `0x0081`.
+
+The trailer's enable word has target `0x0081`.
 
 ## `PC_OPERATION_ENABLE` as a block bitmap
 
@@ -63,7 +64,7 @@ blocks it fires.
 > The register self-clears, so polling it returns 0 whatever was written. A readback does not
 > show which blocks a trailer enabled.
 
-## Does register state persist across tasks (can later tasks send a delta)?
+## Register state across tasks
 
 Register state persists within a register group [HW sweep, RK3588, 2026-09-25]. Each block's
 `S_POINTER` selects the group that register writes go to and the group the executer reads. The
@@ -75,7 +76,7 @@ register file is not re-latched per task: a task computes with whatever its grou
 **Not characterized:** other generators (fp16, convolution, the DPU elementwise stage, the PPU),
 self-chained jobs, the RK3576, and core 2.
 
-The pointer fields, one `S_POINTER` per block at `0x1004`, `0x3004`, `0x4004` and `0x6004`
+The pointer fields, one `S_POINTER` per block at `0x1004`, `0x3004`, `0x4004` and `0x5004`
 [TRM, RK3588 Part 1, `RKNN_cna_s_pointer` and its siblings]:
 
 | Bit | Field | Meaning |
@@ -109,9 +110,16 @@ wherever its group holds the right geometry:
 > different geometry.
 
 The gahingwoo RK3576 mainline-`rocket` bring-up describes the same condition: the geometry is
-written where the executer is not ([SOURCES.md](../SOURCES.md)). The BSP's
-`RKNPU_JOB_PINGPONG`, "two reg-banks per block", is the same mechanism (the rknpu-RE entry in
-[SOURCES.md](../SOURCES.md)).
+written where the executer is not ([SOURCES.md](../SOURCES.md)).
+
+The vendor `rknpu` driver writes the CNA and CORE pointers as `rocket` does, `0xE` plus the
+core's bit [source-confirmed: `rknpu` driver 0.9.8, `rknpu_job.c`,
+`rknpu_job_subcore_commit_pc()`]. Its `RKNPU_JOB_PINGPONG` job flag selects neither group. The
+same function writes the flag to `PC_TASK_CON.task_pp_en` (bit 12). With that bit set, the PC
+fetches the second group's registers as soon as the first group's fetch finishes. With it clear,
+the PC waits until the first group's task completes [TRM, RK3588 Part 1, `RKNN_pc_task_con`].
+Mainline `rocket` sets the bit for every task [source-confirmed, mainline `rocket_job.c`,
+`rocket_job_hw_submit()`].
 
 Software must not write the CNA or CORE `S_POINTER` from a regcmd. Those writes need the
 kernel's per-core bit, which a job cannot know, and the TRM marks bits 28 and 29 reserved. The
@@ -136,8 +144,7 @@ kernel writes those two pointers.
   ([cbuf-reuse.md](cbuf-reuse.md)).
 
 A delta's time saving is not resolved. At 64×256×64 and 128×1024×128, fetching 117 more regcmd
-words a task is not a measurable cost [HW sweep, RK3588, 2026-09-25]. The difference sits inside
-the run-to-run spread.
+words a task is not a measurable cost [HW sweep, RK3588, 2026-09-25].
 
 ## Contiguous chaining (batched submit)
 
@@ -208,8 +215,11 @@ op count, so the uniform stride holds.
 | One ioctl, N gapped tasks | N | All datatypes | The per-job host cost: the submit syscall, the fence wakeup, the IOMMU attach and detach ([iova-and-multicore.md](../perf/iova-and-multicore.md)) |
 | Contiguous chaining | One | fp16 and int8. int4 not characterized | The per-job host cost, and also the per-task IRQ and re-kick |
 
-The per-job `DRM_ROCKET_JOB_BATCHED` flag picks each job's layout, so chained and gapped jobs
-share one process.
+Mainline `rocket` programs `TASK_NUMBER = 1` for every task [source-confirmed, mainline
+`rocket_job.c`, `rocket_job_hw_submit()`], so every job runs one kick a task there. On a kernel
+with the batched-submit change ([iova-and-multicore.md](../perf/iova-and-multicore.md) §"The
+`rocket` implementation"), the per-job `DRM_ROCKET_JOB_BATCHED` flag picks each job's layout,
+so chained and gapped jobs share one process.
 
 > [!CAUTION]
 > A kernel with only the global `rocket_batch_submit` parameter treats every multi-task job as
@@ -238,7 +248,7 @@ TRM's `RKNN_global_operation_enable` layout, and Mesa's `GLOBAL` register agrees
 measured words fit that layout. `0x1D` enables the four blocks a convolution uses, `0x18` the
 two a DPU-only program uses, and `0x60` the two a pool uses.
 
-### Does register state persist across tasks (can later tasks send a delta)?
+### Register state across tasks
 
 The measurement is `tests/regcmd_delta_probe.c`: the configurations below, per-core interrupt
 attribution, and the timing. Each row is one job. Every task has its own buffers and is scored

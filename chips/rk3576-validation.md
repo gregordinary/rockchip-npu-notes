@@ -1,12 +1,15 @@
 # RK3576 validation record
 
-How the facts in [rk3576.md](rk3576.md) were established: the validated configuration, the
-sources, and the measurements, controls and excluded causes behind each section. The sheet
-states each fact. This record states its evidence, under the sheet's section names.
+How the facts in [rk3576.md](rk3576.md) and its companions were established: the validated
+configuration, the sources, and the measurements, controls and excluded causes behind each
+section. The sheet and its companions state each fact. This record states its evidence, under
+their section names. A section of [rk3576-hazards.md](rk3576-hazards.md) or
+[../perf/rk3576-graph.md](../perf/rk3576-graph.md) has its record under the same title here, and
+a section of [rk3576-regcmd.md](rk3576-regcmd.md) under "Register encoding:" and its title.
 
 ## Validated configuration
 
-The port is validated on kernel 7.1.6 with the whole RFC series in-tree (`0001`-`0024`, uAPI
+The port is validated on kernel 7.1.6 with patches `0001`-`0024` of the RFC series in-tree (uAPI
 interface 1.5). All 57 tests return `rc=0` (57 of 57), the taint is unmoved, and `dmesg` shows
 zero WARNINGs. The five graphs run at 4.9 / 6.5 / 6.6 / 7.0 / 33.8 ms, indistinguishable from
 the same list on an out-of-tree `0023` module. So `0024` (do not let a stale poll retire the
@@ -88,7 +91,7 @@ job submitted from rail-off computes, and the seven jobs that follow it match it
 Before the first job of a boot, `npu`, `nputop` and `npu0` had a genpd `active_time` equal to a
 49-hour uptime. The `npu1` domain's was 143 s [live 2026-10-02, kernel 7.2.8-1].
 
-## Memory system, NPU rail, and thermal envelope
+## Memory system, NPU rail, and thermal limits
 
 ### DRAM bandwidth
 
@@ -270,8 +273,11 @@ destroys 5.6-6.5%. The `flatN` shape (a 2048-granule plane against 32 KiB of wei
 plane and a short submit) destroys 30.4-34.9%. That is five to six times the damage from four
 times less weight and a shorter occupancy, with 512x the feature plane.
 
-The two cores therefore stage their feature planes into the same CBUF, unconditionally, and an
-intruder destroys however much plane it staged.
+On this sweep alone, the two cores stage their feature planes into the same CBUF,
+unconditionally, and an intruder destroys however much plane it staged. That reading is one
+candidate, not an established mechanism [hypothesis]. The sweep was read on 2026-07-28 as
+establishing a shared staging. The sections that follow leave it one of three open candidates,
+as Erratum RK3576-E1 in the sheet states.
 
 A test point is a measurement only once the driver's overlap counter is non-zero. A small
 aggressor running a fixed call count finishes inside the victim's host-side packing. One run of
@@ -371,7 +377,7 @@ rate the boot firmware leaves. It has no OPP, and the rail sits at the U-Boot de
 The upstream series assigns 594 MHz in the SoC device tree. Whether 786 MHz at 750 mV is under
 the vendor's voltage depends on the chip's bin, which no mainline kernel reads. The vendor's
 800 MHz step asks 800 mV of the lowest bins and 725 mV of the highest (per-bin table under
-[Memory system, NPU rail, and thermal envelope](rk3576.md#memory-system-npu-rail-and-thermal-envelope)).
+[Memory system, NPU rail, and thermal limits](rk3576.md#memory-system-npu-rail-and-thermal-limits)).
 
 For the two-core runs the H96 MAX M9 read 750 mV, `enabled`, `num_users=1` and 786431952 Hz on
 `scmi_clk_npu` (debugfs, root only). Neither NPU node had `assigned-clock-rates`
@@ -502,8 +508,13 @@ Ga Hing Woo derived `vendor-capture/RK3576_CNA_MAP.md` by converting the same Co
 one parameter at a time and diffing the vendor RKNN regcmd. A `predict.py` then validates it,
 reproducing 34/34 geometry / channel / tiling / const registers with zero mismatch across 7
 MobileNetV1 captures. The map covers the vendor-toolkit conv path, cross-referenced against
-what Mesa emits with the RK3588 map. `librocketnpu` has not exercised the map itself on its
-matmul path, or run it on hardware.
+what Mesa emits with the RK3588 map. `librocketnpu`'s regcmd encoder starts from the map's
+closed form with the four corrections below. It runs on the SoC on every datapath, the int8
+matmul included (the sheet's §"Regcmd encoder").
+
+The sheet as first written, on 2026-07-25,
+stated that the map had not been exercised on the matmul path or run on hardware. The
+encoder's hardware tests replace that reading.
 
 From 2026-07-25 the sheet's CNA delta table and its RK3588-gaps subsection took four readings
 from the published `RK3576_CNA_MAP.md`. Two sections of rk3576-regcmd.md correct them:
@@ -655,7 +666,7 @@ cold-start fix and without patch `0012`. That `rocket`'s completion poll ran at 
 period. At the 50 us period of `0012` a submit measures 439 us (an 8×64×32 int8 matmul,
 2026-07-28) [HW sweep, H96 MAX M9]. Chaining the row tasks into one kick takes a 32×32 plane
 in 8 windows from 2.8 to 1.0 ms (2026-07-29) [HW sweep, H96 MAX M9]. See rk3576-regcmd.md
-§"Cost per window", §"The per-submit floor is the driver's completion poll" and §"Chained row
+§"Cost per window", §"Per-submit cost and the completion poll" and §"Chained row
 tasks".
 
 ### Depthwise convolution
@@ -702,7 +713,7 @@ Finding the bound needs a probe that varies the zero point on this path specific
 | Date | int8 stem | fp16 stem | Conditions |
 |---|---|---|---|
 | 2026-07-27 | 3.94 ms | 256.7 ms | 3×224×224 k3 s2 oc32, whole entry. The fp16 entry waited out the idle that clears its next-submit hazard before every call, a ~122 ms guard |
-| 2026-07-27 | | 226 ms, then 13.75 ms | The same fp16 shape, waiting for the idle, then with the power cycle driven by `rocket_rk3576_power_idle()` at the stock 50 ms autosuspend delay (rk3576-regcmd.md §"Cost of the clearing idle") |
+| 2026-07-27 | | 226 ms, then 13.75 ms | The same fp16 shape, waiting for the idle, then with the power cycle driven by `rocket_rk3576_power_idle()` at the stock 50 ms autosuspend delay (§"Cost of the clearing idle") |
 | 2026-08-10 | 3.21 ms | 13.98 ms | Kernel 7.1.7, `rocket` 1.6.0, `dpu_grace_us` 0, governor `ondemand` ("Cost of the library entries"). The current figures |
 
 The sheet stated the first row as "The int8 program takes 3.9 ms against the fp16 program's
@@ -858,8 +869,7 @@ before interface 1.0, with `power/autosuspend_delay_ms` at mainline's 50 ms. Wit
 "It is the one hazard the RK3576 has on any wide output" was written on 2026-07-27. Three
 paths write wide outputs without the hazard [HW sweep, H96 MAX M9, `rocket` 1.6.0]. They are
 the matmul-form fp16 program's fp32 output (2026-09-25), and the whole output stage's dense
-int32 writer and fp32-output convolution (2026-09-30). See §"The poisoning is one hazard, and
-its cost is a system setting".
+int32 writer and fp32-output convolution (2026-09-30). See §"The wide-output hazard".
 
 ## Narrow input-channel counts on the direct datapath
 
@@ -995,14 +1005,17 @@ once at 68, then clean to 84. The `k7g4-224` test point is wrong once at 19, the
 
 ## The deadline under the write guard
 
-The full-but-wrong outcome shows 0 dropped-to-zero elements in 12 of 12 failing test points
+The outcome past the guard shows 0 zero elements in 12 of 12 failing test points
 [HW sweep, H96 MAX M9, `rocket` 1.5.0, `dpu_grace_us` 500]. The count is of zero elements, and
 the entry had stamped the output with `0xA5`. A zero count therefore cannot see a dropped write
 [source-confirmed: rocket-userspace as of 2026-08-02, group `rowlaw` and the default stamp].
 
 Re-scored against the stamp, the same test, run twice at `dpu_grace_us` 500, gives 16 failing
 test points (9 and 7). In every one, no wrong element is zero, and every wrong element still
-holds the stamp. One point has 7712 of 7712. `k5-ic32-g6`, wrong at every row of its trailing
+holds the stamp. The outcome is therefore a partial write, not an output written in full and
+wrong, as the zero count was read on 2026-08-05.
+
+One point has 7712 of 7712. `k5-ic32-g6`, wrong at every row of its trailing
 groups, has 325804 of 325804 [HW sweep, H96 MAX M9, `rocket` 1.6.0, 594 MHz, rocket-userspace
 as of 2026-09-30, 2026-10-12]. The current planner refuses `k3-ic64` at 4, 6 and 8 groups one row past their
 ceiling. Of the other points, five computed one row past it, and one reached the data cap.
@@ -1022,7 +1035,7 @@ test point, the plane held inside the `F=0` budget. It is exact at `F=0` and `F=
 at `F=2048` (in channels 32-127, three groups of four, at every row) [HW sweep, H96 MAX M9,
 2026-08-05, "The weight slice and the feature allowance"].
 
-## On the DEPTHWISE path the two low CBUF rungs do not deliver, and the failure is a band
+## CBUF allowances on the depthwise path
 
 The height walk is `rk3576_conv_lib_gate rowmap`. The forced-allowance table uses one window
 that `F=0` does not cover, with `ROCKET_RK3576_CBUF_F` forcing each allowance beneath it. All
@@ -1185,7 +1198,7 @@ and 6 shapes of 2 to 25 tasks. Its row-major weight control comes back wrong on 
 [HW sweep, gate run, `rocket` 1.6.0, 2026-09-25]. The test's fills make every sum exact in fp32,
 so it cannot see rounding.
 
-## An int8 matmul job can raise no completion, and the shape decides
+## int8 matmul jobs that raise no completion
 
 The partial outputs were scored against the requant model by `tests/rk3576_retire_probe real K`
 [HW sweep, H96 MAX M9, `rocket` 1.6.0, kernel 7.2.3, 2026-09-27]. Under a write check alone, the
@@ -1832,7 +1845,7 @@ over 49. Both configurations return TFLite's top-1, and the write guard redoes n
 H96 MAX M9, 594 MHz, rocket-userspace as of 2026-09-30, 2026-10-12]. With the divisor constant over
 position the hazard is unobservable, so the check finds nothing and nothing is redone.
 
-## The poisoning is one hazard, and its cost is a system setting
+## The wide-output hazard
 
 ### The program matrix
 
@@ -1907,7 +1920,7 @@ program under test cannot see it.
 
 ### The clearing idle
 
-The sheet's table comes from a 5×7 sweep of `autosuspend_delay_ms` against the inter-submit
+The hazards note's table comes from a 5×7 sweep of `autosuspend_delay_ms` against the inter-submit
 gap. Each entry is the gap at which a chain of wide-output submits first reaches 20 of 20
 written. [HW sweep, H96 MAX M9]
 
@@ -2014,7 +2027,7 @@ byte-exact. The two registers differ from their int8-path values in bit 30, in o
 directions. Setting all four RDMA registers together, the vendor's own combination, also
 triggers it.
 
-### A whole output stage that does not poison
+### The whole output stage
 
 The three DPU words take the int8 direct canary from 0 of 12 to 12 of 12
 [HW sweep, H96 MAX M9, rocket 1.6.0, 2026-09-30]. The gap is zero, the program still writes,
@@ -2072,6 +2085,13 @@ The five further test points use the same instrument, with one VALID task per he
 runs each [HW sweep, H96 MAX M9, 2026-08-05]. They separate the two laws by factors, not by
 margins, so the contradiction is direct rather than statistical. The test point `k7g4-224` is
 wrong 3 of 3 at 19 output rows.
+
+#### Revision history
+
+- The sheet stated, from the walk of 2026-08-05, that `k7g4-56` is exact past 78 output rows,
+  which is its clean run to height 84 (§"Edge movement"). Its single failures at heights 60 and
+  68 put the first failure at 54 output rows. The reading path states that, and the dense onset
+  at height 89, 83 output rows.
 
 ### Refused heights in a walk
 
@@ -2170,7 +2190,7 @@ the loud/quiet rate" supersedes the per-layer reading, and the per-graph reading
   therefore a contiguous stretch of groups". The extent readout the same day superseded it.
   Every one of 1109 occurrences ends at the last channel group, and so do 656 further
   occurrences under an applied DRAM load (§"Lag extent and the tail-only check" below). The
-  sheet states the suffix form.
+  hazards note states the suffix form.
 
 ## What sets the loud/quiet rate
 
@@ -2367,8 +2387,8 @@ span the per-layer and the chained path, across six pooling geometries.
 
 The four-graph table and Inception V3's 34.4-34.6 ms (check off) against 40.7-41.9 ms (check
 on) date from 2026-08-03. They were measured before the tail-only check, with the check scoring
-every channel group [HW sweep, H96 MAX M9, two and three `bench 100` runs, `ondemand`]. The sheet's
-current Inception V3 cost, 1.5 ms of 34.0 ms (4.4%), is the 2026-08-06 measurement under
+every channel group [HW sweep, H96 MAX M9, two and three `bench 100` runs, `ondemand`]. The
+current Inception V3 cost in the hazards note, 1.5 ms of 34.0 ms (4.4%), is the 2026-08-06 measurement under
 §"Exposure and cost in the model corpus".
 
 ### Inception V3 before the tail-only check
@@ -2401,7 +2421,7 @@ With the column-split pools taking a cube in, the check is 6.82 ms of a 43.1 ms 
 The pool-inside-a-kick figures are the configuration the library refuses. The section "Chained-run
 refusal for pools whose divisor can lag" gives what the same graph costs without one.
 
-## The pooling path's read interval is three things, and only two of them are the guard
+## The pooling path's read interval
 
 The read-interval table was taken under `rk3576_net_gate bench 100` [HW sweep, H96 MAX M9,
 `rk3576_net_gate bench 100`, ondemand, 2026-08-03]. A re-reading at a later wall-clock time, over
@@ -2442,7 +2462,7 @@ With both profilers on, the instrument itself is 1.5-2 ms of that total. The unp
   | sentinel scan | 0.00 |
 
   From that reading the write guard was stated as `stamp + scan + fini` = 1.5 ms, against the
-  5.1 ms of the `read - lag` interval. The sheet's table is the re-reading taken later the same
+  5.1 ms of the `read - lag` interval. The hazards note's table is the re-reading taken later the same
   day, over 15.2 pool calls, with a `redos` row added. Its guard sum is 1.43 ms
   [host-computed: 1.05 + 0.00 + 0.38]. The validation text's "overstates it by 3.5x" belongs to
   the first reading.
@@ -2695,8 +2715,12 @@ change, the rows with the least work per submit move most: `conv 32->64 k1 56x56
 3.12 -> 2.01 and `depthwise 256 k3 14x14` at 1.42 -> 0.96. The rows dominated by host packing or
 by a power cycle barely move.
 
-Three statements in the body were revised:
+Four statements in the body were revised:
 
+- The precision fork's summary read 10-76x a scalar CPU reference for the direct and depthwise
+  int8 convolutions and the int8 first conv. That figure dates from 2026-07-29, and no table
+  behind it is recorded. The 1.6.0 table of 2026-08-10 gives 2.1-90.6x over the same entries,
+  and the body states that range.
 - The depthwise rows' ratio range read 2.1-3.7x on the table of 2026-07-28. The 1.6.0 table of
   2026-08-10 gives 2.1-3.2x, and the body states that range.
 - The cost table's submit cost was stated as about 0.44 ms, the 439 us measured on 2026-07-28 with
@@ -2799,7 +2823,7 @@ The resident pair is timed over two processes with the pool off, by `rk3576_mm_f
 resident`. [HW sweep, H96 MAX M9, `rocket` 1.6.0, 786 MHz, governor `performance`, A72s,
 2026-09-25 UTC]
 
-## The int8 route's host terms
+## The int8 path's host terms
 
 The per-shape host terms come from four processes, 540-560 converged calls a shape each. Two of
 the processes also time an FCVTN narrowing of the same activation. The resident costs are 30
@@ -2826,9 +2850,9 @@ not by a wrong label 27 layers later.
 - The headline table's top row was the 2026-07-31 configuration, 5.1 ms with the pooling layer
   retiring on its own completion and the graph in three submits. With the pooling layer inside
   the stream the graph is one kick in one submit. It measures 4.9 ms (2026-08-02, "A pooling
-  layer sits inside the stream") and 4.9-5.0 ms in the guard tables of 2026-08-03. The TFLite delegate's
-  5.2 ms (2026-08-04) includes the interpreter's invoke and the partition-boundary transposes,
-  0.3-0.7 ms above the network test on the same graphs.
+  layer inside the stream") and 4.9-5.0 ms in the guard tables of 2026-08-03. The TFLite
+  delegate's 5.2 ms (2026-08-04) includes the interpreter's invoke and the partition-boundary
+  transposes, 0.3-0.7 ms above the network test on the same graphs.
 
 ## The graph planner
 
@@ -2948,7 +2972,7 @@ the allowance setting:
 Two configurations separate the causes. With `MAX_ROWS=48` alone the score reproduces the
 refusal's 0.2809, so the cap changes nothing by itself. With the allowance fixed, the
 acceptance reaches the same 0.2832 with no cap forced at all. The allowance defect is in the
-sheet's section "On the DEPTHWISE path the two low CBUF rungs do not deliver".
+sheet's section "CBUF allowances on the depthwise path".
 [HW sweep, H96 MAX M9, 500 val2017 images per configuration, 2026-08-04]
 
 ### Inference-time protocol
@@ -3082,7 +3106,7 @@ byte-identical.
 The submit saving of about 110 us is measured rather than inferred. The 40 tasks and the
 assertions are the same in both configurations [HW sweep, H96 MAX M9, 2026-07-29].
 
-## A retired job is redone whatever it wrote
+## Redo of a retired job
 
 | Check | Result |
 |---|---|
@@ -3090,7 +3114,7 @@ assertions are the same in both configurations [HW sweep, H96 MAX M9, 2026-07-29
 | Gate list, 67 rows | 67 pass in 320 s. Scored retirements equal the kernel's `retiring it` count on every row that submits through an entry, 163 in all |
 | Gate list, 69 rows, kernel 7.2.8-1, 594 MHz, the rail switched with the power domain (2026-10-02) | 69 pass in 286 s. 165 scored retirements, equal to the per-row counts |
 | The three rows for the wide-output hazard | 52, 55 and 54 scored, every one unwritten |
-| Five stall `K`, §"An int8 matmul job can raise no completion" | Scored equal to the kernel's count at each. The entry's output is correct where a write check alone returned incorrect output |
+| Five stall `K`, §"int8 matmul jobs that raise no completion" | Scored equal to the kernel's count at each. The entry's output is correct where a write check alone returned incorrect output |
 
 The one kernel retirement the list does not score is `uapi_regcmd_fault`'s, a raw uAPI submit
 outside every entry.
@@ -3381,11 +3405,11 @@ The section carried one correction:
 - Corrected: the section stated that the pooling program derives its destination channel-group
   stride from the output plane. It stated that no register moving it had been decoded, and that
   the cube entries refuse a slice at any other stride. `0x607C` is the destination channel-group
-  stride, honored at any value at or above the plane (§"PPU destination and source addressing").
+  stride, honored at any value at or above the plane ([rk3576.md](rk3576.md) §"PPU destination and source addressing").
   `rocket_pool_int8_cube_out_at_rk3576()` programs the slice's stride and refuses only one below
   the plane (`rocket-userspace/include/rocket_pool.h`).
 
-## A pooling layer sits inside the stream
+## A pooling layer inside the stream
 
 The probe runs `conv -> pool -> conv` as one batched job. It compares that job against two
 references: the same three as three submits, and each consumer alone on an input nothing wrote.
@@ -3441,12 +3465,20 @@ The offset cube, the padding-channel rule and the producer's group stride were i
 remaining-refusal table read one refusal on 63 adjacent pairs: the consumer is not a resident
 convolution (the classifier, reading the pool) [HW sweep, H96 MAX M9, 2026-08-01]. It read zero
 once a pool could leave its output as a cube [HW sweep, H96 MAX M9, 2026-08-02]. The 62 of 63
-in the sheet is the first state and the 63 of 63 the second.
+in the graph note is the first state and the 63 of 63 the second.
 
-### A cube's base is a plain address, so a concatenation costs nothing
+### Concatenation at a cube's base address
 
 The plain-address result covers 34 placements at three geometries, one of them row-split, with
 an unaligned group index (`tests/rk3576_offset_cube.c`).
+
+#### Revision history
+
+- From 2026-08-28 the sheet stated that symmetric quantization covers every TFLite int8 filter.
+  Every per-tensor depthwise filter has a zero point (§"The depthwise weight zero point",
+  measured 2026-07-29), and Inception V1's 528-channel max pool feeds a consumer with one
+  (§"Concatenation placement"). The reading path states symmetry for the per-axis filters
+  only.
 
 ### Inference time by optimization
 
@@ -3479,12 +3511,12 @@ refuses.
 
 ### Revision history
 
-| Quantity | Earlier figure | Current figure in the sheet |
+| Quantity | Earlier figure | Current figure in the graph note |
 |---|---|---|
 | ResNet-18 with every join refusal closed, 11 submits | **10.5** ms, the last row of the first ResNet-18 table. "The three refusal classes" quoted the closure as 18.4 -> 10.5 ms and 25 -> 11 submits [HW sweep, H96 MAX M9, 2026-08-02] | 10.6 ms, in the decomposition and pricing tables |
 | ResNet-18 as one kick in one submit | 10.5 -> 9.2 ms, with the chained-run finder's two rules replaced | 9.2 ms |
 
-| Quantity | Earlier figure | Current figure in the sheet |
+| Quantity | Earlier figure | Current figure in the graph note |
 |---|---|---|
 | Saving from closing the twelve refusals | 7.9 ms, 18.4 -> 10.5, the 11-submit figure of the first ResNet-18 table [HW sweep, H96 MAX M9, 2026-08-02] | 7.8 ms, 18.4 -> 10.6, the pricing table's own "none" row [host-computed]. Still 1.8x the 4.4 ms per-pair sum |
 | Marginal submit, ResNet-18 from 11 submits to 1 | about 0.13 ms, 1.3 ms over 10 submits, from 10.5 -> 9.2 | about 0.14 ms, 1.4 ms over 10 submits, from the decomposition's 10.6 -> 9.2 [host-computed] |
@@ -3510,33 +3542,33 @@ those blocks are freed [hypothesis, not measured].
 The pricing table runs `rk3576_net_gate` at `bench 100`, with each class's option off and the
 other two on.
 
-The per-pair sum in the sheet prices each refused pair at the single-join table's cost for its
+The graph note's per-pair sum prices each refused pair at the single-join table's cost for its
 size [HW sweep, H96 MAX M9, `rk3576_net_gate`, 2026-08-02].
 
 #### Revision history
 
-| Quantity | Earlier figure | Current figure in the sheet |
+| Quantity | Earlier figure | Current figure in the graph note |
 |---|---|---|
 | The PPU's destination channel-group stride | Derived from the output plane, with no decoded register to move it, so a pool output was placed only in a slice at the PPU's own `round4(ow*oh)` stride and the library refused any other (2026-08-02) | `0x607C`, honored at any value at or above the plane, read at a 5×3 plane at 240 and 272 bytes against a loss at 224 [HW sweep, H96 MAX M9, 2026-08-03]. `rocket_pool_int8_cube_out_at_rk3576()` takes the stride from the slice and refuses one below the plane |
 
 ### One-kick inference time by configuration
 
-ResNet-18's one-kick inference time, every reading in the sheet and in this record, by
+ResNet-18's one-kick inference time, every reading in the sheet, its companions and this record, by
 configuration. All are on the H96 MAX M9 with resident weights, the cube layout and one kick
 in one submit, at `bench 100` unless stated:
 
 | Configuration | Reading | Date | Where |
 |---|---|---|---|
-| Direct-lowering stem, write guard bracketed per layer, 786 MHz | 9.2 ms, 38 tasks | 2026-08-02 | Sheet: the ResNet-18 decomposition, the current figure for this configuration |
-| Same | 9.3 ms | 2026-08-02 | The NEON-block comparison's control ("Pooling layers and the host transpose"), and the "What the wall is made of" table before one bracket per BO |
+| Direct-lowering stem, write guard bracketed per layer, 786 MHz | 9.2 ms, 38 tasks | 2026-08-02 | Graph note: the ResNet-18 decomposition, the current figure for this configuration |
+| Same | 9.3 ms | 2026-08-02 | The NEON-block comparison's control ("Pooling layers and the host transpose"), and the "Composition of a graph's wall-clock time" table before one bracket per BO |
 | Same | 9.2 ms | 2026-08-02 | The control of the concatenation-placement comparison ("Concatenation placement") |
 | Same | 9.2-9.3 ms | 2026-08-02 | The control of the Inception V1 packed-stem comparison, and the direct-stem row of "The materialized stem on a graph" |
 | Same | layer total 9.15, wall-clock 9.1 ms | 2026-08-02 | "Per-layer scoring overhead" |
-| Packed-image stem with materialized pad columns, guard bracketed per layer, 786 MHz | 7.4 ms, 33 tasks | 2026-08-02 | Sheet: "The materialized stem on a graph", and the per-layer column of "One bracket per BO" |
-| Packed-image stem, one guard bracket per BO, 786 MHz (the default) | 6.6 ms, 33 tasks; 6.5-6.6 in "One bracket per BO" | 2026-08-03 | Sheet: "What the wall is made of", "Guard forms compared", "Coverage cost per graph", and the 786 MHz column of "NPU clock rate" |
+| Packed-image stem with materialized pad columns, guard bracketed per layer, 786 MHz | 7.4 ms, 33 tasks | 2026-08-02 | Sheet: "The materialized stem on a graph". Graph note: the per-layer column of "One bracket per BO" |
+| Packed-image stem, one guard bracket per BO, 786 MHz (the default) | 6.6 ms, 33 tasks; 6.5-6.6 in "One bracket per BO" | 2026-08-03 | Graph note: "Composition of a graph's wall-clock time" and "Guard forms compared". Hazards note: "Coverage cost per graph". Sheet: the 786 MHz column of "NPU clock rate" |
 | Same, kernel 7.1.6 with the series `0001`-`0024` in-tree | 6.6 ms | 2026-08-04 | This record, "Validated configuration" |
 | Same configuration at 594 MHz, kernel 7.2.8-1, `rocket` 1.6.0 | 7.9-8.0 ms | 2026-10-02 | Sheet: "NPU clock rate" [live] |
-| `tflite-rocket` delegate, direct-lowering stem, kernel 7.1.6, 786 MHz | 8.8 ms, median of 19 runs | 2026-08-04 | Sheet: "The TFLite delegate" |
+| `tflite-rocket` delegate, direct-lowering stem, kernel 7.1.6, 786 MHz | 8.8 ms, median of 19 runs | 2026-08-04 | Graph note: "The TFLite delegate" |
 
 The configurations that are not one kick (18.3 ms at 25 submits, 10.6 at 11, 9.9 at 5) are the
 rows of the decomposition and are dated with it.
@@ -3638,7 +3670,7 @@ it is the configuration that separates a disagreement there from any other. The 
 configuration is `ROCKET_RK3576_NET_TAIL=0`.
 
 Placement adds a cost as well as removing others: the second write-guard bracket each placed
-producer takes, the guard row of the sheet's term table. A profile of the graph taken before the
+producer takes, the guard row of the term table. A profile of the graph taken before the
 change contains no such term.
 
 A profile bucket does not isolate a change's gain. Profiled at both ends of the change, the
@@ -3658,7 +3690,7 @@ The three older graphs measured 4.9, 6.7 and 9.2 ms (MobileNetV1, MobileNetV2, R
 submit each, before and after the placement [HW sweep, H96 MAX M9, `bench 100`, 2026-08-02].
 ResNet-18 ran with its stem on the direct lowering.
 
-## Inception V3 and gate symmetry
+## Inception V3 and test symmetry
 
 The test is `tests/rk3576_net_gate.c --net iv3`, and `tests/data/rk3576-net/mknet.py` builds
 the blob.
@@ -3776,7 +3808,7 @@ Two totals followed it the same day. Once the column-split pools read a cube, 32
 outside a chained run, at 55 submits. Once the fifteenth concatenation was placed, 27 did, at 47.6-48.1
 submits. Neither total was recorded by reason.
 
-## What the wall is made of, once the graph work is collected
+## Composition of a graph's wall-clock time
 
 The section measures the graphs with residency, the cube layout and the cross-layer kick in
 place. The profile under `ROCKET_RK3576_INT8_PROF=1` covers the chain as well as the per-call
@@ -3842,7 +3874,7 @@ On the graphs of that table the guard is the largest single term on three of the
 
 #### Revision history
 
-| Quantity | Earlier figure | Current figure in the sheet |
+| Quantity | Earlier figure | Current figure in the graph note |
 |---|---|---|
 | Stamp per inference: MobileNetV1, MobileNetV2, ResNet-18, Inception V1 | 0.01, 0.39, 1.16 and 2.07 ms, with the write guard bracketed per layer, both 7×7 stems on the direct lowering, at 4.9, 6.8, 9.3 and 10.8 ms and 40, 77, 38 and 77 tasks [HW sweep, H96 MAX M9, `bench 100`, 2026-08-02] | 0.03, 0.26, 0.78 and 1.12 ms, the stamp column of the first table, with one bracket per BO and the packed-image stems [HW sweep, H96 MAX M9, `bench 100`, 2026-08-03] |
 
@@ -3912,7 +3944,7 @@ every `ic <= 4` convolution and prints what came back, so the count is a measure
 
 #### Revision history
 
-| Quantity | Earlier figure | Current figure in the sheet |
+| Quantity | Earlier figure | Current figure in the graph note |
 |---|---|---|
 | ResNet-18's stem on the packed encoding | Refused: "the zero point, on the pad columns", the library's own message from a graph run, and the encoding on one graph of four [HW sweep, H96 MAX M9, 2026-08-02] | Runs with its pad columns materialized, the max pool reading the wider output in place: 7.4 ms against the direct stem's 9.2-9.3, 33 tasks against 38 [HW sweep, H96 MAX M9, 2026-08-02]. The encoding runs on two graphs of four |
 
@@ -4225,7 +4257,7 @@ At a shift of 14 and `C = 16384`, a saturate-first product reads 131071
 
 
 
-### The B term is added: `acc + B*sum(x)`
+### The B term
 
 Every vendor capture has `B = 0`, so a capture shows the field's position and width but
 not its sign convention. Driving `B` on the direct path against a CPU model determines it. The
@@ -4240,7 +4272,7 @@ is larger at small `|B|`, because the correction often rounds to the same int8. 
 ### Revision history
 
 - The `B` term was recorded as unvalidated against a non-zero weight zero point on 2026-07-25.
-  The measurement of 2026-07-27 under "The B term is added: `acc + B*sum(x)`" supersedes it.
+  The measurement of 2026-07-27 under "The B term" supersedes it.
   `acc + B*sum(x)` explains every output of every direct shape at `B` = 1, 40, 127, -37 and
   -128 [HW sweep, H96 MAX M9].
 
@@ -4315,7 +4347,7 @@ The un-windowed path in `rk3576_first_light` sets the window directly and never 
 defect. It appears only once a caller sends every conv through the planner
 [HW sweep, H96 MAX M9].
 
-## Register encoding: The geometry fields are narrower than their register halves
+## Register encoding: Geometry field widths
 
 The widths are measured through the public entries, with every element scored
 [HW sweep, H96 MAX M9, 2026-09-26, `tests/rk3576_conv_width_probe`]. Every test configuration
@@ -4455,7 +4487,12 @@ every shape at `maxdiff 0` [HW sweep, H96 MAX M9]. The table's channel counts th
 of 32 exercise the quantities that diverge there. Its planes whose `ow*oh` is not a multiple
 of four do the same.
 
-## Register encoding: Depthwise convolution
+### Revision history
+
+- The register encoding as first written, on 2026-07-26, stated that an asymmetric depthwise
+  weight must be folded into the bias. The fold into the weight cube, measured 2026-07-29
+  (§"The depthwise weight zero point"), replaces that reading. The zero point's correction is
+  not a per-channel constant, so the bias cannot apply it.
 
 ### The weight cube
 
@@ -4864,7 +4901,7 @@ both signatures of the cold-start defect. It treats an all-zero output as the de
 the CPU model predicts a non-zero one. A sweep that reports its results without that check
 records the defect, not a register result, roughly half the time at multi-second gaps.
 
-## Register encoding: The per-submit floor is the driver's completion poll
+## Register encoding: Per-submit cost and the completion poll
 
 The `rk3576_submit_floor` test submits the 8×64×32 int8 matmul 300 times and reports the time
 per submit.
@@ -5024,7 +5061,7 @@ The probe `tests/uapi_regcmd_fault_rocket` tries both bad-address cases, as its 
 46/46 immediately afterwards [HW sweep, H96 MAX M9, 2026-07-28]. On the RK3588 the same probe
 reaches the detach warning [HW sweep, Turing RK1, 2026-07-28].
 
-## Register encoding: A BO in an in-flight job must survive the file that made it
+## Register encoding: BO lifetime across file close
 
 The test `tests/uapi_bo_lifetime_rocket` opens a fresh fd per iteration, submits, and closes
 immediately. It warns on 16 of 16 iterations, and left running longer, the same client reaches
@@ -5042,8 +5079,7 @@ limits in the sections that follow.
 ### Throughput and the N axis
 
 The throughput table's conditions stated a submit at about 0.44 ms whatever its work
-(2026-07-27). The per-submit time is in "The per-submit floor is the driver's completion
-poll".
+(2026-07-27). The per-submit time is in "Per-submit cost and the completion poll".
 
 ## Register encoding: Matmul precision
 
@@ -5212,7 +5248,7 @@ tile at many times the output the writer can hold. Measured through `rk3576_matm
 The wide path is kept for two reasons. It is the instrument that decoded the 32-bit writer's
 map, and a shape outside the 315-shape sweep can still reach it. [HW sweep, H96 MAX M9]
 
-## Register encoding: The dense writer: every accumulator as an int32, and no poisoning
+## Register encoding: The dense writer
 
 The dense writer's registers and map were measured with `tests/rk3576_matmul_probe out32`
 [HW sweep, H96 MAX M9, rocket 1.6.0, 2026-09-30]. Doubling `0x401C` and `0x40B8` produces an
@@ -5451,7 +5487,7 @@ all.
   (`rk3576_pool_probe pad`) ran at pads 0, 1 and 2 on both axes. It measures left in [3:0] and
   top in [7:4] [HW sweep, H96 MAX M9].
 
-## Register encoding: The unprivileged double free, and the crashes it was mistaken for
+## Register encoding: The unprivileged double free
 
 ### The client that reached it
 

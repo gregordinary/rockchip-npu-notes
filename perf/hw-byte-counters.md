@@ -30,9 +30,10 @@ its sysfs does not publish).
 ## 1. The amount counters in the RKNPU family and in the rk3588 config
 
 The NVDLA-derived NPU has DMA "amount" counters. The vendor BSP reads them on sibling SoCs
-and disables them on the RK3588. Its rk3588 config sets the top/core amount tables to NULL,
-and the read helper returns early with "not supported on this device". The offset tables
-exist, assigned only to the rk3576, rv1126b and rk356x configs:
+and disables them on the RK3588. Its rk3588 config sets the top/core amount tables to NULL.
+The read helper then returns early with "not supported on this device" [source-confirmed,
+`rknpu_drv.c` and `rknpu_job.c` in `rknpu` 0.9.8]. The offset tables exist, assigned to the
+rk356x, rv1106, rk3562, rk3576 and rv1126b configs:
 
 | set | clr_all | dt_wr | dt_rd | wt_rd | used by |
 |---|---|---|---|---|---|
@@ -103,7 +104,7 @@ read through `rocket`.
 ## 4. A read of the `0x8000` DDMA block
 
 The DDMA domain (`pc_base + 0x8000`, phys `0xfdab8000`) reads cleanly. A mapped domain
-decodes, and the `0x2000` gap does not, which confirms the abort explanation in §3.
+decodes where the `0x2000` gap does not, which confirms the abort explanation in §3.
 
 **Conditions:** core 0, NPU idle, a read-only probe that is disarmed by default (§6).
 
@@ -187,24 +188,28 @@ follows.
 ### 5.2 Bytes moved by a tiled matmul, against the analytical model
 
 The analytical bytes-moved model ([not-mac-bound.md](not-mac-bound.md) §"Bytes-moved model")
-predicts the DRAM traffic of a tiled matmul. The PMU measures it on the single-fd streaming
-path, which is the path the model describes, with no CPU reference [HW sweep 2026-08-28, RK1].
+counts the DRAM bytes that each phase of a tiled matmul moves. It describes the single-fd
+one-shot path, which packs the weight on every call. The PMU measures that path with no CPU
+reference [HW sweep 2026-08-28, RK1]. The model is right on the data-reuse term and 3.57x low
+in total.
 
-**Conditions:** `512×3840×4096` fp16, KACC and data reuse on, the planner's default tiling for
-the shape (Mt 256, Kt 512, Nt 128: `nMt`=2, `nKt`=8, `nNt`=32), NPU clock ~816 MHz. Each figure
-is the difference between 45 and 5 repetitions, which is 40 matmuls and nothing else.
+**Conditions:** `512×3840×4096` fp16, KACC and data reuse on, the planner's whole-tile plan
+for the shape (Mt 256, Kt 512, Nt 128: `nMt`=2, `nKt`=8, `nNt`=32), which `ROCKET_MM_STREAM=0`
+selects, NPU clock ~816 MHz. Each figure is the difference between 45 and
+5 repetitions, which is 40 matmuls and nothing else. The model's figures are MiB, as are the
+counter's.
 
 | configuration | model total | measured read | measured write | measured total |
 |---|---:|---:|---:|---:|
-| default (KACC + data reuse) | 133.50 MB | 287.30 MiB | 188.65 MiB | 475.95 MiB |
-| `ROCKET_REUSE=0` | 249.75 MB | 408.29 | 186.72 | 595.00 |
-| `ROCKET_KACC=0` | 161.50 MB | 476.26 | 209.03 | 685.29 |
-| prepacked (same arithmetic, weight scatter hoisted) | 103.50 MB | 152.38 | 74.22 | 226.61 |
+| KACC + data reuse | 133.50 MiB | 287.30 MiB | 188.65 MiB | 475.95 MiB |
+| `ROCKET_REUSE=0` | 249.75 MiB | 408.29 | 186.72 | 595.00 |
+| `ROCKET_KACC=0` | 161.50 MiB | 476.26 | 209.03 | 685.29 |
+| prepacked (same arithmetic, weight scatter hoisted) | 103.50 MiB | 152.38 | 74.22 | 226.61 |
 
 #### The data-reuse term
 
 The model's data-reuse term matches the counter. In the model, turning `data_reuse` off
-multiplies the feature DMA by `nNt`=32: `+116.25 MB` of reads and nothing on the write side.
+multiplies the feature DMA by `nNt`=32: `+116.25 MiB` of reads and nothing on the write side.
 The measured change is +120.98 MiB read and -1.93 MiB write. The measurement is 4% high on the
 term, and zero on the column the model says does not move. The model's tiling and loop order
 are therefore right: the feature tile is reused across the `N` loop. The counter confirms in
@@ -215,7 +220,7 @@ bytes the reduction that `DATA_REUSE`'s −21% `wait` drop shows in time
 
 The absolute level is 3.57x the model, and the excess is concentrated in the host scatter.
 The prepacked configuration hoists the weight scatter out of the loop and keeps the same
-arithmetic. It removes 249.34 MiB per call against a `packB` term of 30.00 MB. The bus
+arithmetic. It removes 249.34 MiB per call against a `packB` term of 30.00 MiB. The bus
 therefore moves 8.3x the bytes for that phase that the model counts, once per weight byte. The
 excess is in both directions (`-134.92` read, `-114.42` write).
 
@@ -224,15 +229,15 @@ chunks smaller than a cache line. The bus moves a whole line per chunk, and move
 source in and destination out.
 
 One term inside that difference is not separated. The entry `rocket_matmul_fp16` calls
-`mm_bos_alloc` per call [source-confirmed, `src/rocket_matmul.c`]. The streaming path
-therefore also allocates, kernel-zeroes and frees a ~30 MB weight BO every call, where the
-prepacked path does it once. If the zeroing is the whole 30 MB, the scatter's own write
+`mm_bos_alloc` per call [source-confirmed, `src/rocket_matmul.c`]. The one-shot path
+therefore also allocates, kernel-zeroes and frees a ~30 MiB weight BO every call, where the
+prepacked path does it once. If the zeroing is the whole 30 MiB, the scatter's own write
 amplification is 2.8x rather than 3.8x.
 
 #### The `KACC` sensitivity
 
 The model's `KACC` sensitivity is wrong. With K-accumulation off the NPU, the model predicts
-`+28 MB` of writes and no change in reads. The measurement is +20.4 MiB write (the same order)
+`+28 MiB` of writes and no change in reads. The measurement is +20.4 MiB write (the same order)
 and +189.0 MiB read. The model's account of what the un-accumulated partials cost is therefore
 incomplete on the read side. That account underlies the `int8` readback cost,
 `nKt * M * N * 4`, which is a lower bound.
@@ -260,34 +265,34 @@ configuration, the expert ingest as well. The load is under 1% of either total.
 
 #### Dense: `Qwen3.5-0.8B-F16`
 
-**Conditions:** `-r 2`, two passes, with the means of the pair (6144 tokens per configuration).
+**Conditions:** `-r 2` (6144 tokens per configuration).
 
 | configuration | read | write | total | per prefill token | t/s |
 |---|---:|---:|---:|---:|---:|
 | CPU only | 202736 MiB | 38485 MiB | 241221 MiB | 39.3 MiB | 68.4 |
 | NPU (`GGML_BACKEND_PATH`) | 255272 | 102838 | 358110 | 58.3 MiB | 119.5 |
 
-With NPU offload, prefill is 1.75x faster and moves 1.48x the DRAM bytes. The configurations
-differ most in the write column, at 2.7x. The extra writes are the host cube scatter and the
-readback, consistent with §5.2's finding that the host phases account for the traffic. The
-CPU-only configuration ran longer and still moved less, so the difference is not an effect of
-duration.
+With NPU offload, prefill runs at 1.75x the CPU-only rate and moves 1.48x its DRAM bytes. The
+configurations differ most in the write column, at 2.7x. The extra writes are the host cube
+scatter and the readback, consistent with §5.2's finding that the host phases account for the
+traffic. The CPU-only configuration ran longer and still moved less, so the difference is not
+an effect of duration.
 
 #### MoE: `gpt-oss-20b-mxfp4`
 
-**Conditions:** `-r 1 -b 2048 -ub 2048`, one process per configuration (4096 tokens per
-configuration).
+**Conditions:** `-r 1 -b 2048 -ub 2048` (4096 tokens per configuration).
 
 | configuration | read | write | total | per prefill token | t/s | wall-clock | bytes / wall-clock |
 |---|---:|---:|---:|---:|---:|---:|---:|
 | `ROCKET_MOE=0` (experts on the CPU) | 358387 MiB | 123631 MiB | 482018 MiB | 117.7 MiB | 13.67 | 316 s | 1.6 GB/s |
 | `ROCKET_MOE=1` (experts placed) | 614269 | 451662 | 1065931 | 260.2 MiB | 33.72 | 174 s | 6.4 GB/s |
 
-With the experts placed on the NPU, prefill is 2.47x faster and moves 2.21x the bytes. It
-runs the memory system about four times harder: 6.4 GB/s against 1.6. A `memcpy` on this board
-reaches ~13-15 GB/s, and streaming reads reach ~17. The placed MoE configuration is the first
-workload measured here that approaches a DRAM bandwidth limit. The others run an order of
-magnitude below it. The write column (3.65x) again holds most of the difference.
+With the experts placed on the NPU, prefill runs at 2.47x the `ROCKET_MOE=0` rate and moves
+2.21x its bytes. It runs the memory system about four times harder: 6.4 GB/s against 1.6. A
+`memcpy` on this board reaches ~13-15 GB/s, and streaming reads reach ~17. The placed MoE
+configuration is the first workload measured here that approaches a DRAM bandwidth limit. The
+others run an order of magnitude below it. The write column (3.65x) again holds most of the
+difference.
 
 The `ROCKET_MOE=1` total includes the one-time int8 expert ingest. That ingest is ~30 GB,
 about 3%, so the per-token figure is not an ingest artifact.
@@ -331,9 +336,9 @@ readable register. Three independent observations confirm it:
   per-core "data write" amount at core-window offsets 0x2234 + 0x2434, ×2 scale. The rk3576
   config wires both tables and the rk3588 config sets both NULL, on the same
   `0x22xx`/`0x24xx` family as §1.
-- **Even on the RK3576 the counter is behavioral.** It is a BSP/register-RE artifact of the
-  amount block, not a separately documented register. No documented "separate readable"
-  counter exists to port to the RK3588.
+- **On the RK3576 too, only the BSP describes it.** The counter is known from the BSP's
+  amount tables and from register RE of the amount block. No document describes a separate
+  readable counter to port to the RK3588.
 - **On the RK3588 its offsets are in the unmapped, hard-locking page.** Relative to a core's
   window, 0x2234/0x2434 are phys `0xfdab2234`/`0xfdab2434`. Those are the `0x2000`-gap pages
   that `rocket` never ioremaps (it maps only `pc`/`cna`/`core`), which is §3's read-fatal
@@ -385,11 +390,14 @@ counts the direction it is named for.
 
 ### Bytes moved by a tiled matmul
 
-The model is `tests/bytes_moved_rocket.c`. The measurement is `tests/ddr_mm_bytes.c`, run at 5
+The model is `tests/bytes_moved_rocket.c`, which prints its byte counts in units of 2^20 bytes
+under the label "MB". The measurement is `tests/ddr_mm_bytes.c`, run at 5
 and 45 repetitions, three runs of each (`n`=3 per test point). It covers one shape and one
 datatype.
 
 ### Bytes moved by an LLM prefill
+
+The dense figures are two passes, and each is the mean of the pair.
 
 The expert path against the experts on the CPU is the comparison the byte counter was wanted
 for. Both MoE configurations measure within 2.1% of this board's published rates for them. On

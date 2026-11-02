@@ -55,8 +55,9 @@ both at once.
 
 ### Fusion under residency
 
-Fusion's absolute saving is the eliminated redundant packA plus the reduced submits. It is
-roughly 1.3 ms/token at pp512 and 1.6 ms/token at pp2048 on this model. The fusion saving is
+Fusion's absolute saving is the eliminated redundant packA plus the reduced submits. Under
+residency it is ~0.9 ms/token at pp512 and ~1.2 ms/token at pp2048 on this model
+[host-computed from the table above]. The fusion saving is
 independent of packB, so it remains once residency has removed the weight scatter. The two
 optimizations cut different costs, and their deltas compound.
 

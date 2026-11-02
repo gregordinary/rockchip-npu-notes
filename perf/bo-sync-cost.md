@@ -8,10 +8,11 @@ BO to its live tiles, rather than to the 64-tile batch, raises resident fp16 mat
 by ~11% [HW sweep].
 
 **Conditions:** RK3588, NPU clock ~816 MHz, resident multicore, `512×3840×4096`, fp16 + KACC +
-DATA_REUSE, idle board.
+DATA_REUSE, the whole-tile plan of June 2026 (Kt 384: `nKt` 10), which `ROCKET_MM_STREAM=0`
+selects, idle board.
 
-**Not characterized:** int4 at a small-shape, many-call workload, and a reducible fixed
-per-fence component of the `wait` term.
+**Not characterized:** the streamed fp16 plan, int4 at a small-shape, many-call workload, and a
+reducible fixed per-fence component of the `wait` term.
 
 | output BO | `sync` (Σ over workers) | fp16 wall-clock |
 |---|---:|---:|
@@ -30,8 +31,9 @@ perform cache maintenance each time it hands a BO between the CPU and the NPU:
 - `DRM_IOCTL_ROCKET_FINI_BO` runs `dma_sync_sgtable_for_device()`.
 
 Both walk the BO's entire scatter-gather list and do per-page cache maintenance. Neither
-ioctl has an offset or length (`drm_rocket_prep_bo` is just `{handle, timeout}`). Both
-therefore always sync the whole BO, even where the NPU touched only a small live sub-region.
+ioctl has an offset or length (`drm_rocket_prep_bo` is just `{handle, reserved, timeout_ns}`).
+Both therefore always sync the whole BO, even where the NPU touched only a small live
+sub-region.
 The sync cost is ∝ the allocated BO size (page count), not ∝ the bytes used
 [source-confirmed: `rocket_gem.c`, HW sweep].
 
@@ -98,8 +100,8 @@ The saving is `sync_saved = (size_old − size_new) × (#syncs of that BO)`, cou
 workload. The measured cases are:
 
 - fp16 KACC gains (§"Right-sized output BO"). It issues one job *per K-tile* and syncs the
-  output BO on every one (`~nKt` syncs/matmul). An 8x smaller BO × `nKt` is therefore a large
-  cut.
+  output BO on every one (`~nKt` syncs/matmul). A BO 8x smaller than the `BATCH`-sized one,
+  synced `nKt` times, is therefore a large cut.
 - The int4, int8 and `mm_compute` host-accumulation paths gain nothing at an LLM shape. They
   batch across K and sync the output BO once per job, and at `512×3840×4096` a job fills most
   of the batch. With one sync of a nearly full BO, right-sizing saves ~nothing. The int4
@@ -136,17 +138,18 @@ many syncs per matmul.
 A write-combine or uncached BO mapping would make `PREP_BO`'s `dma_sync_sgtable_for_cpu()`
 unnecessary for the output read. Userspace cannot select one.
 
-The mainline rocket uAPI does not expose a cache mode to userspace [source-confirmed]. The
+The mainline rocket uAPI does not expose a cache mode to userspace [source-confirmed,
+`rocket_accel.h`]. The
 `struct drm_rocket_create_bo` argument has only `{size, handle, dma_address, offset}`, with no
 flags and no cache-mode field. The kernel maps every BO cached (GEM-SHMEM default). The only
 userspace cache control is the `PREP_BO`/`FINI_BO` sync pair. A WC mapping therefore requires a
-kernel-module change, not a library option.
+kernel-module change.
 
-A WC mapping is also unlikely to help even then. The dominant readback cost is the A76 NEON
-de-tile gather (the cube->row-major scatter, [not-mac-bound.md](not-mac-bound.md)). NEON reads
-from *uncached* memory are far slower than reads from cached memory plus one bulk invalidate.
-WC therefore trades a cheap bulk `sync` for an expensive per-element uncached read. WC helps
-streaming *writes* (the pack side), not the gather-bound *read* side.
+A WC mapping is also expected not to help even then [expected]. The dominant readback cost is
+the A76 NEON de-tile gather (the cube->row-major scatter, [not-mac-bound.md](not-mac-bound.md)).
+NEON reads from *uncached* memory are far slower than reads from cached memory plus one bulk
+invalidate. WC therefore trades a cheap bulk `sync` for an expensive per-element uncached read.
+WC helps streaming *writes* (the pack side), not the gather-bound *read* side.
 
 Right-sizing (above) reduces the `sync` cost, and the NEON de-tile reduces the readback cost.
 

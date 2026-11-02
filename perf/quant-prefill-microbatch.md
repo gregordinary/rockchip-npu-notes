@@ -1,12 +1,16 @@
 # Quantized-GGUF prefill and per-micro-batch dequantization
 
 A quantized GGUF (`Q4_K` / `IQ4_XS` / `Q8_0` / …) prefills on the NPU through the
-dequant->fp16 streaming path. That path dequantizes each weight to fp16 and packs it into the
-native tiles per micro-batch, on every forward pass. The resident fp16 weight cache is
-F16-only, so quantized weights re-pack on each call. The per-micro-batch dequantization, not
-the matmul, sets quantized prefill throughput [HW sweep]. Three settings follow from it: the
-micro-batch size (`-ub`), the resident dequant cache (`ROCKET_QUANT_RESIDENT`), and the routing
-threshold (`ROCKET_MIN_M_QUANT`).
+dequant->fp16 streaming path by default. That path dequantizes each weight to fp16 and packs it
+into the native tiles per micro-batch, on every forward pass. The per-micro-batch
+dequantization, not the matmul, sets quantized prefill throughput [HW sweep]. Where the
+model's fp16 form fits RAM, wholly or partly, the resident dequant cache removes that cost.
+`ROCKET_QUANT_RESIDENT=auto` at the default `-ub` is the fastest configuration on seven of
+seven models measured (§"Residency at the default `-ub`").
+
+Where the fp16 form does not fit, a larger micro-batch (`-ub 2048`) amortizes the cost instead, by an amount that
+depends on the model. The routing threshold (`ROCKET_MIN_M_QUANT`) keeps short quantized
+prefills on the CPU.
 
 **Conditions:** RK3588, NPU clock ~816 MHz, Qwen3.5-9B and Qwen3.6-27B unless a section names
 other models.
@@ -29,37 +33,32 @@ The llama.cpp default `-ub 512` re-dequantizes the whole model every 512-row chu
 larger micro-batch spreads that fixed cost. `-ub 2048` measures 0.91-1.53x over the default,
 model-dependent, and is negative on two models of eleven [HW sweep 2026-08-29/30].
 
-**Conditions:** eleven models from 0.75 to 30.53 B. The per-model rows, and the
-mechanism of the change from the 2026-06-28 figure (§"Revision history"), are in
-`perf/data/tuning-matrix.md`.
+**Conditions:** eleven models from 0.75 to 30.53 B, on the build of 2026-08-29/30, which threads
+the dequant (§"Threaded streaming dequant"). The per-model rows, and the mechanism of the change
+from the 2026-06-28 figures (§"Revision history"), are in `perf/data/tuning-matrix.md`.
+
+`-ub` spreads the dequant and cannot remove it. On the serial-dequant build of 2026-06-28, the
+9B's three quants measured ~0.64x its resident F16 GGUF at `-ub 2048` [HW sweep 2026-06-28]
+(§"Revision history"). Only a resident dequant cache, which
+dequantizes and packs once, removes the dequant.
 
 Quant type is irrelevant to NPU prefill throughput [HW sweep 2026-06-28]. Q4_K, IQ4_XS and
-Q8_0 converge within noise at a given `-ub`, because they run the identical fp16 matmul. Only
-the dequant differs, and at `-ub 2048` it is amortized away. Choose the quant on RAM and
-quality, not NPU speed. The i-quants have no NPU penalty. Their thinner *relative* gain is only
-that the smaller file gives the CPU baseline a head start.
-
-On the build of 2026-06-28, whose streaming dequant was serial, quant is ~0.64x F16 even
-amortized, unless the dequant is made resident [HW sweep 2026-06-28]. F16 stays resident at zero
-dequant, 26.8 t/s @ub2048 on the 9B, where the three quants measure 17.2-17.4. The residual
-per-2048 dequant is still ~35%, and `-ub` cannot close it. Only a resident dequant cache, which
-dequantizes and packs once, can.
-
-The build of 2026-08-29/30 has the threaded dequant (§"Threaded streaming dequant"). On it the
-9B `Q4_K_M` measures 19.14 t/s at the default `-ub` and 27.26 at `-ub 2048`
-[HW sweep 2026-08-29/30]. On the build of 2026-07-02 the same GGUF measured 22.88 at `-ub 2048`,
-against the F16 GGUF's 24.85 at the default `-ub` [HW sweep 2026-07-02]. That is 0.92x
-[host-computed], at unequal `-ub`, so the 2026-06-28 plateau does not describe a later build.
+Q8_0 converge within noise at a given `-ub`, because they run the identical fp16 matmul and
+differ only in the dequant. Choose the quant on RAM and quality, not NPU speed. The i-quants
+have no NPU penalty. Their thinner *relative* gain is only that the smaller file gives the CPU
+baseline a head start.
 
 ### Resident dequant cache (`ROCKET_QUANT_RESIDENT`)
 
-`ROCKET_QUANT_RESIDENT=1` enables the resident dequant cache. It dequantizes each quantized
-weight to fp16 once, and reuses the F16 prepacked path. Prefill therefore performs neither the
-per-micro-batch dequant nor the per-call `packB`, which cuts 12440 to 889 ms [HW sweep].
+`ROCKET_QUANT_RESIDENT` enables the resident dequant cache. `auto` sizes its budget from free
+RAM, and a number above 1 sets the budget in MB. `1` uses the 2 GB default budget, which holds
+only part of a larger model. The cache dequantizes each quantized weight to fp16 once, and
+reuses the F16 prepacked path. Prefill therefore performs neither the per-micro-batch dequant
+nor the per-call `packB`, which cuts 12440 to 889 ms [HW sweep].
 
 The cache measures F16 parity, at bit-identical PPL to streaming [HW sweep]. On the 0.8B
 `Q4_K` at pp2048, resident measures 89.2 t/s against F16's 88.9. Streaming measures 80.7
-@ub2048 and 50.7 @ub512, so the cache gives 1.50x at the default `-ub`. On the 9B, in one
+@ub2048 and 50.7 @ub512. The resident run's `-ub` was not recorded. On the 9B, in one
 session, resident measures 24.6 against the serial streaming path's 15.8 @ub2048. The 9B's 1.56x is ~0.92x the 26.8 F16, because the
 9B's ~18 GB fp16 footprint fit the 31 GB RAM and the IOVA window.
 
@@ -103,6 +102,7 @@ because the larger micro-batch adds a 14-21% non-dequant cost against a 1.20-1.2
 gain. On SmolVLM2, a profile of the cache pair places about half that cost in the driver's
 output readback and de-tile. The `read` phase's total grows 64% at identical output bytes, 28.2
 to 46.3 s a process. Per job-batch it grows from 1.76 to 10.9 ms, superlinear in M.
+
 The rest is in `wait` [hypothesis]. The measurement
 contains no FLASH_ATTN ops, because llama-bench runs `-fa 0`, so attention-chunk shape is not
 part of the measured remainder.
@@ -111,8 +111,11 @@ part of the measured remainder.
 
 For models above and below 4 B alike, the better option is therefore dequant removal at the
 default `-ub`. `ROCKET_QUANT_RESIDENT=auto` at the default `-ub` beats residency combined with
-`-ub 2048` [HW sweep]. It does so on seven of seven models measured both ways. Every model is
-100% resident on every pass except Gemma-4-12B, which places part of its weights:
+`-ub 2048` [HW sweep 2026-08-31]. It does so on seven of seven models measured both ways. Every
+model is 100% resident on every pass except Gemma-4-12B, which places part of its weights:
+
+**Conditions:** RK3588 (RK1), NPU clock ~816 MHz, pp2048. Each value is the speedup over the
+streamed default at the default `-ub`.
 
 | model | residency, default `-ub` | residency with `-ub 2048` |
 |---|---:|---:|
@@ -135,8 +138,9 @@ compute buffers ([../TUNING.md](../TUNING.md) §"Residency in place of `-ub 2048
 
 ### Load sensitivity
 
-The dequant share depends on host load. The same measurement series, run with a single core
-kept busy by another process, measured the `-ub` gain at 1.484x / 1.526x / 1.120x. The busy
+The dequant share depends on host load. The same measurement series ran with a single core
+kept busy by another process. It measured the `-ub` gain at 1.484x on Qwen3.5-0.8B, 1.526x on
+Qwen3.5-9B and 1.120x on SmolVLM2, against 1.066x, 1.430x and 0.946x on an idle board. The busy
 process takes capacity from the A76-pinned dequant pool, which the `-ub 512` configuration
 uses four times as often. Host load therefore inflates the flag on every model, and flips
 SmolVLM2's sign. A `-ub` recommendation measured on a loaded host overstates the flag for an
@@ -147,19 +151,21 @@ idle deployment.
 The streaming path's per-micro-batch dequant is the cost that `-ub` amortizes and
 `ROCKET_QUANT_RESIDENT` eliminates. Run serially, it decodes every weight's `[N,K]` rows
 quant->fp16 on one core before the (already multicore) tile scatter runs. The rows are
-independent (a private K-float scratch in, a disjoint fp16 slice out). Fanning them across the
-A76 and A55 cores therefore recovers a large share of that cost, with no extra RAM. Threading
-is the option for the RAM-constrained case, which the resident fp16 copy cannot serve. The
-table is the 9B `Q4_K`, serial against threaded dequant [HW sweep 2026-06-28]:
+independent (a private K-float scratch in, a disjoint fp16 slice out). Fanning them across
+cores therefore recovers a large share of that cost, with no extra RAM. Threading is the option
+for the RAM-constrained case, which the resident fp16 copy cannot serve. The table is the 9B
+`Q4_K`, serial against threaded dequant over eight threads on the A76 and A55 cores
+[HW sweep 2026-06-28]:
 
 | `-ub` | serial | threaded | gain |
 |---|---:|---:|---:|
 | 512 (default) | 7.5 | 10.0 | +33% |
 | 2048 | 15.9 | 18.8 | +19% |
 
-Threaded dequant is the default: `ROCKET_DEQUANT_THREADS` at auto is `hardware_concurrency`
-capped at 8, and 1 selects the serial path. Greedy output is char-identical serial against
-threaded. The gain is largest at small `-ub`, where the fixed per-micro-batch dequant is the
+Threaded dequant is the default. `ROCKET_DEQUANT_THREADS` unset or 0 selects the A76 core
+count, with the workers pinned to the A76 cluster. Where no big cluster is detected, it selects
+`hardware_concurrency` capped at 8. 1 selects the serial path. Greedy output is char-identical serial
+against threaded. The gain is largest at small `-ub`, where the fixed per-micro-batch dequant is the
 largest share of wall-clock time. Threading therefore helps the llama.cpp default `-ub 512`
 most.
 
@@ -201,48 +207,52 @@ bytes or MACs. They therefore help most where the dequant is the largest share o
 time. Those cases are the streaming path at small `-ub`, and the RAM-tight case that
 `ROCKET_QUANT_RESIDENT` cannot serve. They have no effect on a resident-fp16 run.
 
-The `C16` reuse also serves the F16 streaming path, and the large `B16` is the quant-only piece.
+The `C16` reuse also serves the F16 streaming path, and only the quantized path uses the large
+`B16`.
 
 ## Routing threshold (`ROCKET_MIN_M_QUANT`)
 
-Short quantized prefills run faster on the CPU. Below a few hundred rows the per-pass dequant
-does not amortize, and the offload loses to the CPU. The table is the 9B Q4_K, one micro-batch
-each, against the CPU's ~6.2 [HW sweep 2026-06-28]:
+The `supports_op` of `ggml-rocket` offloads a quantized weight only from `ROCKET_MIN_M_QUANT`
+rows, 512 by default, the default micro-batch. Below it a quantized prefill runs on the CPU.
+On Qwen3.5-9B the offload measures 0.93x the CPU at 128 rows and 1.46-1.80x at 256-384 rows
+[HW sweep 2026-11-02]. The crossover therefore sits between 128 and 256 rows, ~145 by linear
+interpolation [host-computed]. The default leaves the 256-511-row gain on the CPU.
 
-| M (rows) | 64 | 128 | 256 | 320 | 384 | 512 |
-|---|---:|---:|---:|---:|---:|---:|
-| NPU t/s | 1.3 | 2.6 | 4.8 | 5.7 | 6.6 | 8.3 |
+**Conditions:** RK3588 (RK1), NPU clock 928 MHz, governor `performance`, llama.cpp b11539.
+Qwen3.5-9B `Q4_K_M` streaming its weights, one micro-batch of M rows (`-b` and `-ub` at M),
+`ROCKET_MIN_M_QUANT=1`, `--repack 0`. The CPU backend at 8 threads with its weight repack on.
+Measured 2026-11-02.
 
-The crossover is ~360 rows (the 27B's pp128->pp512 extrapolates to ~370). The `supports_op`
-of `ggml-rocket` therefore offloads a quantized weight only from `ROCKET_MIN_M_QUANT` rows. Its
-default is 512, which is the default micro-batch and sits just past the crossover with margin.
-Quantized prefills below the threshold stay on the CPU, where they beat a dequant-bound
-offload. Full micro-batches still offload and win.
+| M (rows) | 128 | 256 | 384 | 512 |
+|---|---:|---:|---:|---:|
+| NPU, t/s | 9.4 | 15.3-15.5 | 19.0-19.2 | 21.7-22.0 |
+| CPU, t/s | 10.1-10.2 | 10.5 | 10.6-10.7 | 10.7 |
+| NPU against CPU | 0.93x | 1.46-1.48x | 1.78-1.80x | 2.02-2.05x |
 
-The F16 path keeps the lower `ROCKET_MIN_M`. It wins even at small M (F16 pp128 13.3 = 1.86x
-CPU). Native int4/int8 modes re-quantize F16 weights (not `ggml_is_quantized`), so the
-threshold applies to the dequant path alone.
+**Not characterized:** the crossover on another model or under `ROCKET_QUANT_RESIDENT`.
+
+> [!NOTE]
+> On a workload of 256-511-row quantized prompts, `ROCKET_MIN_M_QUANT=256` takes the gain on
+> this model. Measure the crossover for a very different shape before lowering it there.
+
+The F16 path keeps the lower `ROCKET_MIN_M`. It wins even at small M: Qwen3.5-9B F16 measures
+3.3-3.4x the CPU at pp128 [HW sweep 2026-11-02]. Native int4/int8 modes re-quantize F16 weights
+(not `ggml_is_quantized`), so the threshold applies to the dequant path alone.
 
 ## Model-size scaling
 
-The NPU prefill gain grows with the model [HW sweep 2026-06-27/28]. The canonical per-model
-warm medians are in [benchmarks.md](benchmarks.md), for example 9B pp2048 ~24.9 t/s / 3.5x.
+At pp2048, seven dense F16 models of 1.8-11.9 B prefill at 4.2-5.8x the CPU backend, lowest on
+the smallest. Qwen3.5-9B F16 prefills at 36.1 t/s, 4.9x, and Qwen3.6-27B `Q4_K_M` at 11.5 t/s,
+3.8x [HW sweep 2026-11-01]. The canonical per-model rates are in
+[benchmarks.md](benchmarks.md).
 
-**Conditions:** NPU clock ~816 MHz, F16 prefill against the CPU, best run per model.
+**Conditions:** RK3588 (RK1), NPU clock 928 MHz, governor `performance`, llama.cpp b11539,
+against the CPU backend at 8 threads. The 9B at the default `-b` and `-ub`, the 27B at
+`-b 2048 -ub 2048` against a CPU backend with its weight repack on.
 
-| model | params | best NPU prefill | CPU | speedup |
-|---|---|---:|---:|---:|
-| Qwen3.5-0.8B | 0.75 B | 106.9 (F16, pp512) | 74.2 | 1.44x |
-| Qwen3.5-9B | 8.95 B | 26.8 (F16, pp2048 @ub2048) | 7.34 | 3.65x |
-| Qwen3.6-27B | 27.3 B | 5.35 (Q4_K @ub2048)\* | 1.80 | 2.97x |
-
-\* The 27B F16 is ~54 GB > 31 GB RAM, so the 27B is quant-only. Extrapolating the 2026-06-28
-build's quant ~0.64x F16, a fitting F16 would be ~4-4.5x CPU [expected]. On a later build, whose
-quant-to-F16 ratio is nearer 1, the same extrapolation gives less. The footprint, not the NPU, caps the 27B.
-
-The gain grows with size because the CPU slows faster than the NPU as the model grows (the NPU
-has idle MAC headroom, [not-mac-bound.md](not-mac-bound.md)). Decode (tg, M=1) stays on the
-CPU at every size, ~equal on either backend (memory-bound).
+The 27B F16 is ~54 GB against 31 GB of RAM, so the 27B runs only quantized. The footprint, not
+the NPU, limits it to the quantized path. Decode (tg, M=1) stays on the CPU at every size
+([decode-gemv.md](decode-gemv.md)).
 
 ## Architecture coverage
 
@@ -255,25 +265,18 @@ CPU [HW sweep 2026-06-28]:
 - **Qwen3.6-27B (hybrid Gated-DeltaNet).** The model has 48 linear-attention (DeltaNet)
   layers + 16 standard-attention, n_ff 17408. The ops `GGML_OP_DELTA_NET` /
   `GGML_OP_SSM_SCAN` are CPU-only (no rocket handler), so the DeltaNet scan stays on the CPU.
-  The prefill gain holds at 2.97x: the large FFN and projections offload and dominate, and
-  linear attention is O(L)-cheap. A linear-attention NPU primitive is not implemented, and it
+  The prefill gain holds, at 3.8x on 928 MHz (§"Model-size scaling"): the large FFN and
+  projections offload and dominate, and linear attention is O(L)-cheap. A linear-attention NPU primitive is not implemented, and it
   matters only at extreme context.
 
 ## Applicability
 
-The `-ub` results hold on the default path: resident F16 weights, per-call quant re-pack,
-~816 MHz. The resident dequant cache reaches F16, not past it. It does not beat the
+The `-ub` results hold on the streamed quantized path, which dequantizes and re-packs on every
+call, at ~816 MHz. The resident dequant cache reaches F16, not past it. It does not beat the
 datatype-independent dispatch limit of [not-mac-bound.md](not-mac-bound.md).
 
 The resident cache is bounded by the fp16 footprint against RAM, and by the NPU IOVA window. A
-model whose fp16 form exceeds either therefore goes partly resident, and the rest streams. The
-cache is the option for the "quantized-on-disk, RAM-to-spare" case, and `-ub 2048` is the
-option where the fp16 image does not fit. The ~360-row crossover scales only weakly with model
-size (9B and 27B both ~360-370).
-
-> [!NOTE]
-> Measure the crossover for a very different shape before relying on `ROCKET_MIN_M_QUANT`'s
-> default for it.
+model whose fp16 form exceeds either therefore goes partly resident, and the rest streams.
 
 ## Evidence
 
@@ -283,11 +286,16 @@ The current figure is from rotated passes.
 
 ### Revision history
 
-The `-ub 2048` gain over the `-ub 512` default, on the 9B at pp2048:
+The `-ub 2048` gain over the `-ub 512` default, at pp2048:
 
-| Date | Value | Conditions |
-|---|---|---|
-| 2026-06-28 | ~2.1x | ~816 MHz, the build of that date |
+| Date | Model | Superseded value | Conditions | Current reading |
+|---|---|---|---|---|
+| 2026-06-28 | Qwen3.5-9B `Q4_K` | 2.098x (8.2 to 17.2 t/s), quoted as ~2x | ~816 MHz, serial streaming dequant | 1.424x (19.14 to 27.26 t/s), 2026-08-29 |
+| 2026-06-28 | Qwen3.6-27B `Q4_K` | 2.250x (2.4 to 5.4 t/s) | ~816 MHz, serial streaming dequant | 1.532x (6.06 to 9.28 t/s), 2026-08-29 |
+
+Both current readings are three rotated passes at ~816 MHz on the build of 2026-08-29/30. Its
+threaded dequant, dequant worker pool and reused scratch cut the `-ub 512` configuration's fixed
+cost more than the `-ub 2048` one's.
 
 The 2026-06-28 sweep, 9B at pp2048, by `-ub` [HW sweep 2026-06-28, ~816 MHz]:
 
@@ -298,7 +306,28 @@ The 2026-06-28 sweep, 9B at pp2048, by `-ub` [HW sweep 2026-06-28, ~816 MHz]:
 | 2048 | 17.2 | 17.2 | 17.4 |
 
 The quant-type convergence and the ~0.64x plateau in §"Micro-batch size (`-ub`)" are readings
-of this table.
+of this table. The 9B's resident F16 GGUF measured 26.8 t/s at `-ub 2048` in the same sweep, so
+the residual per-2048 dequant was ~35% of the quantized prefill. On the build of 2026-07-02 the
+9B `Q4_K_M` measured 22.88 t/s at `-ub 2048` [HW sweep 2026-07-02]. The F16 GGUF measured 24.85
+at the default `-ub`, so the ratio is 0.92x at unequal `-ub` [host-computed].
+
+The prefill gain by model size is the best run per model of a scaling sweep
+[HW sweep 2026-06-27/28, ~816 MHz]. The 27B's CPU backend ran with the weight repack off:
+
+| model | params | best NPU prefill | CPU | speedup |
+|---|---|---:|---:|---:|
+| Qwen3.5-0.8B | 0.75 B | 106.9 (F16, pp512) | 74.2 | 1.44x |
+| Qwen3.5-9B | 8.95 B | 26.8 (F16, pp2048 @ub2048) | 7.34 | 3.65x |
+| Qwen3.6-27B | 27.3 B | 5.35 (Q4_K @ub2048) | 1.80 | 2.97x |
+
+The 0.8B row is that model's only speedup figure.
+
+The routing crossover and the small-M F16 figure:
+
+| Date | Superseded reading | Conditions | Current reading |
+|---|---|---|---|
+| 2026-06-28 | Crossover ~360 rows on Qwen3.5-9B `Q4_K` (NPU 2.6 t/s at 128 rows, 4.8 at 256, 6.6 at 384, 8.3 at 512, against a CPU at ~6.2); the 27B's pp128 to pp512 extrapolated to ~370 | ~816 MHz, serial streaming dequant, CPU without the weight repack | Between 128 and 256 rows, 2026-11-02 |
+| 2026-06-28 | F16 pp128 13.3 t/s, 1.86x the CPU | ~816 MHz | Qwen3.5-9B F16 pp128 3.3-3.4x, 2026-11-02 |
 
 ### Resident dequant cache
 
@@ -323,6 +352,15 @@ at 1 for the serial configuration.
 
 Both figures are from microbenchmarks.
 
+### Routing threshold
+
+The 2026-11-02 series ran two passes with the arm order rotated, each process after a memory
+reset. Each NPU arm followed a discarded warm-up process, and every arm ran `llama-bench -r 2`.
+Each ratio pairs the arms within one pass. The CPU at `taskset 0xf0 -t 4` measured 9.7-9.8 t/s at every M, 3-10%
+below 8 threads.
+
 ### Model-size scaling
 
-The table is best-case runs from an early scaling sweep.
+The figures are one measurement series of two passes, the second reversing the GGUF order and
+the configuration order. Each speedup is the mean of the two per-pass ratios. The per-model
+rates are in ggml-rocket's README and MODELS.md.

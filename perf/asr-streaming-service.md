@@ -89,9 +89,8 @@ fused vector softmax pass (2026-09-27), and the direct fp16 score de-tile and th
 (2026-10-11).
 
 Whisper's encoder attention is unmasked, and the `FLASH_ATTN_EXT` handler takes a NULL mask as
-unmasked. Admitting the op takes `ROCKET_FLASH_ATTN_UNMASKED=1`, a two-line change to the
-backend's offload check. The transcript is the same (md5-identical), and the CPU cost does not
-fall [HW sweep].
+unmasked. Admitting the op takes `ROCKET_FLASH_ATTN_UNMASKED=1`. The transcript is the same
+(md5-identical), but the CPU cost does not fall [HW sweep].
 
 | | CPU core-seconds | Encode wall-clock |
 |---|---:|---:|
@@ -209,8 +208,7 @@ so it takes `-nt` instead [HW sweep].
 ## Options, one at a time
 
 Each configuration is the default NPU configuration plus one change. The unit is CPU core-seconds
-per second of audio, relative to the default NPU configuration. A difference under 1% is within
-run-to-run variation.
+per second of audio, relative to the default NPU configuration.
 
 WER is the word error rate of the concatenated transcript against the LibriSpeech reference. It
 compares configurations rather than rating the model (§"Word error rate on a radio-shaped
@@ -405,8 +403,8 @@ Each configuration ran two repetitions.
 ### Options, one at a time
 
 Each configuration is paired against the default NPU configuration within a pass. The two passes
-agree to three decimals, and the same-configuration repeat measures 0.999. The WER figures come
-from two passes.
+agree to three decimals, and the same-configuration repeat measures 0.999. A difference under 1%
+is within that run-to-run variation. The WER figures come from two passes.
 
 ### Options combined
 

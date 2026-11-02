@@ -58,18 +58,18 @@ zero-padded. These are the FCN/segmentation "bilinear-deconv" init kernels.
 
 Nearest is bit-exact against block replication, and bilinear is within fp16 tolerance of an
 independent 2-tap gather [HW sweep]. The partition-of-unity and linear-exactness properties
-both hold [HW sweep]:
+both hold [HW sweep]. Every check passes its bound on every case of the sweep:
 
-| Check | Reference | Result |
+| Check | Reference | Bound, max abs error |
 |---|---|---|
-| Nearest | Block replication | Bit-exact |
-| Bilinear | The 2-tap half-pixel gather | <=0.05 |
-| Partition of unity | A constant input upsamples to the same constant | <=0.05 |
-| Linear exactness | A y-ramp upsamples to the half-pixel ramp | <=0.05 |
+| Nearest | Block replication | 0 (bit-exact) |
+| Bilinear | The 2-tap half-pixel gather | 0.05 |
+| Partition of unity | A constant input upsamples to the same constant | 0.05 |
+| Linear exactness | A y-ramp upsamples to the half-pixel ramp | 0.05 |
 
 For `scale=2` the kernel is `[0.25, 0.75, 0.75, 0.25]`, which is exact in fp16, so the
-upsample is bit-exact. For `scale=3` the kernel is `[⅓,⅔,1,⅔,⅓]`, where ⅓ rounds in fp16, so
-the error is ~1e-3.
+upsample is expected to be bit-exact [expected]. For `scale=3` the kernel is `[⅓,⅔,1,⅔,⅓]`,
+where ⅓ rounds in fp16, so the error is expected near 1e-3 [expected].
 
 ## Performance
 

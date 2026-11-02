@@ -103,9 +103,8 @@ re-dequantizes them per micro-batch [HW sweep 2026-08-31]:
 | A76 L3 refills, absolute | 1.59e10 | 8.89e9 | 0.56x |
 
 Residency removes 71% of the host instructions and 44% of the absolute L3 refills. Per
-instruction, the resident configuration still measures 1.9-2.2x higher. What residency removes
-is the compute-dense NEON dequant loop, and what it leaves is the memory-bound pack and
-readback.
+instruction, the resident configuration still measures 1.9-2.2x the streaming one. Residency
+removes the compute-dense NEON dequant loop and leaves the memory-bound pack and readback.
 
 > [!NOTE]
 > A `_pki` column is a density, not a total. A change in the instruction count moves it as
@@ -114,10 +113,10 @@ readback.
 
 ### Placement columns between consecutive processes
 
-The placement columns vary between consecutive processes on a quiet board, and the throughput
+The placement columns vary between consecutive processes on a quiet board. The throughput
 level does not follow them [HW sweep 2026-08-31].
 
-**Conditions:** `qwen35-08b-f16`, twelve processes over six passes.
+**Conditions:** `qwen35-08b-f16`, twelve processes.
 
 | column | range across the twelve processes | rank correlation against t/s |
 |---|---:|---:|
@@ -137,7 +136,7 @@ The L3 correlation holds within a configuration, and inverts across an intervent
 [HW sweep 2026-09-01].
 
 **Conditions:** `qwen35-08b-f16` pinned to the big cluster, eighteen processes over three
-configurations, six passes.
+configurations.
 
 Inside each configuration, the absolute `a76_l3d_cache_refill` still tracks wall-clock time at
 rho -0.943, including in the two configurations whose little cluster is idle. Pooled over all
@@ -250,3 +249,9 @@ The control forces `llama-bench` onto each cluster with `taskset`
 
 The memory columns got their contrast on a real workload rather than a synthetic one, with
 three rotated passes per configuration.
+
+### Placement columns and the L3 covariate
+
+The twelve processes of §"Placement columns between consecutive processes" ran as six passes.
+The eighteen of §"The L3 covariate across an intervention" ran as six passes over the three
+configurations.

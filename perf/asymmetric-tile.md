@@ -1,15 +1,21 @@
 # Asymmetric Mt>Nt tiling
 
-For a shape that tiles both N and K, an asymmetric Mt>Nt tile runs the NPU datapath markedly
-faster than the symmetric maximum tile. The gain is +2% to +16% on the shapes below
-[HW sweep].
+An asymmetric Mt>Nt tile applies to a shape that tiles both its N and its K dimensions. In the
+whole-tile fp16 plan, it runs the NPU datapath markedly faster than the symmetric tile. The gain is +2% to +16%
+on the shapes below [HW sweep].
 
-The matmul planner (`rocket_matmul_plan`) caps Mt and Nt at `MAX_TILE` (256 on the RK3588)
-and then maximizes Kt to fill the CBUF. That rule picks a symmetric Mt=Nt=256 tile, which fixes
-Kt at the symmetric fit of 384. The profile caps the tile at 256 rather than 384, so that Kt
-can reach 384. Halving Nt to 128 while keeping Mt=256 frees CBUF, so Kt grows to 512. The
-option is `ROCKET_MM_ASYM`. It is on by default (`asym_on()` defaults to 1), and
-`ROCKET_MM_ASYM=0` forces the symmetric plan.
+In that plan, the matmul planner (`rocket_matmul_plan`) caps Mt and Nt at the hardware
+profile's `max_tile`, 256 on the RK3588. It then maximizes Kt to fill the CBUF. That
+rule picks a symmetric Mt=Nt=256 tile, which fixes Kt at the symmetric fit of 384. The profile
+caps the tile at 256 rather than 384, so that Kt can reach 384. Halving Nt to 128 while keeping
+Mt=256 frees CBUF, so Kt grows to 512. The option is `ROCKET_MM_ASYM`, on by default
+(`asym_on()` defaults to 1), and `ROCKET_MM_ASYM=0` forces the symmetric plan.
+
+> [!NOTE]
+> The library's default fp16 plan streams the weights through the CBUF
+> ([not-mac-bound.md](not-mac-bound.md) §"CBUF weight streaming"), and `ROCKET_MM_ASYM` does not
+> change it. The heuristic acts only on the whole-tile plan: under `ROCKET_MM_STREAM=0`, or
+> under an `ROCKET_MM_MT` or `ROCKET_MM_KT` tile override.
 
 **Conditions:** RK3588 (RK1), NPU clock ~816 MHz, KACC on, warm median, idle board,
 2026-06-30. The asymmetric plan is `Mt=256, Nt=128, Kt grown`.
@@ -33,7 +39,8 @@ option is `ROCKET_MM_ASYM`. It is on by default (`asym_on()` defaults to 1), and
 
 The asymmetric plan gains or ties on all 10 tabled shapes where it fires, and gains most where
 K is moderate. It never regresses, and it is an exact no-op where the guard stops it from
-firing. The gains cover the square and FFN shapes that dominate LLM prefill.
+firing. The gains cover the square and FFN shapes that dominate LLM prefill, on the whole-tile
+plan.
 
 ## Cause
 
@@ -55,23 +62,28 @@ direction of the asymmetry therefore matters. Keep the input-feature height (Mt)
 
 ## Heuristic and guard
 
-`ROCKET_MM_ASYM=1` halves Nt to `MAX_TILE/2` only under all of the conditions below.
-Otherwise the planner keeps the default symmetric plan, byte-identical. The conditions are:
+`ROCKET_MM_ASYM=1` halves Nt to `max_tile/2` only under all of the conditions below.
+Otherwise the planner keeps the symmetric plan. The conditions are:
 
-- No explicit `ROCKET_MM_NT` override is set, and Nt is still at the cap (N > MAX_TILE, so N
+- The plan is the whole-tile one: `ROCKET_MM_STREAM=0`, or an `ROCKET_MM_MT` or `ROCKET_MM_KT`
+  override.
+- No explicit `ROCKET_MM_NT` override is set, and Nt is still at the cap (N > `max_tile`, so N
   is tiled).
 - The symmetric plan K-tiles (nKt > 1). If K fits one pass (nKt=1), a bigger Kt is moot and
   the extra N-tiles are pure loss, so the heuristic must not fire. The no-op is confirmed on
   small-K and small-N shapes (N <= 256 or K <= Kt).
 
-The result is bit-exact, because tiling never changes the result. The heuristic composes with
-KACC. The measurements ran with KACC on, the default, so the gain adds to the KACC gain.
+Each plan computes within the fp16 tolerance of an fp32 reference, and the two outputs can
+differ. The larger Kt moves the points where the fp16 K partials round, on the NPU under KACC
+or on the host. The heuristic composes with KACC. The measurements ran with KACC on, the
+default, so the gain adds to the KACC gain.
 
 ## End-to-end measurement
 
 In a whole-model prefill the gain is smaller [HW sweep]:
 
-**Conditions:** warm pp2048 through ggml-rocket and llama.cpp, `ROCKET_MM_ASYM` 0 against 1.
+**Conditions:** warm pp2048 through ggml-rocket and llama.cpp, `ROCKET_MM_ASYM` 0 against 1,
+NPU clock ~816 MHz, on builds whose fp16 matmuls all ran the whole-tile plan.
 
 | model | ASYM=0 | ASYM=1 | Δ |
 |---|---|---|---|
@@ -90,9 +102,11 @@ never a regression.
 
 ### Heuristic and guard
 
-The bit-exactness test is `matmul_correctness_matrix`, run under both settings:
-`matmul_correctness_matrix_asym` is `ROCKET_MM_ASYM=1` and `matmul_correctness_matrix_sym` is
-`ROCKET_MM_ASYM=0`. It measures cos = 1.000000 at 512×4096×4096.
+The correctness test is `matmul_correctness_matrix`, registered under both settings with
+`ROCKET_MM_STREAM=0` at `512 3840 4096`: `matmul_correctness_matrix_asym` is
+`ROCKET_MM_ASYM=1` and `matmul_correctness_matrix_sym` is `ROCKET_MM_ASYM=0`. Each checks its
+own setting against an fp32 reference within the fp16 tolerance, and neither compares the two
+settings. An earlier run measured cos = 1.000000 at 512×4096×4096.
 
 ### Measurement method
 
@@ -103,4 +117,4 @@ warm comparison, with `ROCKET_MM_PROFILE` for the submit and wait split) and
 ### End-to-end measurement
 
 Qwen3.5-0.8B-F16 is 6 repetitions, and the other three models 3 each. The end-to-end result
-met the bar for a default, and the heuristic is on by default as of 2026-07-01.
+is the reason the heuristic is on by default for the whole-tile plan.

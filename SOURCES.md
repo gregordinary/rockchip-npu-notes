@@ -108,7 +108,8 @@ TRM-only definitions. A QUARANTINED class holds the sequences after which they s
 `trm_register_findings.md` has the results. `elementwise_int.py`, `pooling.py` and
 `conv_simple.py` are the probes, each with an offline `--validate` mode that checks the
 decoded streams without opening the device. Their board is an Orange Pi RK3588 on mainline
-rocket. Of the results below, only those with an [HW sweep] tag are measured for these notes.
+rocket. Of their results in this entry, only those with an [HW sweep] tag are measured for these
+notes.
 
 #### Integer EW ALU
 
@@ -189,11 +190,17 @@ result comes from the sequence that crashed, so it is not established as that st
 
 #### Their reading of these notes
 
-They cross-check against these notes as read at `e0c7213`. They report that the notes find no
-native deconvolution mode, which is out of date:
-[encodings/conv-transpose.md](encodings/conv-transpose.md) records `CNA_CONV_CON1[16]`
-`DECONV` live on the RK3588. They also note, correctly, that the notes repository does not include
-the `tests/` and `src/` trees that hold the tests these notes cite.
+They cross-check against these notes as read at `e0c7213`, in `trm_register_findings.md`.
+Three of their readings are out of date:
+
+| Their reading | These notes |
+|---|---|
+| No native deconvolution mode | `CNA_CONV_CON1[16]` `DECONV` is live on the RK3588 ([encodings/conv-transpose.md](encodings/conv-transpose.md)) |
+| The integer convert is `(acc * uint16_scale) >> shift`, and the shift rounds toward negative infinity | The scale is signed 16-bit, and the shift rounds to nearest, ties to even with `OUT_CVT_SHIFT[30]` clear ([encodings/out-cvt-converter.md](encodings/out-cvt-converter.md)) |
+| One-kick chaining is fp16-only, and a chained integer job is corrupt after task zero | Independent int8 tasks chained in one kick are bit-exact ([encodings/regcmd-task-model.md](encodings/regcmd-task-model.md) §"Contiguous chaining (batched submit)") |
+
+They also note, correctly, that the notes repository does not include the `tests/` and `src/`
+trees that hold the tests these notes cite.
 
 ### RKNN-Toolkit2
 
@@ -218,11 +225,13 @@ V2.3.2), not for RKNN3. It is an external cross-reference for the vendor's own s
 rather than reverse-engineering input.
 
 User Guide §3.5.4's high-performance layout table covers the tile-layout matrix for the A, B and C
-operands. It also states that A and B must share a datatype (cf.
+operands. The table assumes that A and B share a datatype. The guide adds that the RK3576 and
+RV1126B also accept A and B of different types (cf.
 [encodings/tile-layouts.md](encodings/tile-layouts.md)). Its §6 covers the quant path
 (INT8-only, per-channel weights / per-tensor activations, range solvers, hybrid FP16
-fallback, cf. [datatypes.md](datatypes.md)), and §5.3.3 the multi-core split op list and
-the IRQ-affinity tip (cf. [perf/iova-and-multicore.md](perf/iova-and-multicore.md)).
+fallback, cf. [datatypes.md](datatypes.md)). §5.3.2 lists the operators the driver splits
+across cores, and §5.3.3 gives the IRQ-affinity tip (cf.
+[perf/iova-and-multicore.md](perf/iova-and-multicore.md)).
 
 The runtime header `rknn_api.h` has the perf/mem query structs, and `rknn_mem_size` reports
 allocations. Per-frame bytes are an analytical string in `rknn_perf_detail`, not a hardware
@@ -274,7 +283,7 @@ still useful:
 
 | Artifact | Content | Use |
 |---|---|---|
-| `hello2.c` | The in-core IRQ/block-completion bitmap (CNA/CORE/DPU/PPU/DMA-err, two reg-banks per block = `RKNPU_JOB_PINGPONG`) | Recorded in [perf/iova-and-multicore.md](perf/iova-and-multicore.md). It confirms the PPU is a real separately-completing block |
+| `hello2.c` | The in-core IRQ/block-completion bitmap (CNA/CORE/DPU/PPU/DMA-err) | Recorded in [perf/iova-and-multicore.md](perf/iova-and-multicore.md). It confirms the PPU is a real separately-completing block |
 | `instrs.h` | A hand-assembled plain conv (`0x0201`=CNA `0x10xx`, `0x0801`=CORE `0x30xx`, `0x1001`=DPU `0x40xx`, for example `DPU_EW_CFG 0x4070=0x383` plain-conv bypass) | Confirms the block and register format these notes use. It adds no new information |
 | `analysis` + `mess/dump-*` | The raw hex dumps of the 6 gem BOs from real models (weights / gem2 64-bit regcmd stream / gem3 10-word task list with "jump-to-next-task" / working / input / output) | A reference for the multi-task chaining structure (task persistence, and the fixed per-dispatch overhead) |
 
@@ -352,11 +361,10 @@ Upstream has moved past v7.1 and has merged fixes that overlap the out-of-tree p
 (the `patches` repository). Three of them are in `rocket_job.c`.
 
 `70e6a33d` (2026-07-01, Shuvam Pandey), "accel/rocket: initialize job domain before
-cleanup paths", fixes a NULL domain in cleanup. `rocket_ioctl_submit_job()` assigns
-`job->domain` only after task copying and BO lookups, while `rocket_job_cleanup()` puts it
-unconditionally. A failure before that assignment then cleans up a job with a NULL domain. The
-commit takes the per-file reference before the first error path, the same bug and the same fix
-approach as `patches/rk3576/npu/0013`. It also clears `rjob->tasks` after freeing it in
+cleanup paths", fixes the NULL-domain oops on a rejected submit
+([chips/rk3576-regcmd.md](chips/rk3576-regcmd.md#kernel-oops-on-a-rejected-submit)). The
+commit takes the per-file reference before the first error path, the same fix approach as
+`patches/rk3576/npu/0013`. It also clears `rjob->tasks` after freeing it in
 `rocket_copy_tasks()`, so the common cleanup path cannot double-free the task array. One
 upstream commit therefore covers two out-of-tree patches.
 
@@ -389,12 +397,13 @@ DVFS core, and add:
 The author conceded five review findings on patch 9, and a v3 waits on review.
 
 The series sets the clock in the runtime-PM callbacks, so it replaces the out-of-tree clock
-and voltage patches rather than combining with them. Adopted as posted, it changes the
-operating point in two ways. The rail at the 600 MHz request drops from 800 mV to the table's
-700 mV, where the clock measures 638 MHz against ~816 MHz [HW sweep 2026-10-19]. The rate
-becomes governor-driven, with a window shorter than the host gaps inside one Whisper encode
-[expected]. Its
-statement about powering an island above the boot rate is in [perf/clock.md](perf/clock.md).
+and voltage patches rather than combining with them. Its table pairs the 900 MHz request with
+0.80 V, the operating point these notes use. Its 900 MHz OPP therefore runs at the same 928 MHz
+[source-confirmed: the series' `rk3588-opp.dtsi`, HW sweep 2026-10-19]. Adopted as posted, it
+makes the rate governor-driven. The governor's window is shorter than the host gaps inside one
+Whisper encode [expected]. The clock each OPP measures, and the series' statement about
+powering an island above the boot rate, are in [perf/clock.md](perf/clock.md) §"The upstream
+DVFS series".
 
 ### drivercraft/rk3588-clk
 
@@ -422,7 +431,7 @@ The RK3568 NPU is a single NVDLA-derived core (0.8 TOPS), and its register layou
 RK3588's. The match corroborates that the NVDLA-derived IP is common across Rockchip SoCs, and
 `librocketnpu` is expected to drive most of it too [expected]. End to end, the series is blocked
 on the Mesa/Teflon userspace, which still emits RK3588-tuned configuration. It is also blocked
-on a hardware issue in the MAC/output stage (below). Beyond Teflon's conv+add, `librocketnpu`
+on a MAC/output stage that never completes (below). Beyond Teflon's conv+add, `librocketnpu`
 has the full-datatype matmul, general/DW/int8 conv, LUT activation and an on-NPU EW multiply.
 
 It gives the RK3568's NPU AXI master and IOMMU as 32-bit and the RK3588's as 40-bit. The
@@ -449,10 +458,10 @@ bring-up: PVTPLL, power or NoC de-idle [hypothesis].
 
 The author asks for pointers on it, and [clock.md](perf/clock.md) covers the
 RK3588's BL31, PVTPLL and clock. Patch 3 starts the PVTPLL compute clock through SCMI, which
-corroborates the PVTPLL finding in these notes. Patch 9 wires vdd_npu as the power-domain
-`domain-supply` (`need_regulator`), so genpd manages the rail. Patch 9 is the upstream-idiomatic
-alternative to the driver-held-regulator f/V coupling of the out-of-tree patches
-([clock.md](perf/clock.md)).
+corroborates the PVTPLL finding in these notes. Patches 8 and 9 wire vdd_npu as the power
+domain's `domain-supply` and mark the domain `need_regulator`, so genpd manages the rail. They
+are the upstream-idiomatic alternative to the driver-held-regulator f/V coupling of the
+out-of-tree patches ([clock.md](perf/clock.md)).
 
 The v2 cover letter gives the per-sub-unit `OPERATION_ENABLE` offset as `0x_00c` on the
 RK3568, where the RK3588's map has it at `0x_008`. Its evidence is BSP captures of two conv
@@ -486,10 +495,12 @@ cannot be routed to the GIC". It builds a 1 ms hrtimer poll on that premise. The
 result concerns `PC_DONE` only. The DPU pair, `DPU_0`/`DPU_1` (bits 8-9), masks normally, and
 its interrupt reaches the GIC [HW sweep, see [chips/rk3576.md](chips/rk3576.md)].
 
-Polling adds latency. Retiring on the DPU bit at a 50 us period, in place of `PC_DONE` at
-500 us, reduces the minimum submit latency from 1065 to 439 us. Their 1 ms period is slower
-again. Two task classes raise no DPU completion (pooling, and the narrow and wide int32
-writers), so a poll or a grace period must remain as the fallback for those.
+Polling adds latency. A 50 us poll that retires on the DPU bit has a minimum submit latency of
+439 us. A 500 us poll on `PC_DONE` has 1065 us [HW sweep, H96 MAX M9, 2026-07-28]
+([chips/rk3576-regcmd.md](chips/rk3576-regcmd.md) §"`PC_DONE` and the DPU completion bits").
+Their 1 ms period is expected to be slower again [expected]. Two task classes raise no DPU
+completion (pooling, and the narrow and wide int32 writers), so a poll or a grace period must
+remain as the fallback for those.
 
 Its patch 2 is the same fix as `patches/rocket/089` (`clk_bulk_data.id` never set, so
 all four entries resolve to the node's first clock). It was found independently, with a
@@ -497,8 +508,9 @@ thinner rationale, and neither posting has been merged.
 
 Its device tree places core 1 correctly: `0x27708000`, with the IOMMU at `0x2770a000`. It is
 cross-checked against the vendor BSP DT, which matches the live silicon. The `0x27710000`
-placement that these notes record as wrong is in the gahingwoo series, not this one. Two RK3576
-RFCs exist, so a reference to "the RFC" must say which.
+placement that these notes record as wrong is in the gahingwoo series' v2 and v3 postings, not
+this one. That series moves core 1 to `0x27708000` from v4 [source-confirmed: its v4 cover
+letter]. Two RK3576 RFCs exist, so a reference to "the RFC" must say which.
 
 Its stated open items (the NPU power-domain chain status never asserting after power-off,
 whether the RKNN BIU resets belong to the power domain, and the boot firmware's orphaned
@@ -515,10 +527,9 @@ board logs.
 
 #### Repository contents
 
-Its `board-logs/` is the current record, and the `charsiu` notebook is not: numbered rounds
-run through r421 at 2026-09-24, where `charsiu`'s `docs/lab-notebook.md` stops 2026-09-12.
-Read the board logs for anything after that date. Its README has the current state only, and
-`HISTORY.md` the history.
+Its `board-logs/` hold numbered rounds through r421 at 2026-09-24, where `charsiu`'s
+`docs/lab-notebook.md` stops 2026-09-12. Read the board logs for anything after that date. Its
+README has the current state only, and `HISTORY.md` the history.
 
 The repository reaches well past the register maps:
 
@@ -562,7 +573,7 @@ Five of its findings agree with findings in these notes, each reached independen
 | IOMMU attach-once / detach-on-power-down, not per-job | The keep-attached patch ([iova-and-multicore.md](perf/iova-and-multicore.md)) |
 | Ping-pong producer/consumer register groups (`S_POINTER`): the executer reads the consumer group, and misalignment -> stale geometry -> zero/garbage output. The groups need per-job re-init | They are the mechanism that decides where a delta regcmd task lands ([regcmd-task-model.md](encodings/regcmd-task-model.md)) |
 | Requant is a right-shift whose magnitude decides the output (vendor 26-bit vs a wrong 14-bit -> saturation to black/white) | The per-scale QNNPACK shift in the conv int8-out path ([out-cvt-converter.md](encodings/out-cvt-converter.md)) |
-| Per-channel zero-point correction in a weight-buffer tail (8-OC groups, 64 B = 8×32-bit + 8×16-bit + 8×16-bit, the 16-bit holding `128 − weight_zp`, term `(128−wt_zp)·input_sum`) | The term CPEND adds on chip ([depthwise-conv.md](depthwise-conv.md) §"`DPU_BS_OW_OP` is the CPEND operand"), and the term a host box-sum adds where a program cannot reach CPEND |
+| Per-channel zero-point correction in a weight-buffer tail (8-OC groups, 64 B = 8×32-bit + 8×16-bit + 8×16-bit, the 16-bit holding `128 − weight_zp`, term `(128−wt_zp)·input_sum`) | The term CPEND adds on chip ([depthwise-conv.md](depthwise-conv.md) §"CPEND and `DPU_BS_OW_OP`"), and the term a host box-sum adds where a program cannot reach CPEND |
 | The `dt_wr`/`dt_rd`/`wt_rd` byte counters are readable on RK3576 | The [hw-byte-counters.md](perf/hw-byte-counters.md) table predicts exactly that (rk3576 config wires `0x2234/38/3c`, while rk3588 nulls them and that page hard-locks). It leaves the RK3588 result unchanged, and confirms the asymmetry between the two SoCs |
 
 Its register map does not transfer to the RK3588 as it stands. The RK3576 map is shifted and
@@ -676,11 +687,12 @@ gives its date or round. None is reproduced on the RK3576 board these notes use.
 
 #### Repository state
 
-At `dev` 524e10a (read 2026-09-18) the branches are `dev` and `stable`. The `main` branch is
-stale, and its README still prints withdrawn figures. The notebook, `docs/lab-notebook.md`,
-stops 2026-09-12, and rounds r393 onward are in `board-logs/` in the driver repository, not
-this one. For a question the notebook does not answer, read the board logs. Their multimodal
-side runs SmolVLM, CLIP and Whisper on the same matmul primitive.
+At `dev` 524e10a (read 2026-09-18) the branches are `dev` and `stable`. Read again on
+2026-09-25, the remote has no `main` branch, and a `main` checkout from before then prints
+withdrawn figures in its README. The notebook, `docs/lab-notebook.md`, stops 2026-09-12, and rounds r393 onward
+are in `board-logs/` in the driver repository, not this one. For a question the notebook does
+not answer, read the board logs. Their multimodal side runs SmolVLM, CLIP and Whisper on the
+same matmul primitive.
 
 #### Vendor dispatch plan
 
@@ -866,8 +878,8 @@ m=1, a factor of 44.
 
 Their decode gain comes from removing dispatch cost, not from the NPU being efficient at GEMV.
 It is bounded by a host side with one A72 cluster, where the RK3588 has four A76s. Whether
-decode belongs on the CPU therefore depends on the host, and its failing on the RK3576 says
-nothing about the NPU. The conclusion is consistent with the platform limits in
+decode belongs on the CPU therefore depends on the host. Where the decode-on-CPU rule fails on
+the RK3576, the failure describes that SoC's CPU, not its NPU. The conclusion is consistent with the platform limits in
 [chips/rk3576.md](chips/rk3576.md).
 
 #### The w4a16 output stage
@@ -884,8 +896,8 @@ byte-exact against a CPU reference at K 32 to 224 from rounds 280-281 (2026-08-2
 at the perplexity cost in §"Coverage gaps".
 
 A w4a16 job with the vendor's values in RDMA `0x5034`/`0x5044` leaves the next job timing out.
-The hazard is in [chips/rk3576.md](chips/rk3576.md) §"An externally reported hazard on the
-w4a16 RDMA path", beside the next-submit corruption a wide output causes.
+The hazard is in [chips/rk3576-hazards.md](chips/rk3576-hazards.md) §"An externally reported
+hazard on the w4a16 RDMA path", beside the next-submit corruption a wide output causes.
 
 #### Quantization evidence
 
@@ -896,7 +908,7 @@ sits four and a half times further from noise than from the reference.
 
 The noise configuration caught a defect. An earlier reconstruction scored ppl 1701 at 18.3%
 weight error, where Gaussian noise of the same magnitude scored 32.10. A reconstruction 53x
-worse than noise of its own size is a broken reconstruction, not a quantization result.
+worse than noise of its own size is a broken reconstruction.
 
 > [!NOTE]
 > The 1701/32.10 pair is a fault signature, not a finding about quantization. Do not quote it
@@ -908,10 +920,14 @@ of a quality change.
 
 #### Requant derivation
 
-Their requant derivation is an independent cross-check on the per-column ramp in these notes.
-Their `src/job.c` derives a 15-bit multiplier with an implicit leading 1, and takes the shift
-from the float's exponent bits. It rounds to nearest by incrementing on the bit below the
-field, and renormalizes on carry. The output stage is
+Their requant derivation is an independent cross-check on the one in
+[encodings/out-cvt-converter.md](encodings/out-cvt-converter.md) §"Derivation of MUL and SHIFT
+from a float scale". Their `src/job.c` (`requant_of()`) derives a 15-bit multiplier with an
+implicit leading 1, and takes the shift from the float's exponent bits. It rounds to nearest by
+incrementing on the bit below the field, where the notes' derivation always adds one. It
+renormalizes on carry, so it keeps the carry that Mesa's derivation drops.
+
+Their output stage is
 `clamp(max(requant, 0) + offset, -128, 127)`, with the clamp at zero applied before the
 offset. That clamp alone would cost the negative half of the range, and a "lift" recovers it
 exactly: `+128/mult` folded into coefficient A, with `offset = out_zp - 0x80`. The lift is
@@ -920,8 +936,9 @@ exact because `max(rq + 128, 0) + (out_zp - 128) = rq + out_zp` for every `rq >=
 Their DPU requant registers are single, not per-channel: `0x40ac` offset, `0x40b0` scale,
 `0x40b4` shift, one triple per program. Per-channel behavior comes only from the coefficient
 table (coefficients A, B and C) and the fp16 scale table. The per-column entry in
-`librocketnpu` has to do the same. The single triple is also a second derivation of the field
-widths the `worst_rel_err` ramp is bounded by.
+`librocketnpu` does the same. It programs one `(MUL, SHIFT)` per N tile, and each column's gain
+in `C` and the BS shift word ([chips/rk3576.md](chips/rk3576.md) §"The matmul entry's requant
+and per-column ramp").
 
 #### Output-width registers
 
@@ -947,7 +964,7 @@ no 2. Nothing in this bundle therefore selects an fp16 output width.
 
 The whole stage is measured for these notes. Its `0x4010`, `0x4038` and `0x4050` clear the
 next-submit corruption that the regcmd encoder's partial output stages cause
-([chips/rk3576.md](chips/rk3576.md#a-whole-output-stage-that-does-not-poison)). The int32
+([chips/rk3576-hazards.md](chips/rk3576-hazards.md#the-whole-output-stage)). The int32
 matmul entry in `librocketnpu` runs on the whole stage
 ([chips/rk3576-regcmd.md](chips/rk3576-regcmd.md) §"The dense writer").
 
@@ -1040,12 +1057,12 @@ iterates every bank of an attached instance, so single-core `rocket` already man
 of core 0. The mechanism is therefore not a candidate for the two-jobs-in-flight corruption
 there.
 
-The second is in their `0007`/`0008` iommu patches (authored by Jiaxing Hu, the RK3576 RFC
-author), which name a mechanism whose symptom appears in the H96's logs. A bank left by
+The second is in their `0007`/`0008` iommu patches (authored by Jiaxing Hu, the gahingwoo
+series' author), which name a mechanism whose symptom appears in the H96's logs. A bank left by
 firmware with `PAGE_FAULT_ACTIVE & !STALL_ACTIVE & IDLE` silently drops `CMD_ENABLE_STALL`
 and delays the other banks past the poll timeout. The recurring
 `rk_iommu ... Enable stall request timed out` on the H96 during long probe runs matches that
-failure path exactly [symptom match, the orphaned-fault status bits unverified on that board].
+failure path exactly [hypothesis: the fault status bits are unread there].
 Mainline fixes the same condition from v7.3-rc1 [source-confirmed, from the commit]. Commit
 `b10d5920cafa` acknowledges the stale fault with `CMD_PAGE_FAULT_DONE` before enabling stall,
 where `0007`/`0008` skip the bank. The commit has no `Fixes:` or stable tag.
@@ -1069,8 +1086,11 @@ On depthwise the two agree, independently. Their word is
 is that depthwise pads output channels to 64. The last bank therefore holds one to four
 16-channel atoms, and the field is that count minus one. The comment in `npu_regcmd_rk3576.c`
 gives the same derivation, and it holds on all 13 depthwise models, three of them predicted
-rather than fitted. Upstream Mesa hardcodes `0x00013133`, the 32-channel case, so every
-depthwise outside oc 32/96/160 is misconfigured there.
+rather than fitted.
+
+A fixed `0x00013133`, the 32-channel word, is correct only where the field is 1 (oc 17-32,
+81-96, 145-160 and so on). Their fork wrote that constant before `f717acf` (2026-08-11).
+Upstream Mesa has no RK3576 path.
 
 On the direct (non-depthwise) path the word is oc-dependent for them. They select `0x80011111`
 when `DIV_ROUND_UP(oc, 16)` is even and `0x80011011` when it is odd. The two differ in bit 8,
@@ -1079,11 +1099,10 @@ which is inside the field the depthwise path uses for its atom count. They also 
 form was fitted on multiples of 16 only, which is every count the vendor sweep covered. They
 report that the vendor toolkit picks the parity answer at that count.
 
-In `librocketnpu`, `R76_DPU_BS_CFG_DIRECT` is `0x80011111` unconditionally, and the regcmd encoder pads
-a direct conv's output channels to whole 32-channel groups. Its atom count is therefore always
-even, and their rule gives the same word at every count it programs. The odd-count word's test
-on the padded programs is in [chips/rk3576-regcmd.md](chips/rk3576-regcmd.md) §"Depthwise
-geometry registers".
+At every output-channel count `librocketnpu`'s regcmd encoder programs, their rule gives the
+`0x80011111` it writes. The encoder's channel padding, and the odd-count word tested on its
+programs, are in
+[chips/rk3576-regcmd.md](chips/rk3576-regcmd.md#depthwise-geometry-registers).
 
 Their single-field sweep of the five unexplained `0x4050` fields (round 260, at oc 128 and
 oc 88, each field moved to upstream's value alone) gives:
@@ -1174,8 +1193,9 @@ It needs kernel >= 6.18 with `CONFIG_DRM_ACCEL_ROCKET`, uses `/dev/accel/accel0`
 
 It supports quantized uint8 CNNs only: conv + EW-add + fused ReLU, single-core, with no SiLU
 and no transformer. AVGPOOL, RESHAPE and SOFTMAX fall back to the CPU. It runs MobileNetV1 in
-~13-17 ms (~3-4x over CPU ~48 ms). `rocket-userspace`/`tflite-rocket` run 3-core per-fd,
-fp16/int8/int4, SiLU/GELU and transformer blocks, and MobileDet.
+~13-17 ms, 2.8-3.7x faster than the CPU's ~48 ms [host-computed].
+`rocket-userspace`/`tflite-rocket` run 3-core per-fd, fp16/int8/int4, SiLU/GELU and
+transformer blocks, and MobileDet.
 
 The rpardini repository also includes per-board NPU-regulator DT patches (CM3588-NAS,
 NanoPC-T6, Turing RK1). The `patches/rocket` clock/volt coupling depends on that voltage
@@ -1189,14 +1209,16 @@ problems of an NPU backend for ggml, and supports the design `ggml-rocket` takes
 
 The attempt hit four problems: managing device buffers, needing the datatype and layout at
 allocation time, no offset-subbuffering, and the per-fd 4 GB IOVA limit. `ggml-rocket`
-avoids all four through the BLAS-backend model. It uses host (CPU) buffers, offloads only
-`MUL_MAT` through `graph_compute`, and packs and DMAs inside `rocket-userspace` per call.
+avoids all four through the BLAS-backend model. It uses host (CPU) buffers, offloads its prefill
+ops (`MUL_MAT`, `MUL_MAT_ID` and `FLASH_ATTN_EXT`) through `graph_compute`, and leaves every
+NPU buffer, packing and DMA to `rocket-userspace`.
 
 The guidance slaren gives there is the API surface `ggml-rocket` does not need: `set_tensor`
 passes `tensor->type`, and `get_alloc_size` / `get_max_size` / `get_alignment` serve
 device-buffer backends. The 4 GB-window / no-subbuffer constraint applies, and
-`rocket-userspace` IOVA management handles it (`rocket_prepacked_int8.c` escape check),
-not the ggml buffer-type [source-confirmed].
+`rocket-userspace` IOVA management handles it (the 32-bit IOVA check
+`rocket_op_iova_overflow()` that the resident paths call), not the ggml buffer-type
+[source-confirmed].
 
 ### poad42/opennpu_rk3588
 
@@ -1225,8 +1247,8 @@ tracing". The README's provenance section says no proprietary code was involved.
 The formula path agrees register for register with `librocketnpu`'s matmul program
 [source-confirmed, read from `cna_matmul.c`]. The entry encoding is
 `(op << 48) | (val << 16) | reg`, and the block tags are `0x0201` for CNA, `0x0801` for CORE
-and `0x1001` for DPU. The CNA registers are `0x100C`, `0x1010`, `0x1014`, `0x1020`, `0x1024`,
-`0x1030`, `0x1040`, `0x1070`, `0x1084`, `0x1088` and `0x1110`, with DPU `0x4020` as the
+and `0x1001` for DPU. Its CNA registers include `0x100C`, `0x1010`, `0x1014`, `0x1020`,
+`0x1024`, `0x1030`, `0x1040`, `0x1070`, `0x1084`, `0x1088` and `0x1110`, with DPU `0x4020` as the
 destination base. Their `0x1040` leaves bits [10:8] zero, an independent instance of the
 `FC_DATA_BANK` = 0 rule in [encodings/cbuf-reuse.md](encodings/cbuf-reuse.md). They write the
 `FC_DATA_SIZE0/1` pair as `(1<<16)|M` and `K`, as `npu_regcmd.c` does.
@@ -1308,7 +1330,8 @@ Three of them independently reach, on the vendor driver, the per-submit overhead
 `develop-6.1` tree, and none of them applies to `rocket`. What transfers is that a second
 effort, on the other driver, converged on batch submit and an IOMMU domain fast path.
 
-The batch-submit and fast-path patches have four defects [read from the series]:
+The batch-submit and fast-path patches have four defects [source-confirmed, read from the
+series]:
 
 | Where | Defect | Consequence |
 |---|---|---|
@@ -1381,7 +1404,7 @@ definition. The RK3576's `state_init` writes `0x1e` to clear the pointer
 readback therefore says nothing about whether the two SoCs integrate different NPU revisions.
 
 The field table is in [encodings/regcmd-task-model.md](encodings/regcmd-task-model.md)
-§"Does register state persist across tasks (can later tasks send a delta)?".
+§"Register state across tasks".
 
 #### SigLIP
 
@@ -1405,16 +1428,11 @@ of 1,799 models checked byte for byte against a Python integer reference.
 
 #### Register map
 
-Its register map is a third point between the RK3588 and the RK3576 [source-confirmed, read from
-`src/open_rknpu/register_profile.py` and the emitters]. CORE, DPU and DPU_RDMA sit at the
-RK3588's offsets with the RK3588's fields. The CNA geometry words, the feature and weight bases
-and the pad value at `0x1184` also follow the RK3588. A few CNA words follow the RK3576 instead.
-`0x103C` and `0x1044` contain the data entries and the input width, and `0x118C` is the input
-width minus one in both halves.
-
-The pads at `0x1068` are byte-packed, where the RK3588's are nibbles. The `0x118C` formula
-matches the RK3576's in [chips/rk3576-regcmd.md](chips/rk3576-regcmd.md). A CORE or DPU result
-of theirs therefore ports to the RK3588 more directly than an RK3576 result does.
+Its register map is a third point between the RK3588 and the RK3576. CORE, DPU, DPU_RDMA and
+most of the CNA follow the RK3588, and a few CNA words follow the RK3576 [source-confirmed:
+`src/open_rknpu/register_profile.py` and the emitters]. The word-by-word comparison, and
+what it means for porting their results, are in
+[chips/porting-patterns.md](chips/porting-patterns.md).
 
 #### Results reproduced on the RK3588 and the RK3576
 
@@ -1448,13 +1466,18 @@ RK3576 the `0x5024` shift word behaves the same way: wide, multiply before shift
 
 #### Results consistent with these notes
 
-Four more of their results agree with these notes:
+Three more of their results agree with these notes:
 
 - The elementwise engine's second operand read needs its surface notch. Without it, a compact
-  operand hangs.
+  operand hangs on their board. On the RK3588 the read instead repeats its first atom
+  ([encodings/k-accumulation.md](encodings/k-accumulation.md) §"Programming requirements").
 - The second operand read is linear, one atom per output pixel, with no spatial broadcast.
-- `BS_OW_CFG.OW_SRC = 1` hangs.
 - The 2×2 average rounds half to even.
+
+On an elementwise task, `BS_OW_CFG.OW_SRC = 1` hangs on their board. On a convolution these
+notes measure the same bit selecting the per-channel CPEND read on the RK3588
+([encodings/out-cvt-converter.md](encodings/out-cvt-converter.md) §"Per-channel (per-axis)
+requant on the BS multiplier"). Neither result covers the other's program type.
 
 Their LUT setup words (`0x410C = 0x50500`, `LE_START = 0xffffc000`, `LO_END = 0x4000`)
 are the ones the RK3576 vendor programs contain. They are also the RK3588 values in
@@ -1487,7 +1510,7 @@ These notes take five facts from them:
 | Fact | Where it is used |
 |---|---|
 | fp16 tasks that stream a weight cube through the CBUF to N 4096, with the weight banks sized for one 32-kernel group [source-confirmed] | The streamed form, reproduced on `rocket` ([matmul-as-conv.md](matmul-as-conv.md) §"CBUF weight streaming") |
-| fp16 device time of ~2.6 TFLOPS over three cores at K 1024 and N 4096, at 1 GHz [source-confirmed] | The highest matmul rate reported for this silicon ([perf/not-mac-bound.md](perf/not-mac-bound.md) §"Streamed weights") |
+| fp16 device time of ~2.6 TFLOPS over three cores at K 1024 and N 4096, at 1 GHz [source-confirmed] | The highest matmul rate reported for this silicon ([perf/not-mac-bound.md](perf/not-mac-bound.md) §"CBUF weight streaming") |
 | M 1-8 laid along the CNA width at height 1, with a line stride of 0x200 and a surface stride of -3M [source-confirmed] | Reproduced on `rocket`. The -3M is the feature surface stride `width × (H − 4)` at width M and height 1 ([matmul-as-conv.md](matmul-as-conv.md) §"Feature surface stride") |
 | DCOMP as a lossless entropy codec over dense int8 weights, with its register values and stream layout [source-confirmed] | The leading description of the compressed format, and the compression it gives on real weights ([encodings/cna-dcomp-weight-decompression.md](encodings/cna-dcomp-weight-decompression.md)) |
 | Decode on the NPU with per-channel int4 and int8 weights, at an implied ~24 GB/s over three cores, with the DDR pinned at 2112 MHz and one task run across all three cores [source-confirmed] | The decode bound ([perf/decode-gemv.md](perf/decode-gemv.md) §"Weight-streaming bandwidth on `rocket`") |
@@ -1520,8 +1543,8 @@ whisper.cpp and ggml-rocket combination already makes that split.
 
 #### Per-op decode and batch prefill
 
-Per-op NPU decode is 5x slower than a compiled graph. The rknn-matmul-parallel engine runs
-Qwen3-ASR-0.6B's decoder (28 layers, d 1024) as 196 `rknn_matmul_run` calls a token on the
+Per-op NPU decode is 3.4-5.2x slower than a compiled graph [host-computed]. The
+rknn-matmul-parallel engine runs Qwen3-ASR-0.6B's decoder (28 layers, d 1024) as 196 `rknn_matmul_run` calls a token on the
 RK3576. The decoder costs 225 ms a token at fp16 and 146 at int8, against RKLLM's 43. Their own
 breakdown is matmul 91, weight rebind 91, lm_head 35 and CPU 8 ms.
 
@@ -1574,18 +1597,10 @@ techniques bear on this silicon.
 #### STFT as a polyphase convolution
 
 Whisper's STFT runs on the NPU as a polyphase convolution [source-confirmed, their
-`MELSPEC.md` and export script]. The STFT is a stride-160 conv with a 400-tap kernel over one
-channel of 480,400 padded samples, past the 13-bit cube limit of
-[encodings/dpu-lut-activation.md](encodings/dpu-lut-activation.md). With `g = gcd(400, 160)`
-= 80, the host moves sample `80t + c` to channel `c`, column `t`. The conv becomes a 5-tap,
-stride-2 conv over 80 channels and 6005 columns, with the weight permuted to match. The fold
-is exact for any kernel and stride with a common factor.
-
-On this silicon the fold also fills the channel lanes a one-channel input leaves empty. It
-shrinks a kernel wider than the RK3576's 5-bit kernel field
-([chips/rk3576-regcmd.md](chips/rk3576-regcmd.md#the-geometry-fields-are-narrower-than-their-register-halves)).
-They clamp the STFT's real and imaginary outputs to ±255.89 before squaring, since a larger
-square leaves fp16's range.
+`MELSPEC.md` and export script]. The 400-tap, stride-160 kernel folds into a 5-tap, stride-2
+convolution over 80 channels.
+[encodings/whisper-encoder.md](encodings/whisper-encoder.md#stft-as-a-polyphase-convolution)
+gives the fold and its effect on this silicon.
 
 #### Decoder as one graph per token
 
@@ -1660,8 +1675,8 @@ Its approximation is distribution-aware and variable-degree (PSO-learned non-uni
 snapped to a 128-bin grid). It cuts exp-kernel cycles-per-call ~18.5% vs uniform Degree-4. It
 optimizes the exp kernel's compute, while the fused-encoder softmax here is bound by host↔NPU
 transfers. A slower host `expf` softmax ran 3x faster than the on-NPU LUT path (see
-[encodings/whisper-encoder.md](encodings/whisper-encoder.md) §in-model). Its quant-domain,
-clamp-`[-20,0]`, in-domain row-max recipe is the design reference for a fully-on-NPU resident
+[encodings/whisper-encoder.md](encodings/whisper-encoder.md) §"In-model fused integration").
+Its quant-domain, clamp-`[-20,0]`, in-domain row-max recipe is the design reference for a fully-on-NPU resident
 softmax (no host round-trip).
 
 ### THU-MIG/yolov10 issue #115
@@ -1698,8 +1713,9 @@ Its speedups (DSP pre-adder operand packing, DDR LUT-mux elimination, DOT/AXPY m
 W4/KV8 dual precision) are reconfigurable-datapath microarchitecture. They have no analogue in
 the RK3588's fixed convolution pipeline. What transfers is bandwidth reduction at the model
 and format level (4-bit weights + 8-bit KV, MoE), already available in stock llama.cpp. It
-also cites RKNN-LLM at "~10 token/s on a 3B on RK3588," so vendor on-NPU decode is
-bandwidth-bound too, and does not beat the CPU. See [perf/decode-gemv.md](perf/decode-gemv.md).
+also cites RKNN-LLM's own benchmark at "nearly 10 token/s" for a 3B model on the RK3588. The
+rate is consistent with a bandwidth-bound vendor decode [hypothesis]. See
+[perf/decode-gemv.md](perf/decode-gemv.md).
 
 ### Accelerating OpenPangu Inference on NPU via Speculative Decoding
 
@@ -1744,10 +1760,11 @@ reading list.
 
 The structure transfers (blocks, the ping-pong register file, CBUF banking and ports, CACC's
 within-one-layer accumulate, the MCIF/SRAMIF arbiters). The arithmetic details do not always
-transfer: it specifies round-half-away-from-zero, and this silicon rounds half to even.
-Several fields this silicon depends on (`PC`, `DECONV`, the CBUF granule allowance, the
-per-sign shift word) are Rockchip additions it never had, so its silence about them is not
-evidence.
+transfer: it specifies round-half-away-from-zero, which this silicon gives only with
+`OUT_CVT_SHIFT[30]` set. Every `librocketnpu` program and every program in the vendor capture
+corpus clears the bit, which rounds half to even. Several fields this silicon depends on
+(`PC`, `DECONV`, the tie-rule select, the CBUF granule allowance, the per-sign shift word) are
+Rockchip additions it never had, so its silence about them is not evidence.
 
 ## Compression
 
@@ -1839,14 +1856,14 @@ matmul lacks multi-core (the rocket path runs 3-core via per-fd).
 
 ### Martin Chang, "porting LLM to RK3588"
 
-An RWKV-on-RK3588 talk on K reduction in the convolution, and the prefill/decode split. The
-conv reduces over K in one pass up to the CBUF limit ("Max K=2048 @ FP16" in one pass), and
-nobody used the DPU eltwise for K-accumulation. `librocketnpu`'s tiling is built on the
-one-pass reduction.
+An RWKV-on-RK3588 talk on offloading GGML's matmul to the RKNN matmul API (SDK 1.5.2), and on
+the prefill/decode split. It gives that API's limit as "Max K = 2048 @ FP16", on one core, and
+names a larger K as what an LLM needs. These notes' one-pass K reduction is in
+[matmul-as-conv.md](matmul-as-conv.md) §"Native K-reduction".
 
-The talk also states the decode split: the NPU is good at MatMul and bad at GEMV (M=1). CPU
-GGML wins decode (NPU 83 ms vs CPU 61 ms/token) because llama.cpp's NEON GEMV is already
-bandwidth-saturating. See [perf/decode-gemv.md](perf/decode-gemv.md).
+The talk states the decode split: the NPU is good at MatMul and bad at GEMV (M=1). GGML on the
+CPU decodes faster than the offload (NPU 83 ms vs CPU 61 ms/token), and at M=1, K=N=1024 GGML
+takes 0.1 ms against RKNN's 0.2 ms. See [perf/decode-gemv.md](perf/decode-gemv.md).
 
 ### kevbuh/rk3588
 

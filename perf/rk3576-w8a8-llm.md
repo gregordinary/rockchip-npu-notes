@@ -10,10 +10,9 @@ perplexity is 1.011x the CPU's [HW sweep, H96 MAX M9].
 
 **Conditions:** H96 MAX M9, `rocket` 1.6.0, Qwen2.5-1.5B F16 GGUF, `ROCKET_INT8=1`, four threads
 pinned to the A72s, governor `performance`, one job in flight. `pp512` at ubatch 512 on llama.cpp
-b10356, measured 2026-08-11, where every offloaded call is a calibration forward. The run
-predates the calibration scan's row-major form (§"The calibration scan's loop form"), the
-supplied weight sums and the resident weight cube (§"Supplied sums, the resident weight cube and
-the BO pool").
+b10356, measured 2026-08-11. The run predates the calibration scan's row-major form (§"The
+calibration scan's loop form"), the supplied weight sums and the resident weight cube
+(§"Supplied sums, the resident weight cube and the BO pool").
 `pp2048` at `-ub` 512 on llama.cpp b10558 with the `ggml-rocket` build of 2026-08-19, measured
 2026-08-23. Perplexity over the first 8 chunks of wikitext-2 test at `n_ctx` 512, measured
 2026-08-11. The NPU clock was not read during these runs, and every read on this board before
@@ -24,10 +23,12 @@ the BO pool").
 | `pp512` | 1.02x | 2.01x |
 | `pp2048` | 1.31x | 2.37x |
 
-The F16 ratio is the one a drop-in user sees, because the path consumes an F16 GGUF. In host
-simulation, with one per-tensor output scale and no rotation, the same entry raises a model's
-perplexity 1.11x to 2.26x [host-computed]. The int8 entry's datapath, its bounds and its
-per-call cost are in [../chips/rk3576.md](../chips/rk3576.md).
+The `pp512` figures average `llama-bench`'s timed reps. The first timed rep is a calibration
+forward, so the mean mixes calibrating and converged reps [hypothesis] (§"The W8A8 path against
+the CPU at `pp512`"). The F16 ratio is the one a drop-in user sees, because the path consumes an
+F16 GGUF. In host simulation, with one per-tensor output scale and no rotation, the same entry
+raises a model's perplexity 1.11x to 2.26x [host-computed]. The int8 entry's datapath, its bounds
+and its per-call cost are in [../chips/rk3576.md](../chips/rk3576.md).
 
 ## The W8A8 path against the CPU at `pp512`
 
@@ -41,6 +42,9 @@ job in flight. The NPU configuration runs the `ggml-rocket` DL backend with `ROC
 GGUF is an F16 conversion of the same HF snapshot the accuracy corpus is scored on. The CPU
 configurations ran in the same boot, interleaved with it. The `ggml-rocket` build predates the
 calibration scan's row-major form, the supplied weight sums and the resident weight cube.
+
+**Not characterized:** the NPU configuration's per-rep samples, which separate its calibrating rep
+from its converged ones, and its rep count.
 
 | Configuration | GGUF | pp512 t/s (two processes) | NPU speedup over it |
 |---|---|---:|---:|
@@ -73,8 +77,13 @@ The `performance` governor is worth 16% to the NPU configuration, which measures
 9.91 t/s on `ondemand` against 11.78 pinned.
 
 > [!NOTE]
-> The NPU configuration's run-to-run spread is +-1.8 t/s (15%), against +-0.01 on both CPU
-> configurations. A single process does not measure it.
+> The NPU configuration's +-1.8 t/s (15%) is `llama-bench`'s standard deviation over one
+> process's reps, against +-0.01 on both CPU configurations. With `ROCKET_RK3576_NCAL` at its
+> default of 2, a weight's first two calls calibrate. At `pp512` those are the warm-up forward and
+> the first timed rep [HW sweep]. The 11.78 t/s therefore averages one calibrating rep with
+> converged ones, moves with the rep count, and owes its spread to the calibrating rep
+> [hypothesis]. Compare this path at `pp2048 -ub 512`, where the first two of the warm-up's four
+> micro-batches calibrate and every timed rep is converged.
 
 `ROCKET_MM_PROFILE` splits this path's time with its own accumulator. The RK3588 accumulators
 `g_prof` and `g_prof_i8` in `rocket_matmul.c` split an RK3588 job into
@@ -89,13 +98,19 @@ prefill wall-clock time. Attention, the norms, rope and the scheduler are in nei
 
 ## Flash attention past a 512-token prompt
 
-With flash attention on, the NPU configuration fails at prompts of 1024 and 2048 tokens: it
-returns `failed to decode prompt batch, res = -3`, and llama.cpp stops. The refusing op is
-`GGML_OP_FLASH_ATTN_EXT`, and the trigger is `n_kv >= 1024`. The micro-batch does not move it, so
-the axis is the context, not the ubatch.
+`ggml-rocket` declines `GGML_OP_FLASH_ATTN_EXT` on the RK3576, so attention runs on the CPU
+backend's own kernel at every prompt length, with no setting needed. The backend's attention
+handler runs the RK3588's fp16 matmul programs, whose generators refuse on any other profile.
+`librocketnpu` has no attention program for the RK3576.
 
-**Conditions:** H96 MAX M9, Qwen2.5-1.5B F16, llama.cpp b10356, measured 2026-08-11. One
-process at a time, on an otherwise idle board.
+A backend build that claims the op on the RK3576 fails once the KV length reaches
+`rocket_flash_attn_min_kv()` (default 1024). The decode returns
+`failed to decode prompt batch, res = -3`, and llama.cpp stops. The micro-batch does not move the
+trigger, so the axis is the context, not the ubatch.
+
+**Conditions:** H96 MAX M9, Qwen2.5-1.5B F16, llama.cpp b10356, the `ggml-rocket` build of
+2026-08-11, which claims the op on the RK3576, measured 2026-08-11. One process at a time, on an
+otherwise idle board. The backend declines the op on the RK3576 from its 2026-08-22 build on.
 
 **Not characterized:** a prompt between 512 and 1024 tokens, and the end-to-end effect of
 `-ub 2048` on the RK3576.
@@ -118,37 +133,24 @@ failing ones. The elapsed times locate the failure inside the run. At ubatch 512
 79 s, in the second micro-batch, where the KV length first crosses 1024. When the first
 micro-batch is already that long, it comes after 2-5 s.
 
-The `ggml-rocket` source gives the cause. A `-3` from `llama_decode` is `GGML_STATUS_FAILED`. An
-allocation failure is a distinct `-2` (`ALLOC_FAILED`), so the board's RAM is not the cause. In
-`ggml-rocket`, `supports_op` claims `FLASH_ATTN_EXT` subject only to shape, type,
-`n_tokens >= 16` and `n_kv >= rocket_flash_attn_min_kv()` (default 1024). Unlike its `MUL_MAT`
-case, whose comment states this exact failure mode, that case has **no `rocket_rk3576_selected()`
-branch**.
-
-The handler's only compute call is `rocket_flash_attn_fp16*`, and every path in `rocket_attn.c`
-goes through `rocket_matmul_fp16`. That function begins with `mm_wrong_encoding()`, and returns
-`ROCKET_E_UNSUPPORTED` on any profile that is not `rk3588`. The flash-attention handler therefore
-reaches the RK3576 unadapted. At a prompt of 512 the `n_kv` threshold kept it out of reach, which
-is why the whole corpus ran at that length.
-
-The backend claims the op and then declines it, and the scheduler has nowhere to put it. It is a
-coverage gap in the backend, not a hardware bound. Declined in `supports_op` on the RK3576,
-`FLASH_ATTN_EXT` goes to the CPU. `ROCKET_FLASH_ATTN=0` already does that, and makes the port
-usable past a 512-token prompt.
+A `-3` from `llama_decode` is `GGML_STATUS_FAILED`. An allocation failure is a distinct `-2`
+(`ALLOC_FAILED`), so the board's RAM is not the cause. At a prompt of 512 the `n_kv` minimum kept
+the op off the NPU, so the whole corpus ran at that length.
 
 > [!NOTE]
-> Under a bench harness the refusal's message is not printed. Both the `ROCKET_LOGE` in
-> `mm_wrong_encoding()` and the `GGML_LOG_ERROR` in `graph_compute` fire. The `ggml-rocket`
-> backend forwards the rocket channel into ggml's, and `llama-bench` installs a no-op ggml log
-> callback that discards it. `ROCKET_DEBUG=1` raises the level and does not change the sink. Set
-> `ROCKET_LOG_STDERR=1`, which the convert, int8 and MoE profiler dumps use for the same reason.
-> Under a bench harness, read `res = -3` as a message that is not being shown.
+> Under a bench harness a refusal's message is not printed. In the failing runs, both the
+> `ROCKET_LOGE` in `mm_wrong_encoding()` and the `GGML_LOG_ERROR` in `graph_compute` fire. The
+> `ggml-rocket` backend forwards the rocket channel into ggml's, and `llama-bench` installs a
+> no-op ggml log callback that discards it. `ROCKET_DEBUG=1` raises the level and does not
+> change the sink. Set `ROCKET_LOG_STDERR=1`, which the convert, int8 and MoE profiler dumps use
+> for the same reason. Under a bench harness, read `res = -3` as a message that is not being
+> shown.
 
-With flash attention declined, the port measures 12.12 t/s at ubatch 512 and 12.10 at
-ubatch 1024. Doubling `M` per offloaded call moved the wall-clock time 0.2%, with one process per
-test point against the configuration's +-15% run-to-run spread. Runs that vary only the ubatch
-also move the context with it. The profile buckets below measure the effect, and two wall-clock
-points cannot.
+With flash attention on the CPU, the port measures 12.12 t/s at ubatch 512 and 12.10 at ubatch 1024.
+Doubling `M` per offloaded call moved the wall-clock time 0.2%, with one process per test point. Two
+`pp2048` processes on this board differ by up to ~5% (§"Per-process variation in prefill
+throughput"). Runs that vary only the ubatch also move the context with it. The profile buckets
+below measure the effect, and two wall-clock points cannot.
 
 ## Time and wall-clock share of the offloaded W8A8 path
 
@@ -255,7 +257,8 @@ therefore goes up by what host memory comes down.
 reads `qB` and still takes the per-call path.
 
 `ROCKET_RK3576_BO_POOL=1` keeps the path's transient BOs on a per-fd free list capped by
-`ROCKET_RK3576_BO_POOL_MB`. The variable is read per allocation. With the virtual layout pinned by `setarch -R`, the pool raises `pp2048` throughput by +1.86%, 13.9800
+`ROCKET_RK3576_BO_POOL_MB`. Both variables are read once per process. With the virtual layout
+pinned by `setarch -R`, the pool raises `pp2048` throughput by +1.86%, 13.9800
 against 13.7250 t/s [HW sweep, H96 MAX M9, 2026-08-20]. The +1.86% is the effect at the modal
 layout, not the expected value with ASLR on, and the pool stays off by default.
 
@@ -397,7 +400,8 @@ Raising the micro-batch to `-ub 2048` is worth 4.1% of prefill [host-computed]. 
 2048 tokens, the offloaded path costs 4 x 55.81 = 223.2 ms at ubatch 512 against 1 x 181.55 at
 ubatch 2048. The cut is 18.7%, and over 166 weights it is 37.05 s against 30.14 s on a
 169.7 s prefill. The entry-side cut alone is 32.0% (145.6 -> 99.0 ms). A two-point throughput
-comparison cannot resolve 4% against this configuration's +-15% spread.
+comparison cannot resolve 4% against the ~5% that separates two `pp2048` processes on this
+board (§"Per-process variation in prefill throughput").
 
 The `valloc` bucket, three value-initialized scratch vectors, is 0.59% of the offloaded path at
 `M`=512 and 2.7% at `M`=2048. Its cost is superlinear in `M`, which is consistent with fresh
@@ -457,17 +461,14 @@ not take. `perf` cannot separate them, because both are the same symbol.
 | the NPU offloaded path, converged | **3.86** |
 | ratio | **6.4x** |
 
-The 6.4x compares with the 5.4x median of the standalone GEMM comparison above. That
-comparison's 2.39x model-weighted figure is an end-to-end cap over a whole GEMM mix, not a
+The 6.4x compares with the 5.4x median of the standalone GEMM comparison in
+[../chips/rk3576.md](../chips/rk3576.md#the-int8-gemm-against-a-real-cpu-gemm-at-llm-prefill-shapes).
+That comparison's 2.39x model-weighted figure is a ratio over a layer's whole GEMM mix, not a
 per-MAC rate.
 
 The path's converged `pp2048` speedup is 1.96x: 10.91 t/s against the CPU F16 control's
 5.57 t/s. The build, the threads and the governor are the same, and the W8A8 path is the only
 difference. The figure is taken outside the calibration regime.
-
-> [!NOTE]
-> At `pp512` every offloaded call is a calibration forward. The `pp512` 1.02x / 2.01x pair is
-> a 100% calibration measurement, not one of the converged path.
 
 ## The W8A8 path against ggml Q8_0 at `pp2048`
 
@@ -484,12 +485,24 @@ of 2026-08-19, measured 2026-08-23. `pp2048` and `-ub` 512, four threads on the 
 | CPU only | Q8_0 | 10.31 / 9.95 / 10.27 | 10.18 | **1.31x** |
 | CPU only | F16 | 5.64 | 5.64 | 2.37x |
 
-The F16 ratio is what a drop-in user sees, because the path consumes an F16 GGUF. The Q8_0 ratio
-is what a user who already quantizes sees. Quote the two together.
+The Q8_0 ratio is what a user who already quantizes sees. Quote it together with the F16
+ratio.
 
-Run-to-run spread at `pp2048` is small: +-0.02 t/s within a process and 3.5% across the three
-Q8_0 processes. One process is therefore a measurement at `pp2048`. The path's +-15% spread is
-a property of the `pp512` calibration regime.
+Within a process the reps agree to +-0.02 t/s. Across processes the path's three agree to 0.3%,
+and the Q8_0 configuration's to 3.5%, the size of this board's per-process draw (§"Per-process
+variation in prefill throughput"). The path's +-15% at `pp512` is the spread over reps of which
+the first calibrates [hypothesis].
+
+A later, profiled run of the path measured 12.70-12.83 t/s over four processes, 4-5% below the
+13.36 above [HW sweep 2026-09-25]. It does not re-measure the 1.31x configuration. It ran the
+`ggml-rocket` build of 2026-09-25 on llama.cpp b10356, with the frontend profiler's per-shape
+buckets on. Two of its four processes also timed an fp16 narrowing of each activation.
+
+The BO pool was at its default, off, in both runs, and both predate the 2026-09-30 image's NPU
+clock. No measurement separates the other differences' shares of the 4-5%. The later
+run's per-shape terms are in
+[../chips/rk3576.md](../chips/rk3576.md#the-int8-paths-host-terms) §"The int8 path's host
+terms".
 
 The largest prefill term on the RK3576 is the `K >= 6176` refusal, not anything inside the
 entry. Without the host [K-split](../GLOSSARY.md) that lifts it, the refusal leaves 62.6% of the
@@ -537,11 +550,11 @@ product over the whole `Ktot`=8960, the composed RMS relative error is 2.2385%. 
 single-chunk control gives 2.2448% on chunk 0 alone, a ratio of 0.997. The default path gives
 2.234% at `K`=1536 `N`=1536 [HW sweep, H96 MAX M9, one seed, 2026-08-11].
 
-The pure planner, `rocket_matmul_plan_int8_rk3576`, costs no device time. Its map over (`M`,
-`K`, `N`) puts the refusal boundary at `N`=1536 at exactly `K`=6176, independent of `M` across
-{58, 128, 256, 512, 1024, 2048}. The output tile narrows on the way there. The tile width `Nt`
-is 1536 up to `K`=4096, 768 at `K`=4480-4608 and 32 at `K`=5120-6144 [host-computed]. Over the
-same range `Mt` falls 128 -> 64 -> 32.
+The pure planner, `rocket_matmul_plan_int8_rk3576`, costs no device time. Its map over (`M`, `K`,
+`N`) puts the refusal boundary at `N`=1536 at exactly `K`=6176, independent of `M` across {58, 128,
+256, 512, 1024, 2048}. The output tile narrows on the way there. The tile width `Nt` is 1536 up to
+`K`=4096 and 768-96 channels from 4128 to 4736. From 4768 to 6144 it is 32 [host-computed, the
+planner of 2026-11-01]. Over the same range `Mt` falls 128 -> 64 -> 32.
 
 The planner's `Mt`/`Nt` are the entry's tiling. The return value of
 `rocket_matmul_plan_int8_rk3576` is `ceil(N/Nt) * ceil(ih/rows)`, N tiles times row tasks. The
@@ -552,19 +565,21 @@ both, which is what a few zero-tile calls (refusals, folded on every exit) give.
 
 At `M`=512 `N`=1536 the plan reads:
 
-| `K` | planned submits |
-|---|---:|
-| 640 | 1 |
-| 896-1280 | 2 |
-| 1536-2560 | 4 |
-| 2880-4096 | 8 |
-| **4480-4608** | **32** |
-| 5120-6144 | 768 |
+| `K` | planned submits | `Nt` |
+|---|---:|---:|
+| 64-640 | 1 | 1536 |
+| 672-1280 | 2 | 1536 |
+| 1312-2112 | 4 | 1536 |
+| 2144-2560 | 4 or 8 | 1536 |
+| 2592-4096 | 8 | 1536 |
+| **4128-4736** | **32-256** | **768-96** |
+| 4768-6144 | 768 | 32 |
 
-At `K`=4480, `Nt` first collapses 1536 -> 768. A 2 x 4480 cut is therefore the worst one on the
-planner's map. Two 4480 chunks plan 64 submits, where four chunks of ~2300 plan 16 at the same
-four N tiles. Any cut into the 2880-4096 band costs 8 submits a chunk, and the 1536-2560 band
-costs 4 [host-computed, pure planner].
+Between `K`=2144 and 2560 the planner's stall plan halves the row window at most `K`, and 2176,
+2304 and 2560 keep 4 submits. From `K`=4128 the tile narrows, and at 4480 it is 160 channels. A
+2 x 4480 cut therefore plans 320 submits, where the default cut's four chunks (3 x 2304 + 2048)
+plan 16. A chunk in the 2592-4096 band costs 8 submits, and one in the 1312-2112 band costs 4
+[host-computed, pure planner, `librocketnpu` working tree of 2026-11-01].
 
 > [!NOTE]
 > The raw convolution path's row-window planner refuses `M`=58 `K`=4480 `N`=1536. Its message
@@ -593,7 +608,7 @@ The frontend sums the dequantized f32 partials. The default preference cuts `K`=
 > [!CAUTION]
 > With `ROCKET_RK3576_KSPLIT=1` and the default per-tensor activation scale, Qwen2.5-1.5B's
 > perplexity rises 1.60x, and nothing reports it.
-> The entry's saturation report fires only above 0.1% of the output, and it stays silent here.
+> The frontend's saturation report fires only above 0.1% of the output, and it stays silent here.
 > Software must keep the split off for a model whose perplexity has not been measured with it.
 
 #### Prefill throughput
@@ -648,7 +663,7 @@ rotation held fixed. It comes back at 0.992x, slightly better than unsplit, beca
 chunk's per-tensor activation scale covers a narrower slice. The 1.600x is what happens when
 `ffn_down` reaches the W8A8 path.
 
-The frozen per-column output scale does not cause the 1.600x, in either direction. The entry's
+The frozen per-column output scale does not cause the 1.600x, in either direction. The frontend's
 saturation report does not fire on either split configuration. Cutting `CALSAFE` 3.0 -> 1.2
 makes the model worse (15.84 -> 17.99), so restoring resolution costs more than it returns.
 ### Chunk depth and the rotation's block width
@@ -703,7 +718,8 @@ effect. With a per-row scale, the same three chunkings measure within 0.04 PPL o
 of `nosplit` (§"Chunk depth under a per-row scale"). The optimum belongs to the scale's
 granularity, not to the depth.
 
-At eight windows, only `k1792` and `k1280` separate cleanly from the default cut. The `k2048`
+At eight windows, `k1792`, `k1280` and `k4096` separate cleanly from the default cut, each worse
+on every window and 3.9-4.1 standard errors from it [host-computed]. The `k2048`
 configuration's 1.459x is the best test point measured, and not an established better
 configuration.
 
@@ -727,13 +743,14 @@ frontend normalizes each row to +-127 before the submit and applies the row fact
 dequantize.
 
 That binary's default path measures 15.9894 rather than 15.8395 because of an fp32 re-association
-in its dequantize. The library keeps the per-tensor dequantize's original association, and the
+in its dequantize. The frontend keeps the per-tensor dequantize's original association, and the
 per-row scale is a separate branch.
 
-The per-axis input-scale result elsewhere in this note is better on every per-GEMM norm, and 38x
-worse end to end on one model of two. It is measured on `K`=1536 projections under a different
-output quantization, and this result on `ffn_down`. Neither result bounds the other, and neither
-bounds a second model.
+The per-axis input-scale result elsewhere in this note is better on every per-GEMM norm. On one
+model of two it raises perplexity 38x over the per-tensor input scale, from 25.3 to 964, which is
+86x the fp32 run's (§"Output scale of the int8 entry"). It is
+measured on `K`=1536 projections under a different output quantization, and this result on
+`ffn_down`. Neither result bounds the other, and neither bounds a second model.
 
 The K-split itself is fast and exact. The operation it moves to the NPU, `ffn_down`, needs an
 activation quantization that the default per-tensor scale does not give it.
@@ -775,9 +792,9 @@ K-split" and §"The weight-phase rule").
 
 ### SmolLM2-1.7B
 
-On SmolLM2-1.7B the per-tensor split costs 6.77x perplexity, and the per-row scale restores
-0.9992x `nosplit` [HW sweep 2026-08-11]. The model's `ffn_down` is `K`=8192, which the greedy
-chunker cuts into 3x2304 + 1024 + 256. The cut has five chunks, with a different tail from
+On SmolLM2-1.7B the per-tensor split raises perplexity 6.77x over `nosplit`, and the per-row scale
+restores 0.9992x `nosplit` [HW sweep 2026-08-11]. The model's `ffn_down` is `K`=8192, which the
+greedy chunker cuts into 3x2304 + 1024 + 256. The cut has five chunks, with a different tail from
 Qwen2.5-1.5B's four.
 
 **Conditions:** H96 MAX M9, `rocket` 1.6.0, kernel 7.1.7. SmolLM2-1.7B, eight perplexity windows,
@@ -790,7 +807,7 @@ the configurations of §"Per-row activation scale".
 | `split` + `AROW` | **10.3354** | **0.9992** | -0.0008 +- 0.0043 | **3 of 8** |
 
 The per-tensor split hurts this model 4.2x harder than it hurts Qwen2.5-1.5B: 6.77x against
-1.600x. The entry's saturation report fires at 15.417% of the output on `blk.7.ffn_down`, where
+1.600x. The frontend's saturation report fires at 15.417% of the output on `blk.7.ffn_down`, where
 Qwen2.5-1.5B's worst configuration reaches 0.225%. With the per-row scale the model is
 indistinguishable from `nosplit`, with a paired difference below zero and worse on only 3 of 8
 windows.
@@ -829,8 +846,8 @@ The split's damage grows with depth, and the whole-offload cost varies over the 
 | 64 | 2.4303x | +0.476% |
 
 The 8-window ratios recorded for the other two models are therefore lower bounds on their own
-64-window values. The size of the difference between the models at that depth is not measured, and
-its direction holds at matched depth.
+64-window values [expected]. The size of the difference between the models at that depth is not
+measured, and its direction holds at matched depth.
 
 The `NCAL`=1 setting has a small, positive cost in the converged windows. Pooled by inverse
 variance over the three models, it is +0.00564 +/- 0.00199 nats, +0.566% of perplexity, and 2.83
@@ -1192,9 +1209,9 @@ over its own contraction. Across the four chunks of one split `ffn_down`, the me
 The second calibration forward raises the stored colmax on 49.9% of columns. It raises 2.03% by
 more than 1.5x, and 0.061% by more than 3.0x, which is past the `CALSAFE`=3.0 headroom
 [HW sweep 2026-08-11]. The 0.061% is 87x the [row cut](../GLOSSARY.md)'s exposure (next section), and it
-is a count of columns. A column that loses coverage clips only its top accumulator rows, and
-the perplexity measurement of `NCAL`=1 below does not resolve the loss. These figures bound
-what `NCAL`=1 risks, and do not measure its cost.
+is a count of columns. A column that loses coverage clips only its top accumulator rows. These
+figures bound what `NCAL`=1 risks, and do not measure its cost. Its measured cost is +0.566% of
+perplexity on the converged windows, pooled over three models (§"Calibration with `NCAL`=1").
 
 ### A row cut for pass one
 
@@ -1481,74 +1498,72 @@ argument over the quantum alone predicts both backwards.
 
 #### Separability of the calibrating-window damage
 
-The calibrating-window damage is a separable product of the cut and the margin.
+At `M`/4 and deeper, the clip damage of the calibrating windows is a separable product of the
+cut and the margin, `D_clip = g(cut)*h(margin)` [HW sweep]. The product does not
+extend to `M`/2 (§"The row cut at `M`/2").
 
 **Conditions:** Qwen2.5-1.5B at `M`=2048, `AROW`=1.
 
-Read in the `AROW`=1 regime every `Dcal` was measured in, and with the resolution channel,
-[`D_res`](../GLOSSARY.md), subtracted as `D_res = 0.0162*(Q/Q_ctl - 1)`, the test points' clip
-damage is:
+The clip damage `D_clip` is a test point's `Dcal` less the resolution channel,
+[`D_res`](../GLOSSARY.md): the `Dcal` of the no-cut run at the same margin. At margin 1.5 that
+run is the control, so `D_res` is zero by construction. At 2.25 it is the measured +0.0081 of a
+run that clips nothing. No no-cut run exists at 1.875, and there `D_res` is the linear model
+`D_res = 0.0162*(Q/Q_ctl - 1)`, which does not hold below `Q` = 1.5 (§"The row cut at `M`/2").
+Read in the `AROW`=1 regime every `Dcal` was measured in, the test points' clip damage is:
 
 | test point | cut | margin | clip | mass `E` | `r` | `D_res` | `D_clip` |
 |---|---|---|---|---|---|---|---|
 | `q_ctl` | none | 1.5 | 0.0303% | 1.40e-05 | 1.00000 | 0 | 0 by definition |
 | `q_g2p25` | none | 2.25 | 0.0000% | 0 | 1.00000 | +0.0081 | 0 |
-| `q_r1024` | `M`/2 | 1.5 | 1.3775% | 1.27e-03 | 0.94636 | -0.0009 | **-0.0062** |
-| `q_r1024g2p25` | `M`/2 | 2.25 | 0.0177% | 2.58e-05 | 0.94636 | +0.0068 | **-0.0174** |
-| `q_shipfrac` | `M`/4 | 2.25 | 0.0836% | 1.24e-04 | 0.87151 | +0.0050 | +0.0216 |
-| `q_g1p875r512` | `M`/4 | 1.875 | 0.4963% | 5.99e-04 | 0.87151 | +0.0014 | +0.0473 |
-| `q_ship` | `M`/16 | 2.25 | 0.9604% | 1.39e-03 | 0.74417 | +0.0019 | +0.1033 |
-| `q_r512` | `M`/4 | 1.5 | 4.3461% | 4.53e-03 | 0.87151 | -0.0021 | +0.1297 |
-| `q_r128` | `M`/16 | 1.5 | 17.1747% | 2.41e-02 | 0.74417 | -0.0041 | +0.6803 |
-| `q_r32` | `M`/64 | 1.5 | 38.3480% | 8.44e-02 | 0.62576 | -0.0061 | +2.0046 |
+| `q_r1024` | `M`/2 | 1.5 | 1.3775% | 1.27e-03 | 0.94636 | 0 | **-0.0070** |
+| `q_r1024g2p25` | `M`/2 | 2.25 | 0.0177% | 2.58e-05 | 0.94636 | +0.0081 | **-0.0188** |
+| `q_shipfrac` | `M`/4 | 2.25 | 0.0836% | 1.24e-04 | 0.87151 | +0.0081 | +0.0185 |
+| `q_g1p875r512` | `M`/4 | 1.875 | 0.4963% | 5.99e-04 | 0.87151 | +0.0014, modeled | +0.0473 |
+| `q_ship` | `M`/16 | 2.25 | 0.9604% | 1.39e-03 | 0.74417 | +0.0081 | +0.0971 |
+| `q_r512` | `M`/4 | 1.5 | 4.3461% | 4.53e-03 | 0.87151 | 0 | +0.1276 |
+| `q_r128` | `M`/16 | 1.5 | 17.1747% | 2.41e-02 | 0.74417 | 0 | +0.6761 |
+| `q_r32` | `M`/64 | 1.5 | 38.3480% | 8.44e-02 | 0.62576 | 0 | +1.9985 |
 
-The product `D_clip = g(cut)*h(margin)` fits the six cut test points at `M`/4 and deeper to a
-worst residual of 2.31% (rms 1.86%). The cut factor `g` is 0.1327 at `M`/4, 0.6649 at `M`/16
-and 2.0046 at `M`/64. The margin factor `h` is 1 at margin 1.5, 0.3561 at 1.875 and 0.1590 at
-2.25.
+The margin ratio `D_clip`(cut, 1.5)/`D_clip`(cut, 2.25) is 6.918 at `M`/4 and 6.963 at `M`/16,
+1.0066x apart [host-computed]. Where both margins are measured, the product therefore holds to
+under 1%. The cut factor `g` is the damage at margin 1.5: 0.1276 at `M`/4, 0.6761 at
+`M`/16 and 1.9985 at `M`/64. The margin factor `h` is 1 at 1.5 and 0.144-0.145 at 2.25. At
+1.875, on the modeled `D_res`, it is 0.371 [host-computed].
 
-The cut factor `g` is not a power law in the cut: it rises 5.01x, then 3.01x, per 4x
-reduction.
+The cut factor `g` is not a power law in the cut: it rises 5.30x, then 2.96x, per 4x
+reduction [host-computed].
 
 #### The margin factor `h`
 
-A power law in the margin for `h`, fitted inside [1.5, 2.25], extrapolates to margins 1.25 and
-1.00 within 7.3%. Its exponent tracks the K set. Below 1.5 the `h` values contain a modeled
-`D_res` whose form is wrong there (§"`BOOTMARGIN` and the no-cut response"). Read directly,
-`Dcal` is not one power law over the margin (§"The direct (cut, margin) surface").
+The calibrating-window damage falls steeply with the margin, and not as one power law
+[HW sweep 2026-08-22]. At cut `M`/4 on Qwen2.5-1.5B it falls 34.9x from margin 1.00 to 2.25,
+with a local log-log slope between -3.3 and -5.1 (§"The direct (cut, margin) surface"). Below
+1.5 the margin factor `h` is not measurable, because no run isolates `D_res` there
+(§"`BOOTMARGIN` and the no-cut response").
 
 **Conditions:** Qwen2.5-1.5B, `-ub` 2048, `--chunks 8`.
 
 The frontend resets a `BOOTMARGIN` below 1.0 to 1.5 (`bootmargin < 1.0f`), so 1.0 is the
 lowest margin it runs. Two test points at cut `M`/4 and margins 1.25 and 1.00 measure the
-extrapolation to that minimum [HW sweep]:
+damage down to that minimum [HW sweep]:
 
-| cut | margin | clip | `Dcal` | PPL[8] vs control | implied `h` | power law |
-|---|---|---|---|---|---|---|
-| `M`/4 | 1.00 | 77.171% | **+0.92760** | +12.347% | **7.3094** | 6.9407 |
-| `M`/4 | 1.25 | 25.672% | **+0.32464** | +4.056% | **2.5645** | 2.3897 |
+| cut | margin | clip | `Dcal` | PPL[8] vs control |
+|---|---|---|---|---|
+| `M`/4 | 1.00 | 77.171% | **+0.92760** | +12.347% |
+| `M`/4 | 1.25 | 25.672% | **+0.32464** | +4.056% |
 
-The power law `h(m) = (m/1.5)^-4.778`, fitted entirely inside [1.5, 2.25], predicts a 1.5x
-extrapolation to the minimum within 5.3% and 7.3%. Both measured values sit above it, so the
-true `h` is slightly steeper still. The ratio `Dcal`(1.0)/`Dcal`(1.25), which is free of `g`
-and of `D_res`, is 2.857 against the power law's 2.912.
+The ratio `Dcal`(1.0)/`Dcal`(1.25), which is free of `g` and of `D_res`, is 2.857
+[host-computed].
 
-The exponent differs between architectures. SmolLM2-1.7B at the same cut and margin 1.0
+The margin's effect differs between models. SmolLM2-1.7B at the same cut and margin 1.0
 measures `Dcal` = +0.97094 (PPL[8] 8.3207 against its own control 7.4265, +12.041%). Over the
-same [1.0, 2.25] range its margin ratio (the [margin index](../GLOSSARY.md) `R`, defined in the
-next subsection) is 30.60 against Qwen's 50.57, 1.65x smaller. Its exponent is 4.22 against
-4.84, 1.15x shallower [host-computed].
+same [1.0, 2.25] range its `Dcal` falls 18.40x, against Qwen's 34.92x, 1.90x less
+[host-computed].
 
 > [!NOTE]
 > A cross-model comparison of margin cost taken at one end of the margin axis does not hold at
 > the other. At margin 2.25 SmolLM2-1.7B's `M`/4 damage is 1.99x Qwen2.5-1.5B's, and at margin
 > 1.00 the two models are 4.7% apart.
-
-The exponent is shared between two models that share a K set. In the table in the next
-subsection, 4.230 and 4.219 agree to 0.26% across a tokenizer, a corpus, 8 blocks of depth and
-GQA-against-MHA. A same-family model at a different K set measures 3.223. The exponent is
-therefore a property of the K set, or of what co-varies with it, and not of the architecture
-or the model.
 
 The clip fraction at a new margin can be computed off-line from a `CALMAP`'s own `est2/est1`
 distribution. It gave 78.2% and 26.0% for these two test points, which measured 77.171% and
@@ -1556,10 +1571,13 @@ distribution. It gave 78.2% and 26.0% for these two test points, which measured 
 
 #### The margin index across architectures and K sets
 
-Two models that share a K set have the same margin index `R`, and a model at another K set
-does not [HW sweep 2026-08-22]. `R` is `D_clip(cut M/4, 1.00) / D_clip(cut M/4, 2.25)`,
-where `D_clip(m)` is `Dcal(cut, m)` minus the no-cut `D_res(m)`. `D_res` is the `Dcal` of the
-no-cut test point at margin 2.25.
+Two models that share a K set have the same [margin index](../GLOSSARY.md) `R`, and a model at
+another K set does not [HW sweep 2026-08-22]. `R` is `D_clip(cut M/4, 1.00) / D_clip(cut M/4,
+2.25)`, where `D_clip(m)` is `Dcal(cut, m)` minus the no-cut `D_res(m)`. `D_res`(2.25) is the
+measured `Dcal` of the no-cut test point at margin 2.25. `D_res`(1.00) is not measurable
+(§"`BOOTMARGIN` and the no-cut response"), so `R` takes it from the linear model as -2/3 of
+`D_res`(2.25), a term whose sign is wrong at 1.00. It is 0.6-1.4% of each model's numerator
+[host-computed]. The exponent is `ln R / ln 2.25`, `R`'s mean log-log slope over the interval.
 
 **Conditions:** `-ub` 2048, `--chunks 8`, `rocket` 1.6.0, 2026-08-22.
 
@@ -1575,8 +1593,9 @@ Llama-3.2-1B-f16 has the llama architecture and SmolLM2's exact `n_embd` 2048 / 
 
 The margin index is identical on the two llama models that share a K set. It measures 30.87
 against 30.60, with exponents 4.230 against 4.219. These agree to 0.9% and 0.26% across an
-8-block depth difference and across GQA-against-MHA, while Qwen sits 1.64x away. R is a ratio
-at one cut, so both models' `g` and both models' mixed-`M` populations cancel out of it.
+8-block depth difference and across GQA-against-MHA, while Qwen sits 1.64x away. Without the
+modeled `D_res`(1.00) term the two measure 30.17 and 30.51, 1.1% apart [host-computed]. R is a
+ratio at one cut, so both models' `g` and both models' mixed-`M` populations cancel out of it.
 
 SmolLM2-360M differs from SmolLM2-1.7B in the K set, and shares with it:
 
@@ -1594,8 +1613,10 @@ no fit:
 | SmolLM2-1.7B vs Llama-3.2-1B | tokenizer, vocabulary, corpus, depth 24 vs 16, `head_kv` 32 vs 8, base vs instruct | **1.009x** |
 | SmolLM2-1.7B vs SmolLM2-360M | the K set, 2048/8192 vs 960/2560 (depth 24 vs 32, `head_kv` 32 vs 5) | **0.446x** |
 
-R follows the K set. Both `n_ff` and `n_ff`/`n_embd` are monotone over these four points, and
-a fifth model separates them and refutes both, below.
+R follows the K set over these four models. It does not follow `n_ff` or `n_ff`/`n_embd`, which
+move with the K set here. At SmolLM2-360M's `n_ff`/`n_embd`, a fifth model's raw ratio
+`Dcal(cut, 1.00)/Dcal(cut, 2.25)`, which subtracts no model, is 2.49x SmolLM2-360M's. Over the
+five models the raw ratio is non-monotone in `n_ff` (§"The denominator of the margin index").
 
 The pair does not measure the K set alone. SmolLM2-360M K-splits none of its GEMMs, because 960
 and 2560 are both `rk76_k_single_ok`. All three anchors split exactly one of the seven per block
@@ -1604,9 +1625,9 @@ split population or scale", jointly.
 
 The flag `ROCKET_RK3576_FORCESPLIT=1` separates the split. A fifth model separates the other
 two: SmolLM2-135M, at the same `n_ff`/`n_embd` ratio and 0.600x the scale. It splits nothing
-either, so the split population is held fixed there. It refutes the ratio and `n_ff` alone, below.
-Model scale orders the damage one way on the default walks and the other way at a fixed chunk
-depth (§"Three checkpoints at a fixed chunk depth").
+either, so the split population is held fixed there. Model scale orders the damage one way on
+the default walks and the other way at a fixed chunk depth (§"Three checkpoints at a fixed
+chunk depth").
 
 The resolution channel is the model-specific one, and it moves where the margin index does
 not. Llama-3.2-1B's `D_res` is 0.789x SmolLM2's and 2.004x Qwen's. It moves with depth, but
@@ -1669,9 +1690,9 @@ calibrating windows disagree in sign, -0.00709 and +0.00371, where SmolLM2-360M'
 (+0.00155, +0.04995). The net is 38x the reconstruction precision, so the arithmetic is exact.
 The quantity itself is unresolved, and an index dividing by it is undefined rather than large.
 
-The mechanism is the two channels netting out. Margin 2.25 coarsens the returned quantum on
-every column, while a row cut shrinks `est1` and moves it back the other way. On a model whose resolution cost is
-high and whose clipping is cheap, the cut therefore partly offsets the margin.
+The mechanism is the two channels of §"Resolution of the returned output" netting out. On a
+model whose resolution cost is high and whose clipping is cheap, the cut therefore partly offsets
+the margin.
 
 The margin channel itself is intact on this model. At the same cut, margin 1.00 costs +0.51870
 against margin 2.25's +0.01994, a 26.0x ratio in the same direction as all four anchors. A
@@ -1824,15 +1845,17 @@ Nothing on this model reaches that bound.
 
 #### Clip damage at a second chunk size
 
-The clip damage follows the chunk depth, not the chunk count, and at a second chunk size the two
-channels come apart again. `ROCKET_RK3576_KCHUNK=256` on the same checkpoint takes the
-population to 3563520 columns. That population is 5.4717x the default path's 651264 and 1.3364x
-the 512-chunk test point's.
+At a second chunk size the clip damage falls further than the chunk count predicts, and the two
+channels come apart again [HW sweep 2026-08-22]. Across settings and checkpoints neither the
+maximum chunk depth nor the chunk count sets the damage (§"Three checkpoints at a fixed chunk
+depth", §"The `KCHUNK` sweep on SmolLM2-135M"). `ROCKET_RK3576_KCHUNK=256` on the same
+checkpoint takes the population to 3563520 columns. That population is 5.4717x the default
+path's 651264 and 1.3364x the 512-chunk test point's.
 
 **Conditions:** SmolLM2-360M, `ROCKET_RK3576_FORCESPLIT=1`, three test points at `--chunks` 4
 and `-ub` 2048.
 
-**Not characterized:** a third chunk size, another model.
+**Not characterized:** a third chunk size on this checkpoint.
 
 | | unsplit | `KCHUNK`=512 | `KCHUNK`=256 |
 |---|---|---|---|
@@ -1848,12 +1871,16 @@ and `-ub` 2048.
 The damage does not follow the reciprocal of the chunk count. Between the two split test points
 the local exponent on the count is 2.8135. A reciprocal law gives an exponent of 1.
 
-The maximum chunk depth is the variable that fits. Halving `KCHUNK` halves the deepest chunk
-exactly, while it raises the column-weighted count only 1.3364x. The greedy walk is *ragged*,
-so count and maximum depth are not reciprocal, even though count and mean depth are reciprocal
-by construction. The measured fall is 0.4423x, against 0.5000x for a halved depth (1.13x) and
-0.7483x for the count (1.69x). The segment exponents are 1.177 and 2.814. The residual is in
-the direction of super-linearity in depth [two split points, one model].
+Of the two, the maximum chunk depth is the closer at these two points. Halving `KCHUNK` halves
+the deepest chunk exactly, while it raises the column-weighted count only 1.3364x. The greedy
+walk is *ragged*, so count and maximum depth are not reciprocal, even though count and mean
+depth are reciprocal by construction. The measured fall is 0.4423x, against 0.5000x for a halved
+depth (1.13x) and 0.7483x for the count (1.69x). The segment exponents are 1.177 and 2.814. The
+residual is in the direction of super-linearity in depth [HW sweep, two split points, one
+model].
+
+The maximum depth does not set the damage across settings: on SmolLM2-135M two settings that
+share it differ 27.4%.
 
 `D_res` reverses, so the contraction depth does not name a quantity the two channels share. At
 `KCHUNK`=256 it is +0.01013, which is 2.2614x its `KCHUNK`=512 value and 0.6827x the unsplit
@@ -2125,7 +2152,7 @@ a margin of 0.0025.
 `BOOTMARGIN` is headroom for the drift between the two calibrating forwards. With no row cut, a
 margin of 1.00 leaves 51.911% of the columns clipping and 1.25 leaves 0.257%
 [HW sweep 2026-08-22]. The no-cut response is non-monotone in the margin. Its minimum over the
-four measured margins is at 1.25, not at the library default of 1.50.
+four measured margins is at 1.25, not at the frontend's default of 1.50.
 
 **Conditions:** RK3576, Qwen2.5-1.5B, `-ub` 2048, `--chunks` 4. There is no row cut, so each
 run's whole `Dcal` is the margin's effect. `Dcal` is the damage over the calibrating windows 1-2.
@@ -2150,12 +2177,11 @@ calibrating windows only. It is not a converged-window result, and it does not c
 recommended configuration.
 
 > [!NOTE]
-> The `D_res(m)` forms used in the earlier sections have the wrong shape below the control
-> margin, not only the wrong coefficient. The form linear in the quantum and the form quadratic
-> in it are both monotone through 1.5. At 1.25 they give -0.00270 and -0.00198 against a
-> measured -0.00761 (2.82x and 3.84x, right sign). At 1.00 they have the wrong sign, against
-> +0.04066. The correction inside every published `R` and every `h`, `res_at_1p0`'s
-> `-2/3 * D_res`, is wrong in sign at margin 1.00, the one margin it was written for.
+> The modeled `D_res(m)` forms have the wrong shape below the control margin, not only the wrong
+> coefficient. The form linear in the quantum and the form quadratic in it are both monotone
+> through 1.5. At 1.25 they give -0.00270 and -0.00198 against a measured -0.00761 (2.82x and
+> 3.84x, right sign). At 1.00 they have the wrong sign, against +0.04066. The term `R` takes for
+> margin 1.00, `-2/3 * D_res`, is therefore wrong in sign at the one margin it was written for.
 
 Four of the five margins at cut `M`/4 have a measured no-cut run, so
 `D_clip(cut, m) = Dcal(cut, m) - Dcal(no cut, m)` is measured minus measured there. Over matched
@@ -2185,8 +2211,7 @@ As the cut deepens, `Dcal` runs:
 | margin 1.5 | 0 | -0.0070 | +0.1276 | +0.6761 | +1.9985 |
 | margin 2.25 | +0.0081 | -0.0107 | +0.0266 | +0.1052 | |
 
-The damage crosses zero between `M`/2 and `M`/4 at both margins. The `M`/4 cut lies past an
-optimum, rather than at the low-cost end of a rising cost.
+The `M`/4 cut lies past an optimum, rather than at the low-cost end of a rising cost.
 
 A row cut acts as an accidental percentile-clipping calibrator [hypothesis]. The sign, the
 margin ordering and the crossing are measured, and the mechanism is not isolated. Pass one's
@@ -2208,8 +2233,9 @@ Q = 1.42. `D_res` is therefore not monotone in `Q`, and the margin and the cut d
 returned output through one combined index.
 
 The margin rescales `est1` by a constant on every column, and a row cut rescales it by a
-column-dependent amount. Every `D_clip` reported in the sections above inherits that, so each
-is `Dcal` minus a *model*, not a measured split.
+column-dependent amount. A `D_clip` at a margin with no measured no-cut run inherits that, so it
+is `Dcal` minus a *model*, not a measured split. In this study that is margin 1.875 in
+§"Separability of the calibrating-window damage" and margin 1.00 inside `R`.
 
 #### Width of the `M`/2 gain
 
@@ -2532,9 +2558,9 @@ On Qwen2.5-1.5B at `--chunks 8`, against the same-build `NCAL`=2 control of 9.93
 | `NCAL`=1 | 9.9702 | +0.0036 +/- 0.0039 (se) | +0.0028 +/- 0.0050, 4 of 6 positive |
 | `NCAL`=1 + `CALROWS`=128 / `BOOTMARGIN`=2.25 | 9.9501 | +0.0015 +/- 0.0071 | -0.0055 +/- 0.0071 |
 
-Neither difference is resolvable from zero. The library's saturation report, which is live in
-the converged phase, stayed silent in both test points. The converged saturating fraction is
-therefore under its 0.1% threshold.
+On this model alone, neither difference is resolvable from zero. The frontend's saturation
+report, which is live in the converged phase, stayed silent in both test points. The converged
+saturating fraction is therefore under its 0.1% threshold.
 
 SmolLM2-1.7B is the model whose `ffn_down` is `K`=8192. It costs 4.2x more than Qwen for a
 frozen per-tensor scale (6.77x against 1.600x). Its `NCAL`=1 cost was measured at two window
@@ -2645,8 +2671,8 @@ prompt.
 
 ## Accuracy of the W8A8 path inside a model
 
-The W8A8 path costs 1.011x perplexity, measured on the RK3576 inside a model
-[HW sweep 2026-08-11]. It runs the same perplexity pass 1.99x faster than the CPU.
+The W8A8 path raises perplexity 1.011x over the CPU on the same GGUF, measured on the RK3576
+inside a model [HW sweep 2026-08-11]. It runs the same perplexity pass 1.99x faster than the CPU.
 
 **Conditions:** H96 MAX M9, llama.cpp b10356, Qwen2.5-1.5B F16. `llama-perplexity` over the first
 8 chunks of wikitext-2 test at `n_ctx`=512. Both configurations use the same GGUF, the same text
@@ -2738,22 +2764,23 @@ and needs no library change: an orthonormal Hadamard along `K`, applied before q
 Qwen's `K`=1536 takes the weaker block-diagonal form over 512-element blocks and still reaches
 1.002x.
 
-The per-channel requant is a library change on hardware the DPU already has.
-`rocket_conv2d_rk3576.c` programs the `C` ramp for per-axis convolution.
+The per-channel requant runs on the DPU's per-channel `C` multiplier and needs no other
+hardware. `rocket_conv2d_rk3576.c` programs the `C` ramp for per-axis convolution.
 `rocket_matmul_int8_rk3576_perc()` takes a per-column output scale and plans it with the same
-per-axis planner, one `(MUL, SHIFT)` per N tile. The per-tensor entry,
+per-axis planner, one `(MUL, SHIFT)` and one BS shift word per N tile. The per-tensor entry,
 `rocket_matmul_int8_rk3576()`, pins `in_scale`/`w_scale` to 1 and puts the caller's factor in
 `out_scale`.
 
 The 1.004x is a ceiling for this path rather than its figure. The simulation gives every
-output column an exact per-column scale, and the hardware gives the integer `C` ramp. The
-ramp's resolution is why the per-axis ResNet-18 scores 89 of 100 against a per-tensor control's
-93.
+output column an exact per-column scale, and the hardware gives the integer `C` ramp. On the
+shift-0 ramp, the per-axis ResNet-18 matched the CPU's top-1 on 89 of 100 images
+[HW sweep, H96 MAX M9, 2026-08-04]. A per-tensor control matched it on 93. The ramp's resolution
+is the likely cause [hypothesis].
 
-Every number in this section is host arithmetic. The integer ramp's own cost, 0.0006 of ratio on
-Qwen2.5-1.5B, is in §"Sources of the per-column output scale". The composed device path's is in
-§"Accuracy of the W8A8 path inside a model".
-[host-computed, arithmetic over two real models, `M`=512, 2026-08-10]
+Every number in this section is host arithmetic. The shift-0 integer ramp's own cost, 0.0006 of
+ratio on Qwen2.5-1.5B, is in §"Sources of the per-column output scale". The composed device path's
+is in §"Accuracy of the W8A8 path inside a model". [host-computed, arithmetic over two real models,
+`M`=512, 2026-08-10]
 
 ### Host cost of the rotation and quantization
 
@@ -2785,7 +2812,8 @@ figures are the path's ceiling and not a frontend's. The table below scores what
 supply.
 
 **Conditions:** host simulation, Qwen2.5-1.5B, the same eight windows of 512 wikitext-2 tokens
-and the same 168 offloaded projections.
+and the same 168 offloaded projections. The integer ramp is the shift-0 ramp, the entry's ramp
+under `ROCKET_RK3576_MM_PC_SHIFT=0`.
 
 | per-column scale source | ppl | x fp32 | top-1 vs fp32 |
 |---|---:|---:|---:|
@@ -2796,7 +2824,7 @@ and the same 168 offloaded projections.
 | the frozen scale's perturbations, dealt to the wrong columns | 12.9315 | 1.007 | 92.70% |
 
 The scale source is the largest single term on this path. Its excess over the exact-scale
-ceiling is 0.045 of ratio, against the integer ramp's 0.0006 on the same model, a factor of
+ceiling is 0.045 of ratio, against the shift-0 integer ramp's 0.0006 on the same model, a factor of
 seventy-five. An accuracy budget that counts the ramp and not the scale source is low by an
 order of magnitude.
 
@@ -2838,9 +2866,9 @@ projections.
 | the analytic bound | 1.043e9 | 9.3e7 | 3.22% | 2.352x | 0.000% |
 | the same perturbations, wrong columns | 12.0254 | 1.074 | 90.06% | 0.127x | 0.360% |
 
-The excess over SmolLM2's own exact-scale ceiling is 0.129 of ratio, against Qwen's 0.045. The
-scale source is the largest term on both models, but 2.9x larger on SmolLM2, so a port that
-budgets from one model budgets low. SmolLM2's tail is deeper too (0.161x, 6.2x too tight,
+The excess over SmolLM2's own exact-scale ceiling is 0.129 of ratio, against Qwen's 0.045. The scale
+source is the largest term on both models, and 2.9x larger on SmolLM2 than on Qwen. A port that
+budgets from one model therefore budgets low. SmolLM2's tail is deeper too (0.161x, 6.2x too tight,
 against 0.228x).
 
 The random-column control costs 0.070 of SmolLM2's 0.129, 54% of the damage, against 12% of
@@ -2954,9 +2982,9 @@ The bootstrap runs two passes:
 2. Pass two runs at that readback times a margin (1.5), so the int8 codes are used, and reads
    each column again.
 
-A column that saturates in pass two keeps pass one's margined value. Both passes go through
-the shift-0 integer ramp. They are dequantized by the scale requested rather than the gain
-delivered, so the ramp's own error is inside the estimate.
+A column that saturates in pass two keeps pass one's margined value. In the simulation, both
+passes go through the shift-0 integer ramp. They are dequantized by the scale requested rather
+than the gain delivered, so the ramp's own error is inside the estimate.
 
 The estimate is accurate. Its `|est/true - 1|` median over columns is 0.30% on Qwen2.5-1.5B
 and 0.31% on SmolLM2-1.7B, flat across every shape. The worst single column is 2.4% / 8.3%,
@@ -2973,8 +3001,8 @@ model.
 A 0.3% estimator error is free on Qwen and costs 0.018 of ratio on SmolLM2, where it takes the
 recovered fraction from 90.5% to 76.0%. The two models show the same split on three measures.
 The control `_calshuf` costs SmolLM2 54% of its damage against Qwen's 12%. The scale-source
-term itself is 2.9x larger on SmolLM2, and a sub-percent perturbation is 330x more expensive
-there.
+term itself is 2.9x larger on SmolLM2 than on Qwen, and a sub-percent perturbation is 330x more
+expensive there.
 
 On this path a perturbation's cost follows its correlation with the columns that matter,
 not its size. SmolLM2 is where that correlation is expensive.
@@ -3026,13 +3054,15 @@ The device matches the host simulation, so the C ramp's integer gain, which the 
 does not model, does not dominate the estimate's error. Pass one's signed median again falls on the margin
 (0.97-1.63), while its absolute error is 6.9-61.8%.
 
-The OUT_CVT shift is a six-bit field in DPU 0x40B4, and this path cannot drive the shift out of
-it. Pass one's scale is ~6e-8, but the planner, `rocket_rk3576_plan_perchannel()`, divides the
-scale it is handed by a `cmax` built on the same accumulator bound, `128*sum|w|+1`. With a NULL
-bias the two cancel exactly, so `best_base` is the constant `127/INT32_MAX` whatever the
-weights are. The device is therefore programmed with `SHIFT`=39 at every shape, 24 values
-inside the field, and the per-column `C` comes out at its `cmax` ceiling. The shift stays 39
-over `sum|w|` from 128 to 1.7e7. The frozen call programs 27-34.
+The OUT_CVT shift is a six-bit field in DPU 0x40B4. On the shift-0 ramp
+(`ROCKET_RK3576_MM_PC_SHIFT=0`), pass one's ~6e-8 scale cannot drive the shift out of it. The
+shift-0 planner, `rocket_rk3576_plan_perchannel()`, divides the scale it is handed by a `cmax` built
+on the same accumulator bound, `128*sum|w|+1`. With a NULL bias the two cancel exactly, so
+`best_base` is the constant `127/INT32_MAX` whatever the weights are. The device is therefore
+programmed with `SHIFT`=39 at every shape, 24 values inside the field, and the per-column `C` comes
+out at its `cmax` ceiling.
+
+The shift stays 39 over `sum|w|` from 128 to 1.7e7. The frozen call programs 27-34.
 
 Nothing in `librocketnpu` refuses a shift past the field. `rocket_rk3576_requant_params()` has
 no bound check, and the RK3576 emitter writes `out_cvt_shift` unmasked, where the RK3588 path
@@ -3100,8 +3130,8 @@ therefore the weaker construction, and a fallback rather than a replacement.
 
 ### The W8A8 path against the CPU at `pp512`
 
-The two CPU denominators ran in the same boot, interleaved with the NPU arm, two processes each.
-The table's per-process values are those two processes.
+The two CPU denominators ran in the same boot, interleaved with the NPU configuration, two processes
+each. The table's per-process values are those two processes.
 
 Without `assigned-clock-rates` in its device tree, this board runs the NPU at 786 MHz. The
 2026-09-30 image, which assigns 594 MHz, postdates every measurement in this note
@@ -3114,9 +3144,22 @@ calls over four. The two weights missing from the 168 are the final block's gate
 columns, less the final block's FFN (8960 + 8960 + 6144) and with no output head
 [host-computed].
 
+#### Revision history
+
+The 2026-08-11 record read the `pp512` figures as calibration measurements, with every offloaded
+call a calibration forward. That came from the separate `pp512 -r 1` run, whose 332 of 332
+calls calibrate. The timed run's +-1.80 is a standard deviation over its reps, so it had more
+than one. With `NCAL` at 2, only the first timed rep calibrates.
+
 ### Flash attention past a 512-token prompt
 
-The `ggml-rocket` source chain was read before the configuration ran.
+The `ggml-rocket` source chain was read before the configuration ran. On the 2026-08-11 build,
+`supports_op` claimed `FLASH_ATTN_EXT` subject only to shape, type, `n_tokens >= 16` and
+`n_kv >= rocket_flash_attn_min_kv()`, with no `rocket_rk3576_selected()` branch. The handler's
+only compute call was `rocket_flash_attn_fp16*`, and every path in `rocket_attn.c` then went
+through `rocket_matmul_fp16`. Its `mm_wrong_encoding()` returns `ROCKET_E_UNSUPPORTED` on any
+profile that is not `rk3588`. The backend gained the RK3576 decline in its 2026-08-22 build,
+which is what `ROCKET_FLASH_ATTN=0` had done by hand.
 
 ### Time and wall-clock share of the offloaded W8A8 path
 
@@ -3535,7 +3578,7 @@ The per-process term the gap accumulator exposes still had no mechanism at that 
 [HW sweep, one test point, 2026-08-13]
 
 A two-point throughput comparison of ubatch 512 against 1024 measured 0.2%, which resolves
-nothing against the configuration's +-15% spread.
+nothing against the ~5% process-to-process spread at `pp2048`.
 
 The entry's share is 664 x 36.40 ms = 24.17 s of the 169.7 s prefill, 14.2%. The intercept's is
 664 x 11.4 ms = 7.57 s, 4.5%, which is also 31.3% of 14.2% [host-computed].
@@ -3553,6 +3596,11 @@ At `pp512`, `pp512 -r 1` reports 332 of 332 calls as calibration forwards, confi
 The per-pair ratios are 1.30 / 1.34 / 1.30. The 1.31x is neither the tie the `pp512` figure gave
 nor the 2x of the F16 control. [HW sweep, H96 MAX M9, rocket 1.6.0, llama.cpp b10558,
 `ggml-rocket` build of 2026-08-19, measured 2026-08-23]
+
+The profiled run of 2026-09-25 is four processes at `pp2048 -ub 512`, with 540-560 converged
+calls a shape a process. The resident weight cube was on and the K-split off. [HW sweep, H96 MAX M9,
+`rocket` 1.6.0, NPU 786 MHz, four A72 threads, governor `performance`, llama.cpp b10356,
+`ggml-rocket` build of 2026-09-25, BO pool off, 2026-09-25]
 
 #### Estimates before the host K-split measurement
 
@@ -3586,6 +3634,18 @@ is discarded, and the governor is pinned to `performance`. The composition error
 
 The preview and the profiler reconcile on both counters. A reading against the wrong counter only
 appears not to reconcile.
+
+#### The planner map before the stall plan
+
+On 2026-08-11 the planner had no stall plan. At `M`=512 `N`=1536 it planned these submits
+[host-computed, 2026-08-11]:
+
+| `K` | 640 | 896-1280 | 1536-2560 | 2880-4096 | 4480-4608 | 5120-6144 |
+|---|---:|---:|---:|---:|---:|---:|
+| submits | 1 | 2 | 4 | 8 | 32 | 768 |
+| `Nt` | 1536 | 1536 | 1536 | 1536 | 768 | 32 |
+
+Two 4480 chunks then planned 64 submits. The stall plan entered the planner on 2026-09-27.
 
 #### The estimate with the added terms enumerated
 
@@ -3634,7 +3694,7 @@ scale and the summed partials.
 
 #### Excluded causes
 
-- *The frozen output scale, under-estimating.* The entry's saturation report does not fire on
+- *The frozen output scale, under-estimating.* The frontend's saturation report does not fire on
   either split configuration. The rocket channel is confirmed reaching stderr in the same logs,
   so the per-column scale is not being outrun. The report's threshold is 0.1% of the output,
   not zero, so "does not fire" means "under a tenth of a percent".
@@ -3679,9 +3739,16 @@ the per-window mean NLL out of the running estimate to compare the configuration
 | `k6144` | +0.1251 +- 0.0604 | 6 of 8 |
 | `CALSAFE`=1.2 | +0.1270 +- 0.0793 | 5 of 8 |
 
-Only the two narrow configurations, `k1792` and `k1280`, separate cleanly. The +-1.4 PPL moves
-(`k2048`, `k6144` and `CALSAFE`=1.2) are 1.6 to 2.1 standard errors and are not established at
-eight windows. A headline PPL that moves 1.4 at eight windows can rest on three of them.
+Three configurations separate cleanly, each worse on 8 of 8 windows. The two narrow ones,
+`k1792` and `k1280`, sit at 3.9 and 4.1 standard errors, and `k4096` at 4.1 [host-computed]. The
++-1.4 PPL moves (`k2048`, `k6144` and `CALSAFE`=1.2) are 1.6 to 2.1 standard errors and are not
+established at eight windows. A headline PPL that moves 1.4 at eight windows can rest on three of
+them.
+
+#### Revision history
+
+The record of these runs named only the two narrow configurations, `k1792` and `k1280`, as
+separating cleanly. `k4096`'s +0.3291 +- 0.0804 at 8 of 8 is as clean as either.
 
 ### Per-row activation scale
 
@@ -3711,8 +3778,11 @@ sweep, H96 MAX M9, rocket 1.6.0, 7.1.7, 2026-08-11]
 
 ### SmolLM2-1.7B
 
-SmolLM2-1.7B is the other ~1.5B model in the set measured, and it disagrees with Qwen2.5-1.5B on a
-term's size by 9x and by 38x. It is the second model for that reason.
+SmolLM2-1.7B is the other ~1.5B model measured. It is the second model because it disagrees
+with Qwen2.5-1.5B on the size of the terms both have. Per-axis input scales raise its
+perplexity 38x over the per-tensor input scale, 25.3 to 964, where they lower Qwen2.5-1.5B's
+from 14.23 to 13.22. The bootstrap's 0.3% estimator error costs it 0.0181 of ratio, against
+Qwen2.5-1.5B's 0.000055 (§"The frozen colmax from two device passes").
 
 ### Llama-3.2-1B-Instruct
 
@@ -4029,11 +4099,35 @@ call's output is dequantized at `sc2`, and `cbound` is set once per weight from 
 #### Separability of the calibrating-window damage
 
 Three `g` values and three `h` values, less one scale degeneracy, are five parameters through
-six points. The fit therefore has one residual degree of freedom.
+six points. The fit therefore has one residual degree of freedom, the two cuts measured at both
+1.5 and 2.25. The 1.0066x between their margin ratios is that degree of freedom.
 
 Excluded forms for `g`: two smooth two-parameter forms fit its three points. The form
 `(1-r)^2.52` in the cut's own undershoot fits to 9.3%, and a log-linear form in the cut fraction
-fits to 15.6%. Both are excluded at `M`/2 by sign.
+fits to 15.6%. Both are excluded at `M`/2 by sign. Both forms were fitted to the modeled `g`
+below.
+
+##### Revision history
+
+On 2026-08-22 the table subtracted the linear model `D_res = 0.0162*(Q/Q_ctl - 1)` at every
+test point. That included margins 1.5 and 2.25, where a no-cut run measures `D_res`. The
+model does not hold below `Q` = 1.5, which is every test point with a cut (§"The row cut at
+`M`/2"). Its values, where the body now subtracts the measured no-cut run:
+
+| test point | modeled `D_res` | `D_clip` |
+|---|---|---|
+| `q_r1024` | -0.0009 | -0.0062 |
+| `q_r1024g2p25` | +0.0068 | -0.0174 |
+| `q_shipfrac` | +0.0050 | +0.0216 |
+| `q_ship` | +0.0019 | +0.1033 |
+| `q_r512` | -0.0021 | +0.1297 |
+| `q_r128` | -0.0041 | +0.6803 |
+| `q_r32` | -0.0061 | +2.0046 |
+
+On those values the product fitted the six cut test points at `M`/4 and deeper to a worst
+residual of 2.31% (rms 1.86%). The cut factor `g` was 0.1327 at `M`/4, 0.6649 at `M`/16 and
+2.0046 at `M`/64, rising 5.01x, then 3.01x, per 4x reduction. The margin factor `h` was 1 at
+margin 1.5, 0.3561 at 1.875 and 0.1590 at 2.25.
 
 #### The margin factor `h`
 
@@ -4046,15 +4140,35 @@ test the extrapolation.
 Excluded: a log-linear form in the margin. It gives `h` 3.6386 at margin 1.00 and 1.9075 at
 1.25, missing by 2.02x and 1.35x.
 
-The margin ratio is 50.57 / 30.60 = 1.65x between the two models, and the exponent 4.838 /
-4.219 = 1.15x [host-computed]. The 2026-08-22 record gave the 1.65x as the exponent's ratio.
-
 The off-line clip-fraction readout was computed before the two test points ran. Their clip
 fractions are 9x larger than 8.7%, the largest the readout had been checked at.
 
 Excluded: the truncation mechanism as a predictor of the damage. Taken literally, it puts
 `D(1.0)/D(1.5)` at 21.9-54.2 against a measured 7.31, and at 3.37-3.82 when rescaled by its own
 validation miss. Its direction is right, and no magnitude from it is usable.
+
+##### Revision history
+
+On 2026-08-22 the two test points were read through a power law in `h`, fitted entirely inside
+[1.5, 2.25], `h(m) = (m/1.5)^-4.778`. Each test point's implied `h` was its `Dcal` less a
+modeled `D_res`(m), over `g`(`M`/4):
+
+| margin | implied `h` | power law |
+|---|---|---|
+| 1.00 | 7.3094 | 6.9407 |
+| 1.25 | 2.5645 | 2.3897 |
+
+The law extrapolated 1.5x to the minimum within 5.3% and 7.3%, with both measured values above
+it. It gave `Dcal`(1.0)/`Dcal`(1.25) as 2.912 against the measured 2.857. Its exponent was read
+as tracking the K set. On the same reading SmolLM2-1.7B's `R` over [1.0, 2.25] was 30.60
+against Qwen's 50.57, 1.65x smaller. Its exponent was 4.22 against 4.84, 1.15x shallower
+(4.838 / 4.219) [host-computed]. The 2026-08-22 record gave the 1.65x as the exponent's ratio.
+
+Two later readings replace it. No run isolates `D_res` below 1.5. The modeled `D_res` inside
+each implied `h` has the wrong shape there, and at 1.00 the wrong sign (§"`BOOTMARGIN` and the
+no-cut response"). Read
+directly, `Dcal` is not one power law over the margin (§"The direct (cut, margin) surface"). The
+model-free comparison between the two models is the raw ratio, 18.40x against 34.92x.
 
 #### The margin index across architectures and K sets
 
@@ -4079,6 +4193,9 @@ and "scales with depth". The body therefore gives the two ratios and not a label
 
 Excluded: baseline sharpness as a driver. Against PPL[8], `D_res` is non-monotone: Qwen
 measures 7.2534 and 0.00811, SmolLM2 7.4265 and 0.02060, and Llama 11.4024 and 0.01626.
+
+Over the four anchors, `n_ff` and `n_ff`/`n_embd` were both read as candidates for what sets
+`R`, because both are monotone there. SmolLM2-135M separates them from the K set.
 
 SmolLM2-135M was first read, on 2026-08-22, as refuting model scale together with the ratio and
 `n_ff` alone. The direct surface of the same day, on which the numerator is monotone in scale,
@@ -4131,13 +4248,22 @@ within a single run as well as between runs.
 
 The scoring refuses unless thirteen already-scored `Dcal` values reproduce to 5e-4.
 
+##### Revision history
+
+On 2026-08-22 these two split points were read as a law. The clip damage was taken to follow
+the chunk depth, not the chunk count, with the maximum chunk depth as the variable that fits. The
+fixed-depth comparison of the same day and the `KCHUNK` sweep on SmolLM2-135M show that the
+maximum depth does not set the level. At one maximum depth the three checkpoints differ 2.637x
+(§"Three checkpoints at a fixed chunk depth"), and on SmolLM2-135M two settings that share it
+differ 27.4% (§"The `KCHUNK` sweep on SmolLM2-135M").
+
 ### Three checkpoints at a fixed chunk depth
 
 [HW sweep, 6 runs `rc=0`, `-ub` 2048 `--chunks` 4, `.so` md5 `ea40bc1b`, corpus `3ce70e93`. Each
 run took 95-607 s, backstop 689 -> 689, 0 dmesg WARNINGs, taint 4608, `ondemand`, 2026-08-22.]
 
 The SmolLM2-360M column is the run of §"The calibrated-column population", not re-run.
-Each score was gated on reproducing ten already-scored `Dcal` values to 5e-4.
+Each score required reproducing ten already-scored `Dcal` values to 5e-4.
 
 The population closed form gives both new populations exactly: 853248 columns with the `Kc`
 histogram {512: 478464, 64: 374784}, and 6684672 columns with {512: 6684672}. With these five
@@ -4427,7 +4553,7 @@ The 17.93% saving at `CALROWS`=128 is 18.02% common-mode-corrected, 18.13% drift
 #### Accuracy
 
 On Qwen2.5-1.5B, a readout's objection that 0.061% of columns would be exposed needed roughly 18x
-the measured windows-3-8 shift to show. The library's saturation report is fed `NULL` by the
+the measured windows-3-8 shift to show. The frontend's saturation report is fed `NULL` by the
 calibrating branch, so its silence bounds only the converged phase.
 
 The 29-window SmolLM2-1.7B run reproduces the 8-window configuration's six per-window
@@ -4446,6 +4572,13 @@ reached one model and not the other. It is not a general between-build error bar
 The row cut's -0.0004 +/- 0.0040 over windows 2-8 is the best-resolved number in that
 configuration.
 
+##### Revision history
+
+On 2026-08-12, with Qwen2.5-1.5B and SmolLM2-1.7B measured, the converged-window cost of
+`NCAL`=1 was read as resolving on neither model, at 0.56 se and 0.55 se. Llama-3.2-1B-Instruct,
+measured 2026-08-20, resolves it at 3.0 se on its own, and the three models pooled put it at
++0.566%, 2.83 se from zero (§"`NCAL`=1 across the three models").
+
 #### Window 1 as a control
 
 Window 1 is byte-identical under both settings. `calibrating` is `cal_done < ncal`, 0 is below
@@ -4458,7 +4591,7 @@ noise floor on identical work, measured at 5.4%.
 The two configurations' per-call figures agree to 1.4% and 1.8%. The 11.5 s projection against
 the measured 11.6 s is a closure of 0.994.
 
-The run's wall-clock time moved the other way (4.38 -> 4.62 min) and carries no signal. Window
+The run's wall-clock time moved the other way (4.38 -> 4.62 min) and shows no signal. Window
 1's identical work differed 5.4% between the two processes, and the totals differed 5.5%, so the
 pair is entirely inside the process noise floor. The `quant+rot` bucket, which this
 configuration cannot reach, moved +5.5% in the same pair.

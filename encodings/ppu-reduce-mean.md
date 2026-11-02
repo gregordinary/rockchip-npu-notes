@@ -73,9 +73,8 @@ reset, and still leaves the correct values [HW sweep].
 
 > [!CAUTION]
 > A run on a driver with no PPU completion class read zero or garbage on about half the
-> channels of a 2×2 chain. On that driver every pool job retired by timeout. The cause of the
-> wrong values is not established. A difference in that driver's timeout handling is the
-> proposed cause [hypothesis].
+> channels of a 2×2 chain. On that driver every pool job retired by timeout. A difference in
+> that driver's timeout handling is the proposed cause of the wrong values [hypothesis].
 
 ## Accuracy
 
@@ -93,6 +92,36 @@ The mean is checked against an fp64 reference on these cases [HW sweep]:
 
 The first four cases measure all `bad=0`, `max_abs <= 0.001`. The host fallback is exact. The
 per-pass error is fp16 rounding + ~1e-3 reciprocal quant.
+
+### Passes past the output-width allowance
+
+**Conditions:** RK3588 (Turing RK1), `rocket` 1.3.0, NPU clock 928 MHz, 2026-11-02. Square
+maps, C 1 to 64, mean, max and min.
+
+Each pass is a pool, so each is bound by the PPU's output-width allowance for its window
+([ppu-pooling.md](ppu-pooling.md) §"Output-width allowance"). A chain whose first pass runs past
+it returns incorrect mean, max and min, and its jobs retire at the driver's timeout
+[HW sweep 2026-11-02]:
+
+| Map | Passes (window, output width) | Result |
+|---|---|---|
+| 64×64 | 4×4 to 16 wide, then 16×16 to 1 | Max and min exact, mean within 0.003 |
+| 125×125 | 5×5 to 25 wide, then 5×5 to 5, then 5×5 to 1 | Max and min exact, mean within 6.1e-5 |
+| 343×343 | 7×7 to 49 wide, then 7×7 to 7, then 7×7 to 1 | Max and min exact, mean within 2.3e-5 |
+| 216×216 | 2×2 to 108 wide, then 9×9 to 12, then 12×12 to 1 | Incorrect |
+| 256×256 | 16×16 to 16 wide, then 16×16 to 1 | Incorrect |
+| 288×288 | 2×2 to 144 wide, then 9×9, then 16×16 | Incorrect |
+| 512×512 | 2×2 to 256 wide, then 16×16, then 16×16 | Incorrect |
+
+A chain of three passes is exact when every pass is within the allowance. Each incorrect map
+has a pass past it: the pass that opens the chain at 256, 288 and 512, and the 9×9 pass at 216. The mean's
+error is the fp16 reciprocal's rounding, so its absolute size follows the input's magnitude.
+
+> [!CAUTION]
+> `rocket_global_avgpool_plan` admits every 16-smooth map with equal factor counts up to 8192,
+> and checks no pass against the output-width allowance. A map with a pass past it, such as
+> 256×256, 288×288 or 512×512, computes an incorrect result through
+> `rocket_global_avgpool_fp16`, `rocket_global_maxpool_fp16` and `rocket_global_minpool_fp16`.
 
 ## ReduceMax / ReduceMin (GlobalMaxPool / GlobalMinPool)
 
@@ -115,10 +144,6 @@ correctness: a max or min reduce would be correct under any grouping.
 (same file/header) are the spatial ReduceMax / ReduceMin. They share the mean's
 decidability check (`rocket_global_avgpool_plan`) and factor order.
 
-The cube layout is the conv feature cube (`feature_data`, C2=8), so the input packB and the
-output de-tile reuse the conv path. Single-pass global pooling (H,W <= 16) is one PPU
-average pool.
-
 ### Keeping every chained intermediate >= 4
 
 The library applies the axis factors smallest-kernel-first. The running quotient after pass
@@ -130,23 +155,27 @@ ever < 4.
 The NPU path additionally requires H and W to have the same factor count. Every pass then
 pools both axes, and neither axis collapses to 1, which would create a height-1/width-1
 intermediate in the tail passes. The rule holds for every square map (`H==W`, the usual
-GlobalAvgPool case) and equal-count rectangles. Both rules keep the library off the two
-shapes that are not characterized: a 1-wide intermediate and a chain past two passes. The
-shared plan keeps the equal-count rule for max and min for the same reason.
+GlobalAvgPool case) and equal-count rectangles. Both rules keep the library off the two shapes
+the sub-4 measurement did not reach. One is a 1-wide intermediate, and the other an
+intermediate below 4 in a chain past two passes. The shared plan keeps the equal-count rule for max and min for
+the same reason.
 
 ### Decomposability and fallback
 
 `rocket_global_avgpool_plan(C,H,W)` returns 0 (NPU) iff both axes are 16-smooth (every
-prime factor <= 16, covering all powers of two and 7,14,28,56,49,98,…) and have equal
-factor count. A non-16-smooth axis (prime factor 17,19,23,…) or an unequal factor count
-(e.g. 56×8) takes an exact host reduction (`rocket_global_avgpool_ref_fp16`): always the
-correct answer, on the CPU.
+prime factor <= 16, covering all powers of two and 7,14,28,56,49,98,…), have equal factor
+count, and `C`, `H` and `W` are each at most 8192. Otherwise it returns a negative
+`rocket_status`: `ROCKET_E_TILING` for a non-16-smooth axis (prime factor 17,19,23,…) or an
+unequal factor count (e.g. 56×8), and `ROCKET_E_UNSUPPORTED` past 8192. Every such shape
+takes an exact host reduction (`rocket_global_avgpool_ref_fp16`): always the correct answer,
+on the CPU.
 
 ### ReduceSum
 
 ReduceSum-over-spatial is intentionally not a native pass. The avg reciprocal field encodes
 `fp16(65536/k)` and cannot represent ×1 (`k=1` -> 65536 = inf in fp16), so a sum-pool would
-need a different encoding. `mean · H · W` on the host is the trivial wrapper.
+need a different encoding. Software computes a spatial sum as the mean times `H · W` on the
+host.
 
 ## Evidence
 
@@ -175,6 +204,15 @@ these checks:
 - Factor-axis unit checks (16-smooth detect, products in `[2,16]`)
 - An off-device schedule + cube-layout self-check (true-division telescoping == direct mean)
 - On-hardware runs vs the fp64 oracle, in the Accuracy table
+
+### Passes past the output-width allowance
+
+The probe ran each map through the three library entries against an fp64 reference, one
+process a map. At 64, 256, 288 and 512 the inputs were hashed values in [0.5, 4] for the mean
+and [−4, 4] for max and min. At 125, 216 and 343 they were in [−4, 4] for all three, C 8 to 64,
+on a freshly booted board. At 216, 256, 288 and 512 nearly every channel differs, and the
+max at 216 returns NaN. Every chain at 256 and 512, all but one at 288, and two at 216 retired
+at the 500 ms timeout. The chains at 125 and 343 completed normally.
 
 ### ReduceMax / ReduceMin
 

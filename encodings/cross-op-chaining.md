@@ -6,7 +6,8 @@ different op. The host never de-tiles and re-tiles the intermediate.
 Same-op instance chaining is a different mechanism: one hardware kick over many tasks. The
 tiles of one matmul, or the per-head QK/AV of one flash-attention, are laid contiguously with a
 `PC_BASE_ADDRESS` trailer. The PC then runs them as one job. That mechanism, and the datatypes
-it is measured on, are in [regcmd-task-model.md](regcmd-task-model.md) §contiguous-chaining.
+it is measured on, are in
+[regcmd-task-model.md](regcmd-task-model.md#contiguous-chaining-batched-submit).
 
 ## Constraints
 
@@ -74,11 +75,12 @@ ragged last M-tile (for example Whisper's `M=1500`) still aligns lane-for-lane.
 
 #### Whole-cube output BO
 
-The output BO must hold the whole cube. The default `mm_compute` rolls its output BO one
-`BATCH` of tiles at a time and accumulates the K-partials in host row-major `acc`
-(`detile_accum_f16`). A multi-tile output therefore never exists as one complete cube. The
-K-accumulation path leaves the full result in a cube BO, and `mm_compute_kacc_cube` does
-exactly that.
+The output BO must hold the whole cube. `ROCKET_KACC=0` selects `mm_compute`, the
+host-accumulating path. It rolls its output BO one `BATCH` of tiles at a time and accumulates
+the K-partials in host row-major `acc` (`detile_accum_f16`). The default `mm_compute_kacc`
+accumulates on the NPU and de-tiles each batch before the next one reuses its buffers. Neither
+leaves a multi-tile output as one complete cube. `mm_compute_kacc_cube` accumulates on the NPU
+and leaves the full result in a cube BO.
 
 `mm_compute_kacc_cube` forces data-reuse tile order, so tile `gi` is placed at the canonical
 `(mi*nNt+ni)*out_slot` offset the consumer expects. It K-accumulates on the NPU into the
@@ -129,15 +131,16 @@ wall-clock time [HW sweep]:
 | LLM prefill (Qwen3.5-0.8B, pp512) | 289 ms | 758 ms | 12768 ms | ~8% |
 | SigLIP-B/16 encoder | 6213 ms | 1919 ms | 10080 ms | ~81% |
 
-The LLM's matmuls are large and compute-bound. NEON de-tile ([../perf/](../perf/)) and
+The LLM's matmuls are large and compute-bound. NEON de-tile
+([../perf/not-mac-bound.md](../perf/not-mac-bound.md#memory-bound-and-gather-bound-cpu-work)) and
 K-accumulation already make the round-trip cheap, and cross-op chaining can remove only
 the FFN-internal subset. The gain is therefore at most ~2-3% at this operating point
 [expected].
 
 The encoder is the opposite. It has many smaller ops, each paying a full activation
-re-scatter, and it runs GELU on-NPU (more ops to chain). It is ~10x more transform-bound,
-so keeping the encoder block's intermediates cube-resident is the case where chaining
-reduces wall-clock time.
+re-scatter, and it runs GELU on-NPU (more ops to chain). Its transforms are ~81% of compute
+against the LLM's ~8%, so keeping the encoder block's intermediates cube-resident is the case
+where chaining reduces wall-clock time.
 
 ### Encoder measurement
 
@@ -160,7 +163,7 @@ per block). The `wait` rises because the matched tiling pins fc2's `Kt` to the p
 tradeoff"). The result is net-positive in this transform-bound regime. A larger shared tile
 would shrink the `wait` penalty [expected].
 
-### Cube-chaining is single-fd, and loses to multicore on a resident path
+### Cube chaining and multicore on a resident path
 
 Cube-chaining is single-fd, and it loses to multicore on a resident path
 [HW sweep 2026-06-29]. The gain above is on the simple SigLIP path, where every matmul is

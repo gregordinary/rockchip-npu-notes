@@ -11,23 +11,24 @@ classes come from the two SoCs driven to bit-exact compute: the RK3588 and the R
 
 ## Register offsets across revisions
 
-Of the nineteen CNA geometry registers in the RK3588-to-RK3576 delta table
-([rk3576.md](rk3576.md)), two coincide by both offset and meaning: `0x1014`
-(stride) and `0x1110` (weight address). Every other register moved, was re-packed, appeared,
-or collided.
+Two CNA geometry registers coincide between the RK3588 and the RK3576 by both offset and
+meaning: `0x1014` (stride) and `0x1110` (weight address) ([rk3576.md](rk3576.md) §"CNA register
+encoding"). Each of the other eighteen rows of that section's delta table moved, was re-packed,
+appeared, or collided.
 
 An RK3588 CNA geometry register applied by offset to a new revision is therefore right about
-one time in ten.
+one time in ten [host-computed].
 
 > [!CAUTION]
 > A wrong geometry register does not fault. The task produces output of the correct size with
-> incorrect values, or completes and writes nothing. Both signatures are indistinguishable from
-> a dozen other causes ([rk3576-regcmd.md](rk3576-regcmd.md), "The wall has two signatures"),
-> so an offset prior is worse than none.
+> incorrect values, or completes and writes nothing. A cold start of the unpatched driver
+> produces the same two results, and a zero coefficient buffer the all-zero one
+> ([rk3576-regcmd.md](rk3576-regcmd.md) §"Working against an unpatched driver"). A register
+> taken by offset therefore gives no sign when it is wrong.
 
 A third revision sits between the two. In dnhkng/open-rknpu's RV1106 emitters, CORE, DPU and
-DPU_RDMA are at the RK3588's offsets with the RK3588's fields. So are the CNA geometry words,
-the feature and weight bases and the pad value at `0x1184`. A few CNA words follow the RK3576.
+DPU_RDMA are at the RK3588's offsets with the RK3588's fields. The CNA geometry words, the
+feature and weight bases and the pad value at `0x1184` are at the RK3588's offsets too. A few CNA words follow the RK3576.
 `0x103C` and `0x1044` contain the data entries and the input width. The input width minus one
 fills both halves of `0x118C`.
 
@@ -41,8 +42,7 @@ The RK3566 is expected to be the opposite case. Per the RK3568 `rocket` RFC, it 
 
 ## The encoding delta
 
-Every RK3576 difference from the RK3588 map is one of the six edit operations below. The
-re-pack is an edit list, not a transform.
+Every RK3576 difference from the RK3588 map is one of the six edit operations below.
 
 | Edit | Example |
 |---|---|
@@ -56,8 +56,8 @@ re-pack is an edit list, not a transform.
 A single address-translation layer cannot express widened fields, compaction, or collisions,
 so each revision needs its own regcmd encoder, not an offset table.
 
-A value that appears twice is a Duplicate, not a transcription error. The SoC expects both,
-and software must program both.
+A value that appears twice is a Duplicate: the SoC expects both, and software must program
+both.
 
 ## Matching registers by value and by function
 
@@ -91,10 +91,13 @@ These hold on both the RK3588 and the RK3576, and are the facts to assume on ano
   X1/X2/Y mapping).
 - The coefficient algebra. The DPU adds `B*sum(x)`, so a weight zero point is programmed
   negated, and the input zero point folds into the `A` term.
-- Requant is `(acc * SCALE) >> SHIFT` with a per-output-channel multiplier and one
-  global shift.
+- Requant is `(acc * SCALE) >> SHIFT`, with a per-output-channel multiplier in the BS stage
+  and a global shift for each sign of the product.
 - The `value - 1` and `(hi<<16) | lo` field conventions.
 - No on-chip layout conversion and no hardware gather. The host packs the cubes.
+- A matmul computes at any M, M = 1 included. On the RK3588, software must program the feature
+  surface stride as `width × (H − 4)` for it ([matmul-as-conv.md](../matmul-as-conv.md),
+  Erratum E3).
 
 ## Inverted behavior
 
@@ -103,23 +106,20 @@ correctness constraints invert outright.
 
 | Axis | RK3588 | RK3576 |
 |---|---|---|
-| Matmul precision | fp16 is faster. Resident int8 prefill is 0.60x fp16 | int8 is faster. A resident fp16 GEMM costs 2.0-2.2x the resident int8 one. The convolution-form fp16 program contracts 16 input channels a task, and is 30-299x slower |
-| M alignment | No constraint once the feature surface stride is `width × (H − 4)` ([matmul-as-conv.md](../matmul-as-conv.md)). `M = 1` is bit-exact | No constraint. `M = 1` is bit-exact |
-| Matmul output | raw int32 readback | int8 through the DPU requant |
-| Integer partials | No on-chip integer K-accumulation is implemented. The eltwise ALU adds integers exactly under the whole precision bundle, and a K-accumulation on it is not measured | An int32 output writer exists, so a K split writes exact integer partials out |
-| M=1 GEMV | fp16 throughput ~82x below the batched-GEMM peak, through the vendor RKNN API ([decode-gemv.md](../perf/decode-gemv.md)). Decode stays on the host | bit-exact and unconstrained (still submit-bound) |
+| Matmul precision | fp16 is faster in the whole-tile program. Resident int8 prefill is 0.60x fp16 at ~816 MHz | int8 is faster. A resident fp16 GEMM costs 2.0-2.2x the resident int8 one. The convolution-form fp16 program contracts 16 input channels a task, and is 30-299x slower |
+| int8 matmul output | Raw int32 accumulators | int8 through the DPU requant, or raw int32 through the dense writer |
 | Multiple cores | 3 cores, per-fd entities, scheduling implemented and correct | 2 cores. Two jobs in flight at once produce incorrect output on 96-100% of calls |
 | Completion | maskable completion interrupt | `PC_DONE` read-only in `INTERRUPT_MASK`, so the driver polls it. The DPU's completion interrupt does reach the GIC |
 | HW byte counters | reading the `0x2xxx` page hard-locks the SoC | `dt_wr`/`dt_rd`/`wt_rd` are readable |
 | Matmul tile cap | `max_tile` 256, `ngroup` 16 | `max_tile` 2048, `ngroup` 32 |
-| Performance limit | DMA/dispatch-bound at this operating point | a per-op call is host-bound: the int8 matmul entry's device `wait` is 13.7-25.6% of a call at M 512-2048 [HW sweep, 2026-08-11]. Four resident ImageNet graphs, each one kick, are 43-66% submit + wait [HW sweep, 2026-08-03] |
+| Performance limit | The whole-tile matmul program is DMA/dispatch-bound at ~816 MHz | A per-op call is host-bound: the int8 matmul entry's device `wait` is 13.7-25.6% of a call at M 512-2048 [HW sweep, 2026-08-11]. Four resident ImageNet graphs, each one kick, spend 43-66% of their time in submit and wait, and are not host-bound [HW sweep, 2026-08-03] |
 
 > [!CAUTION]
 > On the RK3576, a wide output written through a partial output stage leaves the next submit
 > of any kind writing nothing. The effect holds across processes, until the power domain
 > cycles, and has no RK3588 counterpart. The cause is the partial stage and not the width: the
 > whole output stage writes int32 and fp32 and leaves the next submit unaffected
-> ([rk3576.md](rk3576.md) §"The poisoning is one hazard, and its cost is a system setting").
+> ([rk3576-hazards.md](rk3576-hazards.md) §"The wide-output hazard").
 
 ### Classifying a fact before porting it
 

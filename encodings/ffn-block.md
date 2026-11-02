@@ -17,8 +17,8 @@ issue E9 in [../README.md](../README.md)) and the standalone GELU's flat-tail mu
 > For the SiLU domain, gate logits outside the LUT band (`|x| ≳ 12`) saturate. Software must
 > keep the activation in range. Post-norm logits usually are.
 
-The cube-resident path is single-batch only (`nMt*nNt <= 64`). Larger shapes fall back to the
-host-handoff path.
+The cube-resident path is single-batch only (`nMt*nNt <= 64`). Larger shapes, and shapes whose
+tiling cannot be matched, fall back to the host-handoff path.
 
 ## Lowering
 
@@ -27,18 +27,18 @@ host-handoff path.
 Three of the four ops are plain matmul, validated on hardware. The only other computation is
 the gated activation `prod = act(gate) ⊙ up`, so that is the reusable primitive
 (`rocket_geglu_fp16`), and the block wraps it between the projections. The geglu is
-`rocket_activation_fp16(kind, gate)` followed by `rocket_ew_mul_fp16(act_gate, up)`, both on
-the NPU. The activation is the 2-pass SiLU: sigmoid LUT then multiply, with no x~0 glitch.
+`rocket_activation_fp16(kind, gate)` followed by `rocket_ew_mul_fp16(act_gate, up)` on the NPU.
+The activation is the 2-pass SiLU, with no x~0 glitch: a sigmoid LUT on the NPU, then the
+multiply by x. That multiply runs on the host unless `ROCKET_ACT_NPU_MUL` is set.
 
 `librocketnpu` implements the block as `rocket_ffn_fp16` plus the gated-activation core
 `rocket_geglu_fp16`, in `src/rocket_ffn.c`, declared in `include/rocket_ffn.h`.
 
 ### Cube-resident fusion
 
-The `rocket_ffn_fp16` composition hands off through the host between ops. Each matmul reads
-back its output (NEON de-tile -> row-major), and the activation and ew ops re-scatter into
-their own cubes. The result is correct, and every op costs a de-tile->host->re-pack round
-trip.
+In `rocket_ffn_fp16` each matmul reads back its output (NEON de-tile -> row-major), and the
+activation and ew ops re-scatter into their own cubes. The result is correct, and every op
+costs a de-tile->host->re-pack round trip.
 
 The cube-resident variant `rocket_ffn_fp16_fused` keeps the `[M,I]` intermediates
 cube-resident between `matmul -> act -> ⊙ -> matmul`. The gate and up projections leave full
@@ -49,18 +49,17 @@ adds the `+b1` on the cube (`mm_scatter_bias_cube` + a flat ew-add), since bias 
 per-column, not flat.
 
 The down-matmul's input feature cube (`K=I`) and the geglu output cube (`channels=I`) share a
-layout. An fp16 matmul's narrowed output cube and the fp16 input feature cube are the
-identical `feat_idx` C2=8 layout. Feeding one matmul's output BO straight into the next (same
-IOVA, zero host touch) is therefore bit-faithful. Element-wise ops (the geglu act + ⊙)
-preserve the cube, and pad lanes stay 0 (`act(0)·0 = 0`). The path is built from three
-pieces:
+layout ([cross-op-chaining.md](cross-op-chaining.md)). Feeding one matmul's output BO straight
+into the next (same IOVA, zero host touch) is therefore bit-faithful. Element-wise ops (the
+geglu act + ⊙) preserve the cube, and pad lanes stay 0 (`act(0)·0 = 0`). The path is built
+from three pieces:
 
 - **Full-cube output and matched tiling.** `mm_compute_kacc_cube` leaves the complete KACC
   output in a caller BO in canonical tile order (no de-tile). `mm_plan_init_pin` pins
   `Nt(gate/up) == Kt(down)` to a shared `T`=256 (a multiple of 32), so the cubes alias
-  tile-for-tile. See [cross-op-chaining.md](cross-op-chaining.md).
-- **Gate/up fusion** (`rocket_matmul_fp16_stream_fused`) is available, and the fused FFN does
-  not use it. A fused `[M,2I]` cube interleaves gate/up by N-tile, so the on-cube `act⊙up`
+  tile-for-tile.
+- **Gate/up fusion** (`rocket_matmul_fp16_stream_fused`) is available. The fused FFN does not
+  use it, because a fused `[M,2I]` cube interleaves gate/up by N-tile, so the on-cube `act⊙up`
   would need a strided pair-up. Two separate cubes (identical layout) keep the activation and
   mul flat.
 - **matmul -> activation epilogue** (`gen_conv2d_task` / `conv_params_t.act`) is an
@@ -89,10 +88,10 @@ host-handoff path [HW sweep].
 
 The cube-resident path's gain depends on the workload [HW sweep]. For the LLM, the round
 trips are already cheap (NEON de-tile + KACC), and the FFN-internal subset that cross-op
-chaining removes does not justify the path. In the transform-bound encoder (SigLIP/Whisper
-~80% transform-to-compute), the cube-resident encoder FFN reduces the input re-tile and output de-tile
-time, with a `wait` rise from the pinned-`Kt` K-fragmentation. The per-workload split and the
-measured table are in [cross-op-chaining.md](cross-op-chaining.md).
+chaining removes does not justify the path. The SigLIP-B/16 encoder is transform-bound, its
+transforms ~81% of compute. There the cube-resident encoder FFN reduces the input re-tile and
+output de-tile time, with a `wait` rise from the pinned-`Kt` K-fragmentation. The per-workload
+split and the measured table are in [cross-op-chaining.md](cross-op-chaining.md).
 
 ## Evidence
 

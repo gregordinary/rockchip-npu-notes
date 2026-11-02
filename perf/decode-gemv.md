@@ -19,7 +19,7 @@ speculative decoding (§"Applicability").
 ### GEMV and memory bandwidth
 
 GEMV moves one weight byte per two FLOPs: every parameter is read from DDR exactly once and
-used once. Memory bandwidth therefore sets decode throughput, and the MAC array does not.
+used once. Memory bandwidth therefore sets decode throughput, but the MAC array does not.
 Prefill is not MAC-bound either ([not-mac-bound.md](not-mac-bound.md)), for a different
 reason: it is bound by DMA and dispatch, with the MACs idle. Decode is bound by DDR bandwidth,
 with both the MACs and the dispatch path idle.
@@ -45,15 +45,16 @@ CBUF ([../matmul-as-conv.md](../matmul-as-conv.md) §"CBUF weight streaming"). A
 streams ~5.4 GB/s, fp16 and int8 alike. Three cores driven from three processes on separate
 fds reach ~16.4 GB/s at fp16 and ~15.4 GB/s at int8 [HW sweep 2026-10-21].
 
-llama.cpp's CPU decode on the same board streams ~16-20 GB/s [host-computed]. Llama-3.2-3B
-decodes at 7.88 t/s on 1.87 GiB at Q4_K_M, 5.62 t/s on 3.18 GiB at Q8_0, and 3.15 t/s on
-5.98 GiB at F16, on 8 threads ([data/llama32-3b.md](data/llama32-3b.md)). At equal bytes per
-weight, the NPU's stream therefore only matches the CPU's before any per-matmul host cost, and
+llama.cpp's CPU decode on the same board streams ~22-27 GB/s on the four A76 cores
+[host-computed]. On llama.cpp b11539 at `taskset 0xf0 -t 4`, Llama-3.2-3B decodes at 11.09 t/s
+on 1.87 GiB at Q4_K_M [HW sweep 2026-11-01]. Ministral-3-8B decodes at 4.72 t/s on 4.83 GiB at
+Q4_K_M, 3.01 t/s on 8.40 GiB at Q8_0 and 1.60 t/s on 15.81 GiB at F16. At equal bytes per
+weight, the NPU's stream is therefore below the CPU's before any per-matmul host cost, and
 decode stays on the CPU.
 
 **Conditions:** RK3588 (Turing RK1), kernel 7.2.9, `rocket` 1.3.0, NPU clock 928 MHz, CPU
 governor `performance`. Each NPU rate is the weight bytes over the median submit-to-fence time,
-one submit and fence a run. The mainline kernel on this board exposes no DDR devfreq, so the
+one submit and fence a run, measured 2026-10-21. Each CPU rate is `tg64`, measured 2026-11-01. The mainline kernel on this board exposes no DDR devfreq, so the
 DDR runs at the rate the bootloader trained [live 2026-10-21].
 
 An external userspace runs decode on the NPU with per-channel int4 and int8 weights, at an
@@ -83,7 +84,7 @@ sources are Hummingbird+ (Li et al., *FPGA '26*) and the llama.cpp ARM GEMV thre
 - The vendor's on-NPU decode is also bandwidth-bound. Hummingbird+ cites RKNN-LLM at
   "nearly 10 token/s on a 3B LLM on RK3588". The proprietary W4A16 path runs decode *on*
   the NPU and measures in the same band a CPU Q4 decode reaches on this chip. On-NPU decode
-  is possible, and it is not faster.
+  is possible, but it is not faster.
 
 ## Model and format options
 
@@ -91,7 +92,7 @@ The portable ideas in this literature are model and format choices, not NPU code
 bytes moved per token, which is the only thing that helps a bandwidth-bound decode. Stock
 llama.cpp provides them on the CPU side:
 
-- **Dual-precision W4 / KV8** (Hummingbird+ §"Dual Precision Operand Packing"): 4-bit
+- **Dual-precision W4 / KV8** (Hummingbird+, its section "Dual Precision Operand Packing"): 4-bit
   linear weights and an 8-bit KV cache. In llama.cpp this is a Q4_K (or Q4_0) GGUF plus
   `--cache-type-k q8_0 --cache-type-v q8_0`. Fewer weight and KV bytes per token give a
   faster decode, directly.
@@ -154,7 +155,9 @@ models and jfk.wav, greedy from `<|sot|><|en|><|transcribe|><|notimestamps|>`.
 | base | 21.1-22.1 ms | 12.6 ms | 8.5-9.6 ms | 16.3-17.3 core-ms | 8.1-8.3 ms |
 | small | 58.1-59.8 ms | 33.1-33.3 ms | 24.7-26.4 ms | 42.2-43.9 core-ms | 22.4-22.6 ms |
 
-The whisper.cpp step is `whisper-cli`'s decode time per run (`-bs 1 -nf`, 4 threads). The
+The whisper.cpp step is `whisper-cli`'s decode time per run (`-bs 1 -nf`, 4 threads), its
+faster CPU configuration. At 8 unpinned threads `whisper-bench`'s decode runs 1.30-1.45x slower
+on base and 4.9-5.6x slower on small [HW sweep 2026-11-02, whisper.cpp v1.9.5]. The
 wall-clock ratio is 2.71-2.80x at tiny, 2.60-2.67x at base and 2.57-2.68x at small. On
 `ondemand` with `cpu-sleep` on, the ratio measures 2.35-2.5x, because whisper.cpp's step
 gains more from pinning than the NPU path does
@@ -186,7 +189,7 @@ between steps. The CPU per step is process CPU time over a replay [HW sweep 2026
 | whisper.cpp, 1 thread | 19.5-19.8 ms | 19.4-19.8 core-ms | 56.7-57.3 ms | 56.6-57.1 core-ms |
 | NPU path | 20.8-22.0 ms | 15.9-17.2 core-ms | 58.0-62.8 ms | 42.0-46.8 core-ms |
 
-The whisper.cpp steps include the ~0.5 ms sampling stand-in, and the NPU steps do not. With
+The whisper.cpp steps include the ~0.5 ms sampling stand-in, but the NPU steps do not. With
 the stand-in added to the NPU path, the NPU path costs 0.84-0.90x of one thread's CPU at base,
 and 0.74-0.83x at small. Its wall-clock time is 1.08-1.14x and 1.02-1.11x of one thread's.
 
@@ -216,7 +219,7 @@ could. Two terms make up its CPU time: the host cross-attention and the matmul p
 (§"The CPU it costs"). Neither cross-attention on the NPU nor a one-kick matmul path is
 implemented.
 
-A whole-graph decoder on the vendor stack takes the other route. boundarybitlabs/rkwhisper
+A whole-graph decoder on the vendor stack takes the other approach. boundarybitlabs/rkwhisper
 compiles each decoder step as one graph. The graph takes the token, a static 448-slot
 self-attention cache, and every layer's cross-attention keys and values. Three mask inputs
 update the cache by multiply and add rather than a scatter [source-confirmed: their exporter
@@ -230,8 +233,15 @@ constant within a window. None of its timings is reproduced here.
 
 The NPU rates are `tests/gemv_bw_probe` at M 4, with each output scored exactly against an
 integer reference before the timed runs. The three-core figure ran three processes at once, and
-all three cores raised interrupts. The CPU rates are the `tg64` rows of
-[data/llama32-3b.md](data/llama32-3b.md), measured 2026-07-03, multiplied by each GGUF's size.
+all three cores raised interrupts. The CPU rates are the `taskset 0xf0 -t 4` `tg64` rates of
+ggml-rocket's measurement record (`MEASUREMENTS.md` §"README"), three repetitions from a memory
+reset. Each is multiplied by its GGUF's size from [data/llama32-3b.md](data/llama32-3b.md) and
+[data/ministral3-8b.md](data/ministral3-8b.md): 22.3, 24.5, 27.1 and 27.2 GB/s
+[host-computed].
+
+At unpinned `-t 8` on that build, the same GGUFs decode at 0.41-0.76x those rates. On the build of
+2026-07-03 at 8 threads, Llama-3.2-3B decoded at 7.88 t/s at Q4_K_M, 5.62 at Q8_0 and 3.15 at
+F16, ~16-20 GB/s ([data/llama32-3b.md](data/llama32-3b.md)).
 
 ### Throughput at M=1
 
@@ -249,6 +259,9 @@ each configuration. Each figure is a range over three passes with the configurat
 rotated, and each NPU figure is a median over 64 steps. The wall-clock ratios are paired within
 a pass. The raw data and both measurement drivers are in
 [data/whisper-decode/](data/whisper-decode/).
+
+The 8-thread comparison is `whisper-bench`'s decode time over 256 runs, on the multilingual
+base and small models. It ran three passes with the arm order rotated, governor `performance`.
 
 ### Weight stream at M=4
 

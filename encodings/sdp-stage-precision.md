@@ -82,7 +82,7 @@ The bundle that selects integer mode is five settings:
 > of six models of the op [HW sweep]. A working integer ALU then looks broken.
 > Software must program the whole bundle together, not `DPU_EW_CFG` alone.
 
-## A two-buffer EW op needs no conv main feed
+## Two-buffer EW op without a convolution
 
 The same DPU-only program computes fp16 ADD, MAX, MIN, MINUS and MUL exactly on every element
 [HW sweep, RK3588, both drivers]. Software must program three fields for it
@@ -104,14 +104,15 @@ is cleared per op. NVDLA-family hardware spills partial sums to memory through t
 CORE has no cross-op "no-clear / first-continue" bit. `S_POINTER` (0x3004) is register
 ping-pong banking (`POINTER_PP_EN/MODE/CLEAR`, `EXECUTER_PP_*`), and `MISC_CFG` (0x3010)
 contains `PROC_PRECISION`/`DW_EN`/`QD_EN`. Software therefore cannot raise Kt past the CBUF by
-streaming several ops into one accumulator. The CBUF caps Kt
-(`banks_for(Mt,Kt)+banks_for(Nt,Kt) <= 12`), and a K-accumulation past that cap must use an SDP
-read-modify-write stage.
+streaming several ops into one accumulator. The CBUF caps Kt, and a K-accumulation past that cap
+must use an SDP read-modify-write stage. With the whole weight tile resident the cap is
+`banks_for(Mt,Kt)+banks_for(Nt,Kt) <= 12`. A streamed weight leaves the input tile the banks
+above the weight minimum ([../matmul-as-conv.md](../matmul-as-conv.md) §"CBUF weight
+streaming").
 
 An int32 K-accumulation on the EW stage in integer mode removes int8's per-K-pass readback of its
-int32 partials (∝ M·N·nKt). Kt already reaches the CBUF cap (~384). Readback does not determine
-prefill wall-clock time, so an int32 K-accumulation does not raise prefill throughput
-([../perf/not-mac-bound.md](../perf/not-mac-bound.md)).
+int32 partials (∝ M·N·nKt). Its effect on prefill throughput is in
+[k-accumulation.md](k-accumulation.md) §"Integer and float paths".
 
 ## The CNA DCOMP block
 
@@ -152,7 +153,7 @@ elements.
 The int32 element sizes with the precision triple left at fp16 (`2`) match none of the six
 models. Leaving BRDMA and NRDMA enabled changed no result.
 
-### A two-buffer EW op needs no conv main feed
+### Two-buffer EW op without a convolution
 
 The fp16 results come from the same `tests/ew_int_probe.c`, on both drivers. Each of the three
 fields was moved alone on the working program, on the vendor driver.

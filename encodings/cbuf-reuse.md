@@ -54,7 +54,7 @@ for the whole sequence [source-confirmed, v7.1].
 
 The vendor BSP `rknpu` driver does not. Its job contains one program address:
 `rknpu_job_commit()` programs `PC_DATA_ADDR` from `first_task->regcmd_addr` and never reads the
-addresses of tasks 1..n-1. On `rknpu`, *n* unchained programs can only be *n* submits, hence
+addresses of tasks 1..n-1 [source-confirmed: `rknpu` driver 0.9.8, `rknpu_job.c`]. On `rknpu`, *n* unchained programs can only be *n* submits, hence
 *n* jobs. `rknpu_job_next()` takes the next entry off `subcore_data->todo_list` the instant the
 previous one retires.
 
@@ -64,7 +64,7 @@ previous one retires.
 > into one kick, or leave reuse off.
 
 The corrupted output has the correct size, and its values change between runs. No error is
-reported, and the job does not hang. The damage is one whole N-tile of one worker's column
+reported. The job does not hang. The damage is one whole N-tile of one worker's column
 slice (128 columns at `Nt=128`), filled with valid-looking numbers rather than zeros. The tile
 did compute, against whatever operand the interleaving job left in the CBUF.
 
@@ -87,8 +87,7 @@ must program `FC_DATA_BANK` to 0.
 > has ~64-75 % of its elements wrong. The error `|Δ|` is up to ~670 on values whose correct
 > magnitude is a few thousand. The execution time does not change.
 
-**Conditions:** RK3588, a 256×2048×1024 fp16 matmul. The execution time stays at ~30.2-30.8 ms
-across all values, within noise.
+**Conditions:** RK3588, a 256×2048×1024 fp16 matmul.
 
 > [!CAUTION]
 > `fc=2..5` hang a task that streams its weight cube until the driver's watchdog retires it
@@ -99,7 +98,9 @@ banks [hypothesis].
 
 ## Performance
 
-**Conditions:** RK3588, Gemma prefill at pp2048, NPU clock ~816 MHz, fp16 EW K-accumulation on.
+**Conditions:** RK3588, Gemma prefill at pp2048, NPU clock ~816 MHz, fp16 EW K-accumulation on,
+the symmetric whole-tile matmul plan (`ROCKET_MM_ASYM=0`, `ROCKET_MM_STREAM=0` under the current
+defaults).
 
 | Bit | Prefill gain |
 |---|---|
@@ -115,14 +116,19 @@ datatype-independent dispatch limit or on the clock
 
 ## Software support
 
-`librocketnpu` sets DATA_REUSE automatically with the fp16 K-accumulation, which is the
-default operating mode. `ROCKET_REUSE` defaults to 2 whenever K-accumulation is on. Set
-`ROCKET_KACC=0` to drop both.
+`librocketnpu` sets a reuse bit only while the fp16 K-accumulation is on, which is the default
+operating mode. With `ROCKET_REUSE` unset, it picks per matmul plan the operand with the longer
+run of consecutive tiles, DATA_REUSE on a tie. `ROCKET_REUSE` 0, 1 or 2 forces off,
+WEIGHT_REUSE or DATA_REUSE. WEIGHT_REUSE falls back to off on a plan that streams its weights.
+Both bits stay off where a batch of tasks does not run as one job. Set `ROCKET_KACC=0` to
+drop K-accumulation and reuse together.
 
 `librocketnpu`'s matmul regcmd generator drives the CNA in conv mode (a matmul is a 1×1 conv)
 and programs `FC_DATA_BANK` to 0.
 
 RKNN's advertised `K<=10240` is an API-convenience window with no hidden single-pass trick.
+Its native B layout splits K into segments past 8192 on the RK3588 and past 4096 on the
+RK3576 [source-confirmed: RKNN-Toolkit2 V2.3.2 User Guide §3.5.4].
 `librocketnpu`'s tiler computes a `K=10240` matmul correctly, and its K-tiling already exceeds
 the window. See [matmul-as-conv.md](../matmul-as-conv.md) §Tiling.
 
@@ -153,8 +159,9 @@ The test is `tests/fc_data_bank_sweep_rocket.c`. It forces the field to 0..7
 (unset) program. The test asserts that `fc=0` equals the unset program and that the default is
 correct. It records `fc=1..7` as the known-live result, not a failure.
 
-Flat time with corrupted data identifies a data-addressing, bank-selection field rather than a
-performance setting. `fc>=2` saturate at the same `|Δ|`~667, and `fc=6` and `fc=7` give
+The execution time stays at ~30.2-30.8 ms across all values, within noise. Flat time with
+corrupted data identifies a data-addressing, bank-selection field rather than a performance
+setting. `fc>=2` saturate at the same `|Δ|`~667, and `fc=6` and `fc=7` give
 identical diffs.
 
 ### Performance

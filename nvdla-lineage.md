@@ -139,8 +139,8 @@ describe them:
   transposed-convolution mode. NVDLA has no deconvolution engine at any revision. The mode
   works on the RK3588 (see [encodings/conv-transpose.md](encodings/conv-transpose.md)).
 - `DPU_RDMA` `0x5024` (`BS_BASE_ADDR1`): an address the DPU reads a per-sign shift word through,
-  `[5:0]` for non-negative results and `[13:8]` for negative. It is decoded on the RK3576, absent
-  from Mesa's register map, and never written by the RK3588 emitters.
+  `[5:0]` for non-negative results and `[13:8]` for negative. It is decoded on the RK3576. Mesa's
+  register map does not list it, and the RK3588 emitters do not write it.
 - The RK3576's CBUF granule allowance in `CNA_CBUF_ENTRIES` / `CNA_CBUF_CON0`.
 
 ### Chip-to-chip differences
@@ -161,9 +161,10 @@ extension, and an extra `pra_trunc` precision stage.
 The RK's `CNA_CONV_CON1.CONV_MODE` is a 4-bit field of which only `0`, direct, is known, so there
 is room for it.
 
-At this operating point [the matmul is DMA/dispatch-bound rather than
-MAC-bound](perf/not-mac-bound.md), so fewer MACs do not raise throughput. The cost of Winograd
-is an entirely new host cube layout and more CBUF pressure.
+The whole-tile matmul program is [bound by DMA and dispatch rather than by the MAC
+array](perf/not-mac-bound.md). A convolution bound the same way would gain nothing from fewer
+MACs [expected]. A 3×3 convolution's bound is not characterized. The cost of
+Winograd is an entirely new host cube layout and more CBUF pressure.
 
 ### Multi-batch
 

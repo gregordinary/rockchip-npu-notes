@@ -2,10 +2,11 @@
 
 On the vendor `rknpu` driver, each submit returns `hw_elapse_time`, the submit's device time.
 It runs from the job's commit, just before the driver writes the register program, to the
-completion interrupt [source-confirmed, `rknpu_job.c`]. It separates a matmul's device time
-from its host time, and mainline `rocket` has no equivalent. With the weight resident, the
-device takes 67-82% of an fp16 matmul's wall-clock time [HW sweep]. With the weight packed on
-every call, the device time is unchanged, and the difference is the per-call weight scatter.
+completion interrupt [source-confirmed, `rknpu_job.c` in `rknpu` 0.9.8]. It separates a
+matmul's device time from its host time, and mainline `rocket` has no equivalent. With the
+weight resident, the device takes 67-82% of an fp16 matmul's wall-clock time [HW sweep]. At
+1024×3840×4096, packing the weight on every call leaves the device time unchanged, and the
+difference in wall-clock time is the per-call weight scatter.
 
 **Conditions:** RK3588, NPU clock 1000 MHz, `rknpu` 0.9.8, fp16 matmul, `ROCKET_KACC=1`, one
 worker, no other load on the board, 2026-08-25.
@@ -30,10 +31,12 @@ fixed per-call overhead into host work and dispatch cost.
 
 ### Per-call weight scatter
 
-The host share is a property of the one-shot path, and the device work is the same on both
-paths. At 1024×3840×4096 the device time is the same to within 0.01 ms on both (42.90 against
-42.91 ms), while wall-clock time falls from 127.2 to 55.4 ms. The whole 71.8 ms difference is
-the per-call weight scatter.
+The host share is a property of the one-shot path. At 1024×3840×4096 the device time is the
+same to within 0.01 ms on both paths (42.90 against 42.91 ms), while wall-clock time falls from
+127.2 to 55.4 ms. The whole 71.8 ms difference is the per-call weight scatter. At
+512×1024×1024 the two device times are within 2%. At 256×1024×1024, 512×2048×2048 and
+512×3840×4096 the one-shot device time is 0.67x, 1.43x and 1.48x the resident one
+[host-computed]. The cause of those three differences is not characterized.
 
 ### Fixed per-call overhead
 
@@ -53,14 +56,17 @@ measured.
 over every submit a process has made since `rocket_submit_counters_reset()`.
 
 The value is a `ktime` pair, a software timestamp rather than a hardware counter
-[source-confirmed, `rknpu_job.c`]. The driver stamps `hw_commit_time` where it pulls the job
-off the core's todo list, immediately before it writes the register program. It takes the
-delta in the IRQ path. The value therefore contains the register-write burst and the interrupt
+[source-confirmed, `rknpu_job.c` in `rknpu` 0.9.8]. The driver stamps `hw_commit_time` where
+it pulls the job off the core's todo list, immediately before it writes the register program.
+It takes the delta in the IRQ path. The value therefore contains the register-write burst and the interrupt
 latency. It excludes the ioctl entry, the BO and IOMMU setup, the fence plumbing, and every
 host-side cost.
 
 The RK3588 has no byte counters to go with it. Its driver configuration leaves `amount_top`
-and `amount_core` NULL, and SRAM and bandwidth QoS are unimplemented there [source-confirmed].
+and `amount_core` NULL, and bandwidth QoS is unimplemented there [source-confirmed,
+`rknpu_drv.c` in `rknpu` 0.9.8]. The SRAM pool is not in that configuration. The driver takes
+it from the device tree's `rockchip,sram` phandle on any part [source-confirmed, `rknpu_drv.c`
+in `rknpu` 0.9.8]. The RK1 measured has none [HW sweep].
 
 The value has three limits that it does not show:
 
@@ -70,9 +76,10 @@ The value has three limits that it does not show:
 - A multicore job reports one core's span, not their sum: each core's completion overwrites
   the job's elapsed time. The accumulator is also process-wide. A run with several concurrent
   worker fds therefore sums *core* time, which can exceed wall-clock time.
-- The driver re-commits a job of more than `max_submit_number` tasks (4095 on the RK3588) in
-  chunks. It re-stamps `hw_commit_time` each time, so the job's contribution covers only the
-  final chunk. This limit does not apply at the task counts `librocketnpu` emits.
+- The driver commits a job of more than `max_submit_number` tasks (4095 on the RK3588) in
+  chunks. `rknpu_job_done()` commits each next chunk without re-stamping `hw_commit_time`, so
+  the job's contribution spans every chunk from the first commit [source-confirmed,
+  `rknpu_job.c` in `rknpu` 0.9.8]. This limit does not apply at the task counts `librocketnpu` emits.
 
 ## Usage
 
@@ -80,7 +87,7 @@ Reset the counters immediately before the region to measure, and read the total 
 after. Every submit overwrites the per-fd `rknpu_last_hw_elapse_ns()`, so that call reports
 only the last kick of a many-kick matmul. To compare the total with wall-clock time, run one
 worker. Discard a warm-up repetition. The NPU clock drops to its idle rate while the NPU is
-idle, so a cold run measures low.
+idle, so a cold run measures low ([clock.md](clock.md#the-200-mhz-boot-rate)).
 
 ## Evidence
 
@@ -92,5 +99,6 @@ the provider and the driver archive, alongside the other board instruments.
 
 ### Per-call weight scatter
 
-The same device work measures identically through the two host paths, whose wall-clock times
-differ by 2.3x. The agreement is the internal check on the instrument.
+At 1024×3840×4096 the same device work measures identically through the two host paths, whose
+wall-clock times differ by 2.3x. The agreement is the internal check on the instrument. The
+other ratios in §"Per-call weight scatter" are the table's device columns divided.

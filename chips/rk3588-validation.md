@@ -70,6 +70,10 @@ are in core 2's set, and of core 1's, 77% are in core 0's or core 2's.
 A re-run of 128 of those calls was byte-identical on every core. It gave 37,315 events on
 core 0, 48,449 on core 1 and 35,059 on core 2.
 
+The 2026-09-27 sheet gave the attention result as "1 lane-0 element in 16384". The probe's
+call carries two 512×256 items, 16384 lane-0 elements. No raw output of that run survives to
+say whether the count was per item or per call. The sheet therefore names the element.
+
 The flash-attention element (256,240) sits on lane 0 and is in core 2's set only. Its identity
 copy, placed at all 131072 positions of one call, deviates at 8192 of them on core 2. Those are
 lane 0 of every row, and it deviates nowhere on cores 0 and 1. Two RK3588s give byte-identical

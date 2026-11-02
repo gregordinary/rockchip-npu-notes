@@ -16,9 +16,9 @@ taken between the warm-up and the measured run, and its `clk=600` is the ~816 MH
 
 | Record | Model | Backs |
 |---|---|---|
-| [deepseek-v2-lite.md](deepseek-v2-lite.md) | DeepSeek-V2-Lite, Q4_K_M | [../benchmarks.md](../benchmarks.md) |
+| [deepseek-v2-lite.md](deepseek-v2-lite.md) | DeepSeek-V2-Lite, Q4_K_M | [../benchmarks.md](../benchmarks.md), [../moe-placement.md](../moe-placement.md) |
 | [gemma4-12b.md](gemma4-12b.md) | Gemma-4-12B-it | [../benchmarks.md](../benchmarks.md) |
-| [gpt-oss-20b.md](gpt-oss-20b.md) | gpt-oss-20b, MXFP4, MoE | [../benchmarks.md](../benchmarks.md) |
+| [gpt-oss-20b.md](gpt-oss-20b.md) | gpt-oss-20b, MXFP4, MoE | [../benchmarks.md](../benchmarks.md), [../moe-placement.md](../moe-placement.md) |
 | [llama32-3b.md](llama32-3b.md) | Llama-3.2-3B-Instruct | [../benchmarks.md](../benchmarks.md) |
 | [ministral3-3b.md](ministral3-3b.md) | Ministral-3-3B-Instruct-2512 | [../benchmarks.md](../benchmarks.md) |
 | [ministral3-8b.md](ministral3-8b.md) | Ministral-3-8B-Instruct-2512 | [../benchmarks.md](../benchmarks.md) |
@@ -28,7 +28,7 @@ taken between the warm-up and the measured run, and its `clk=600` is the ~816 MH
 | [qwen35-9b.md](qwen35-9b.md) | Qwen3.5-9B | [../benchmarks.md](../benchmarks.md) |
 | [qwen36-27b.md](qwen36-27b.md) | Qwen3.6-27B, Q4_K_M | [../benchmarks.md](../benchmarks.md) |
 | [smolvlm2-2.2b.md](smolvlm2-2.2b.md) | SmolVLM2-2.2B-Instruct, language model and vision tower | [../benchmarks.md](../benchmarks.md) |
-| [tuning-matrix.md](tuning-matrix.md) | The default-against-tuned option comparison, one section per model file | [../../TUNING.md](../../TUNING.md) |
+| [tuning-matrix.md](tuning-matrix.md) | The default-against-tuned option comparison, one section per model file | [../../TUNING.md](../../TUNING.md), [../moe-placement.md](../moe-placement.md) |
 
 ## Other workloads
 
@@ -42,7 +42,7 @@ taken between the warm-up and the measured run, and its `clk=600` is the ~816 MH
 | [whisper-decode/](whisper-decode/) | The Whisper decoder step on resident weights | [../decode-gemv.md](../decode-gemv.md) |
 | [rknn-encoder/](rknn-encoder/) | The same-board RKNN Whisper encoder comparison | [../../encodings/whisper-encoder.md](../../encodings/whisper-encoder.md) |
 | [siglip-rknn/](siglip-rknn/) | The SigLIP-B/16 RKNN and SHARD comparison | [../../encodings/siglip-encoder.md](../../encodings/siglip-encoder.md) |
-| [ro-session/](ro-session/) | Per-process readout sessions | [../per-process-readout.md](../per-process-readout.md), [tuning-matrix.md](tuning-matrix.md) |
+| [ro-session/](ro-session/) | Per-process readout sessions | [../per-process-readout.md](../per-process-readout.md), [tuning-matrix.md](tuning-matrix.md), [../moe-placement.md](../moe-placement.md) |
 | [dqc-session/](dqc-session/) | Quantized-prefill sessions with the dequantization cache engaged, and their idle audits | [tuning-matrix.md](tuning-matrix.md) |
 | [rebaseline-b11242/](rebaseline-b11242/) | CPU baselines with and without llama.cpp's weight repack, for DeepSeek-V2-Lite, gpt-oss-20b, Phi-4 and Qwen3.6-27B | [../cpu-repack-baseline.md](../cpu-repack-baseline.md) |
 

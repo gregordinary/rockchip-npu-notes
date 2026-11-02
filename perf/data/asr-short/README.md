@@ -1,7 +1,7 @@
 # Raw data for short-utterance ASR
 
-The record behind [perf/asr-cpu-relief.md](../../asr-cpu-relief.md#short-utterances-below-the-f16-floor),
-"Short utterances below the F16 floor".
+The record behind [perf/asr-cpu-relief.md](../../asr-cpu-relief.md#short-utterances-below-the-f16-threshold),
+"Short utterances below the F16 threshold".
 
 RK3588 (Turing RK1), mainline `rocket` 1.3.0 on kernel 7.2.8, NPU ~816 MHz, CPU governor
 `ondemand` (not pinned), `taskset -c 4-7`, 4 threads. whisper.cpp v1.9.4 `parakeet-cli` with

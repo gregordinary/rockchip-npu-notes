@@ -4,8 +4,8 @@ The PPU is the NPU's pooling processor, the NVDLA PDP analog. Its register pages
 (PPU) and `0x7000` (PPU_RDMA), in `include/npu_hw.h`, and the register set is
 reverse-engineered from Mesa's `rocket/registers.xml` [source-confirmed]. The PPU reads a cube
 and writes a cube, and has no layout or reshape function. It cannot write a row-major output
-layout on-chip, so it cannot replace the A76 NEON output de-tile (~76 ms of the prefill
-wall-clock time, [not-mac-bound.md](not-mac-bound.md)).
+layout on-chip, so it cannot replace the A76 NEON output de-tile (~76 ms of a single-fd
+`512×15360×3840` fp16 matmul, [not-mac-bound.md](not-mac-bound.md)).
 
 **Conditions:** RK3588, the register map of Mesa `registers.xml` and `librocketnpu`'s
 `npu_hw.h`.
@@ -14,12 +14,14 @@ wall-clock time, [not-mac-bound.md](not-mac-bound.md)).
 
 | register | function |
 |---|---|
+| `PPU_S_STATUS` / `S_POINTER` / `OPERATION_ENABLE` | status, the register-bank pointer, the enable |
 | `PPU_DATA_CUBE_IN_*` / `OUT_*` | input and output cube dims (W/H/C) |
 | `PPU_OPERATION_MODE_CFG` | `POOLING_METHOD`, `FLYING_MODE`, `INDEX_EN`, `USE_CNT` |
 | `PPU_POOLING_KERNEL_CFG` | pooling kernel W/H + stride W/H |
 | `PPU_RECIP_KERNEL_WIDTH/HEIGHT` | `1/kW`, `1/kH`, the average-pool reciprocal |
 | `PPU_POOLING_PADDING_CFG` + `PADDING_VALUE_*` | pad top/bottom/left/right + pad value |
 | `PPU_DST_BASE_ADDR` / `DST_SURF_STRIDE` / `MISC_CTRL` | pooled cube write-out |
+| `PPU_DATA_FORMAT` | `PROC_PRECISION` (the datatype), `DPU_FLYIN`, `INDEX_ADD` |
 | `PPU_RDMA_*` | the read-DMA that feeds the pooling unit |
 
 The table is the complete set. The map has no `TRANSPOSE`, `RESHAPE`, `PERMUTE`, `SPLIT`,
@@ -50,10 +52,10 @@ to a CPU node and back.
 
 ## Pooling on the NPU
 
-The PPU is a fully decoded, idle pooling engine, and on-NPU `MaxPool` and `AveragePool` are
-HW-validated. MAX is bit-exact against the CPU, and AVG is within fp16-recip tolerance.
-[ppu-pooling.md](../encodings/ppu-pooling.md) has the encoding, and
-[ppu-rknn-capture/](../ppu-rknn-capture/) the reproducible capture harness.
+The PPU is a fully decoded pooling engine, and on-NPU `MaxPool` and `AveragePool` are
+validated on hardware. The encoding, the accuracy of the fp16 and native int8 programs, and the
+library's entries are in [ppu-pooling.md](../encodings/ppu-pooling.md). The reproducible
+capture harness is in [ppu-rknn-capture/](../ppu-rknn-capture/).
 
 On-NPU pooling is a prerequisite for keeping a partition's intermediates resident in cube
 layout, so that adjacent NPU ops skip the host round-trip. Without that residency, the

@@ -11,14 +11,14 @@ The values:
 
 | datatype | precision value | how established |
 |---|---:|---|
-| int8 | `0` | [HW sweep] |
-| int16 | `1` | [HW sweep] |
-| fp16 | `2` | [HW sweep] |
-| int4 | `6` | [HW sweep] |
-| int32 | `4` | [HW sweep] |
-| fp32 | `5` | [HW sweep] |
-| bf16 | `3` | [HW sweep] |
-| tf32 | `7` | [HW sweep], CNA/CORE only |
+| int8 | `0` | [HW sweep], [TRM] |
+| int16 | `1` | [HW sweep], [TRM] |
+| fp16 | `2` | [HW sweep], [TRM] |
+| int4 | `6` | [HW sweep], [TRM] |
+| int32 | `4` | [HW sweep], [TRM], DPU only |
+| fp32 | `5` | [HW sweep], [TRM], DPU only |
+| bf16 | `3` | [HW sweep], [TRM] |
+| tf32 | `7` | [HW sweep], [TRM], CNA/CORE only |
 
 int8=0 and fp16=2 are the baseline datatypes the whole stack runs. A hardware sweep
 established each of int16=1, int4=6, bf16=3, and tf32=7. The sweep classifies every output
@@ -36,21 +36,20 @@ The matmul output type per input datatype is established on hardware:
 int8×int8->int32, int4×int4->int16, fp16×fp16->fp32. Even the int8 matmul outputs raw
 int32.
 
-Precision is a field, not a datapath. Every datatype uses the same register path. Adding a
-datatype takes a new precision value, the sub-byte math, and the nibble and tile layout.
+Every datatype uses the same register path. Adding a datatype takes a new precision value, the
+sub-byte math, and the nibble and tile layout.
 
 > [!NOTE]
 > MAC-capable is not the same as a usable matmul output path. int16 computes correct
-> products in the MAC array, and its int32 writer saturates and takes fp16's output geometry,
-> not int8's ([output-transpose-int16.md](output-transpose-int16.md)). Test the output path
-> of a new precision value on its own.
+> products in the MAC array, but its output takes its own writer geometry (§"int16 (precision
+> value 1)"). Test the output path of a new precision value on its own.
 
 ## int4 (precision value 6)
 
 int4 can avoid the K-partial readback. Its output is int16, and it packs 4x denser than
-fp16, so it can reach single-pass K. The encoding is not documented anywhere. The element
-bit-width is precision-driven: it follows a field value and has no separate datapath. int4
-therefore needs the right precision value and nibble-packed operands.
+fp16, so it can contract K in a single pass. The element bit-width is precision-driven: it
+follows a field value and has no separate datapath. int4 therefore needs the right precision
+value and nibble-packed operands. The TRM gives the precision value and not the packing.
 
 int4 is precision value 6 for both input and processing [HW sweep]. The output is int16,
 precision=1. The nibble packing is the same as int8's, reinterpreted 2-per-byte. Two
@@ -67,14 +66,13 @@ hardware [HW sweep]. `precision=1` is the only value that computes int16. It com
 int16×int16 dot products, bit-exact against the int64 CPU reference for the elements the
 engine wrote.
 
-Its int32 output takes fp16 -> fp32's output geometry, `size_e` 3, and saturates. int8's
-`size_e` 7 hangs the task after one tile. See
-[output-transpose-int16.md](output-transpose-int16.md).
+Its int32 output saturates and takes fp16 -> fp32's output geometry, not int8's
+([output-transpose-int16.md](output-transpose-int16.md)).
 
 ## bf16 (precision value 3)
 
 bf16 is precision value 3 [HW sweep]. On a bf16-formatted matmul only `3` produces a correct
-fp32 result. bf16 runs at the same MAC rate as fp16 (same 2-byte operand).
+fp32 result. bf16 has fp16's nominal MAC rate, 512×3 operations a cycle [TRM].
 
 bf16 accumulates to fp32, so its output reuses the fp16 path's proven fp32-out writer. That
 writer is `out_precision=5`, `size_e=3`, `surf×4`, output cube C2=4, and it fully iterates
@@ -95,8 +93,8 @@ output uses the proven fp16 fp32-out writer.
 
 The tf32 encoding is established on hardware: precision `7` on the CNA/CORE stage, in the
 in/proc stages [HW sweep]. On a tf32 (raw-fp32-input) matmul only `7` produces a correct fp32
-result. tf32 runs at about half the fp16/bf16 rate: big-Gemma `512×3840×4096` runs at
-~37 GOP/s.
+result. tf32's nominal MAC rate, 256×3 operations a cycle, is half that of fp16 and bf16
+[TRM]. The tiled tf32 path runs big-Gemma `512×3840×4096` at ~37 GOP/s [HW sweep].
 
 tf32 is 1 sign, an 8-bit exponent (fp32 range) and a 10-bit mantissa (fp16 precision) in a
 4-byte fp32 container. fp16, bf16 and int16 inputs are 2-byte, int8 is 1-byte and int4 is

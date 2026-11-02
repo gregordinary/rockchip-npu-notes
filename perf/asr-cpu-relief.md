@@ -2,8 +2,8 @@
 
 Offloading the whisper.cpp encoder to the NPU frees more CPU than it saves in wall-clock time.
 On `base.en`, a 1.10x wall-clock speedup at 30 s is a 17.4% CPU saving [HW sweep]. A
-streaming-ASR caller that shares the CPU gets back the core-seconds freed, and the speedup does
-not measure them.
+streaming-ASR caller that shares the CPU gets back the core-seconds freed, which the speedup
+does not measure.
 
 **Conditions:** RK3588 (Turing RK1), NPU clock 600 MHz, the vendor `rknpu` 0.9.8 driver through
 `rknpu-submit`, 2026-08-24, unless a section states its own. The process runs 4 threads pinned to
@@ -28,12 +28,11 @@ On this backend the wall-clock speedup understates the CPU saving. The backend m
 the NPU and leaves the activation and weight packing (packA, packB) and the output de-tile on the
 host. The NPU has no on-chip layout
 conversion, so that host work is irreducible. Wall-clock time therefore includes time in which the
-process is blocked on the NPU with its threads idle. The CPU that the offload frees is larger than
-the wall-clock time it saves.
+process is blocked on the NPU with its threads idle.
 
 > [!NOTE]
 > Depending on the shape, the wall-clock ratio overstates or understates the CPU saving. Measure
-> CPU core-seconds where the CPU saving is the quantity of interest.
+> CPU core-seconds where the CPU saving matters.
 
 ## Whisper relief by model size and speech density
 
@@ -68,12 +67,13 @@ process.
 An op runs on the NPU only above a row-count threshold. The backend has two thresholds, and one
 of them is set for a different workload:
 
-- **`ROCKET_MIN_M` (default 32)** applies to F16/F32 weights. Whisper's models are F16 and its
-  encoder runs 1500 rows, so the encoder always clears this threshold. The threshold keeps
-  whisper's decoder on the CPU, which is its purpose. `whisper-cli` beam search batches 5
-  decoders into one call, so every decode step is M=5. A threshold of 4 sends the whole decoder
-  to the NPU at 2.3x slower than the CPU. The threshold also decides whether a CTC or transducer
-  encoder's short utterance offloads, at 16-75 rows for 1-6 s of audio.
+- **`ROCKET_MIN_M` (default 32)** applies to unquantized weights: F16, F32 and BF16. Whisper's
+  models are F16 and its encoder runs 1500 rows, so the encoder always clears this threshold.
+  The threshold keeps whisper's decoder on the CPU, which is its purpose. `whisper-cli` beam
+  search batches 5 decoders into one call, so every decode step is M=5. A threshold of 4 sends
+  the whole decoder to the NPU, where a step takes 2.3x its CPU time. The threshold also decides
+  whether a CTC or transducer encoder's short utterance offloads, at 16-75 rows for 1.3-6 s of
+  audio.
 - **`ROCKET_MIN_M_QUANT` (default 512)** applies to quantized weights, which take a
   dequantize-to-fp16 path that needs more rows to amortize. Its default is set from LLM prefill,
   and it is too high for a CTC ASR encoder. A CTC encoder's sequence length is the audio length
@@ -103,13 +103,13 @@ point where it does not help (worst -0.6%). From 60 s up the two configurations 
 the sequence is over 512 either way.
 
 Two effects keep these models' short clips on the CPU. Down to about 10 s, the quantized threshold
-accounts for everything. Below that length the sequence is also under the F16 threshold of 128,
-and `ROCKET_MIN_M_QUANT` cannot go lower than `ROCKET_MIN_M` (§"The quantized threshold's clamp"). At
-3 s both configurations are within 3%.
+accounts for everything. Below that length the sequence is also under `ROCKET_MIN_M`, at 128
+here, and `ROCKET_MIN_M_QUANT` cannot go lower than `ROCKET_MIN_M` (§"The quantized threshold's
+clamp"). At 3 s both configurations are within 3%.
 
 The boundary below 10 s comes from the threshold rather than from the NPU. With `ROCKET_MIN_M`
 itself lowered, an F16 Parakeet offloads and frees CPU down to 1.3 s
-([the short-utterance measurements](#short-utterances-below-the-f16-floor)). For these two
+([the short-utterance measurements](#short-utterances-below-the-f16-threshold)). For these two
 Q8_0 models that outcome is unmeasured [expected], because they incur a per-call dequantization
 that the F16 model does not.
 
@@ -122,12 +122,11 @@ that a forward pass incurs is fixed in the row count (§"The weight cache on a Q
 Offloading one GEMM is a net gain under the condition `M*K*N*Δ > K*N*d + F`. Here `d` is the per-element
 decode cost, `Δ` is the per-MAC advantage over the CPU, and `F` is the fixed per-call dispatch
 cost. Dividing by `K*N` gives `M > d/Δ + F/(Δ*K*N)`. The weight size divides out of the decode
-term, which the threshold exists to amortize. What remains is a constant in `M`, plus a correction
-that shrinks as the weight grows.
+term, which the threshold exists to amortize. The threshold that remains is a constant in `M`,
+plus a correction that shrinks as the weight grows.
 
 A threshold of the form `K*N*sizeof(weight)/M` would therefore scale the wrong way. The
-shape-aware refinement available is to let a large `K*N` clear a slightly lower threshold, not a
-higher one.
+shape-aware refinement available lets a large `K*N` clear a slightly lower threshold.
 
 The advantage `Δ` itself also falls at small `M`, where the NPU underuses its array, so in
 principle the constant has a per-model component. With `ROCKET_MIN_M` at 128, the quantized
@@ -157,8 +156,7 @@ differ:
 | Parakeet, the other 24 | `M = 2*12.5 s - 1` | 5.2 s | 0 at 5 s, 24 at 7 s |
 
 The 24-GEMM family is one GEMM per block, with roughly twice the rows of the rest. Its shape
-matches a relative-position projection over `2T-1` positions [hypothesis]. The row count is
-measured, and the attribution is not.
+matches a relative-position projection over `2T-1` positions [hypothesis].
 
 ### The crossover
 
@@ -191,7 +189,7 @@ separates their contributions. The 24 free 4.2% of the 43.4% that the full set f
 the 217 GEMMs provide roughly nine tenths of the benefit. The family that clears the threshold
 earliest provides the smaller share.
 
-## Short utterances below the F16 floor
+## Short utterances below the F16 threshold
 
 **Conditions:** RK3588 (Turing RK1), mainline `rocket` 1.3.0, kernel 7.2.8, NPU clock ~816 MHz,
 2026-09-30. Parakeet TDT 0.6B v3 F16 runs through whisper.cpp v1.9.4's `parakeet-cli`, on 4
@@ -199,10 +197,10 @@ threads pinned to the A76 cores, under CPU governor `ondemand`. Each length is t
 test-clean utterances. The NPU configuration runs `ROCKET_MIN_M=4`. Each figure is a
 per-utterance cost with no model load in it.
 
-A voice command is one to five seconds of audio. At 12.5 encoder frames a second, that is 16-75
-rows. At the default `ROCKET_MIN_M` of 32, every encoder GEMM offloads from 2.6 s up, and 24 of
-the 265 offload at 1.3-2.5 s (§"Setting `ROCKET_MIN_M`"). With the threshold lowered, every encoder GEMM runs on
-the NPU and re-packs its weight on each call. The offload loses at no length measured
+A voice command of 1.3-6 s is 16-75 encoder rows, at 12.5 encoder frames a second. At the
+default `ROCKET_MIN_M` of 32, every encoder GEMM offloads from 2.6 s up, and 24 of the 265
+offload at 1.3-2.5 s (§"Setting `ROCKET_MIN_M`"). With the threshold lowered, every encoder GEMM
+runs on the NPU and re-packs its weight on each call. The offload loses at no length measured
 [HW sweep]. It ties the CPU-only wall-clock time at 1.3-1.8 s while freeing a third of the CPU,
 and from 2 s up it is also faster.
 
@@ -276,7 +274,7 @@ stream is a 14% slower utterance, 0.89 s against 0.78. The likely cause is that 
 OpenMP threads spin while its NPU workers wait for a core [hypothesis]. The passive policy puts
 them to sleep.
 
-### Where the floor comes from
+### The default `ROCKET_MIN_M`
 
 The default `ROCKET_MIN_M` of 32 is above the F16 crossover measured on LLM prefill
 [HW sweep 2026-10-09]:
@@ -302,7 +300,7 @@ stable weight name. At these lengths every weight is therefore re-packed on ever
 `ROCKET_MM_PROFILE` readout puts `packB` at 0.59-0.60 thread-seconds an utterance at 1.3-2.5 s,
 against the NPU configuration's 1.32-1.48 core-seconds [HW sweep]. A profile bucket is a thread
 interval. The `packB` figure is therefore an upper bound on what a resident path for small row
-counts could remove, not an estimate of it.
+counts could remove.
 
 ### An int8 CPU runtime
 
@@ -333,6 +331,20 @@ against three.
 16 still keeps whisper.cpp's beam-5 decode, 5 rows a step, on the CPU. Set it in the ASR process
 only, because the 3B loses at 16 rows (0.78x in the LLM table above).
 
+Against the default of 32, a threshold of 16 makes Parakeet 1.16-1.39x faster below 2.6 s and
+uses 36-44% less CPU there [HW sweep 2026-11-02]. From 2.6 s up the two admit the same GEMMs and
+measure the same. The transcripts are byte-identical.
+
+**Conditions:** RK3588 (Turing RK1), `rocket` 1.3.0, NPU clock 928 MHz, CPU governor
+`performance`, 2026-11-02. Parakeet TDT 0.6B v3 F16 through whisper.cpp v1.9.5's `parakeet-cli`,
+4 threads on the A76 cores. Each figure is the median per-utterance cost over three passes.
+
+| audio | rows | wall-clock at 32 | wall-clock at 16 | speedup | core-s at 32 | core-s at 16 |
+|---|---|---:|---:|---:|---:|---:|
+| 1.3-1.8 s | 16-23 | 431 ms | 369 ms | 1.16-1.17x | 1.66 | 1.06 |
+| 2.1-2.5 s | 27-31 | 557 ms | 406 ms | 1.36-1.39x | 2.10 | 1.18 |
+| 2.6-3.9 s | 33-49 | 468 ms | 469 ms | 0.99-1.01x | 1.35 | 1.34 |
+
 ## Thread count
 
 The thread count changes wall-clock time and leaves the CPU core-seconds unchanged, because the
@@ -357,8 +369,8 @@ change: at one thread `base.en` falls below realtime.
 ## Numerical faithfulness
 
 The NPU encoder runs in fp16 where the CPU's runs in fp32, so its output is close to the CPU's
-and not bit-identical. Whether the difference changes the transcript depends on the clip length
-and on how well-conditioned the audio is. Both configurations are deterministic (every repetition
+and not bit-identical. The clip length and how well-conditioned the audio is decide whether the
+difference changes the transcript. Both configurations are deterministic (every repetition
 within one is byte-identical), so a difference between them comes from the numerics, not from a
 race.
 
@@ -435,13 +447,13 @@ cache keyed on the weights buffer, measured on the mainline board, keys correctl
 transcripts md5-identical and takes packB to zero. The total is 1.3% worse, because the resident
 path's extra BO sync costs more than the pack it removes.
 
-The F16 weight-residency gain on LLM prefill (+18.5% at pp512, +13.6% at pp2048) does not transfer
-to this workload. An LLM's weights are enormous against one micro-batch of activations, while a
-whisper encoder's weights are small against 1500 rows of activations.
+The F16 weight-residency gain on LLM prefill ([weight-residency-fusion.md](weight-residency-fusion.md))
+does not transfer to this workload. An LLM's weights are enormous against one micro-batch of
+activations, while a whisper encoder's weights are small against 1500 rows of activations.
 
-The dominant host cost is the per-worker input load. For `base.en` at 120 s, the pack is 1244 ms,
-of which 103 ms is the shared A scatter and 118 ms is the weight scatter. The rest is the
-per-worker copy of the input cube.
+The dominant host cost is each worker's copy of the input cube. For `base.en` at 120 s, the pack
+is 1244 ms, of which 103 ms is the shared A scatter and 118 ms is the weight scatter. The rest is
+those per-worker copies.
 
 The pack share caps a cache's gain only on F16 weights, where `weight_dequant` is 0 by
 construction. A Q8_0 host incurs `weight_dequant` on every call, and a resident cache would remove the dequantization and the scatter
@@ -524,11 +536,14 @@ Both configurations run through the same backend, so admission is the only varia
 point is the median of 3 warm repetitions, with the first process and the first run of each
 discarded. The CPU frequency was read back from `scaling_cur_freq`.
 
-### Short utterances below the F16 floor
+### Short utterances below the F16 threshold
 
 An utterance's cost is a 10-file process minus a 1-file process, over 9. Three passes rotate the
 configuration order, and the table is their medians, every pass within 6%. The transcripts were
 compared over all three passes.
+
+The 2026-11-02 threshold comparison used the same method and the same three length sets. Each
+speedup pairs the two thresholds within one pass, and every pass sat within 4% of the median.
 
 ### A second process on the same cores
 
@@ -536,7 +551,7 @@ The stream starts 4 s before the neighbor. The first table is three passes with 
 order rotated, and the second table two passes. The second table's two NPU configurations had short
 windows, 8-10 utterances each, so their ASR columns are noisier.
 
-### Where the floor comes from
+### The default `ROCKET_MIN_M`
 
 The two LLM passes agreed within 0.04. The whisper-small comparison ran three passes. On this
 harness the same work at 32 and 64 spreads 0.998-1.011x, and every transcript is byte-identical.
@@ -567,7 +582,7 @@ The F16 prefill crossover on an earlier measurement:
 |---|---|---|---|
 | 2026-09-30 | Llama-3.2-3B F16 prefill, the NPU at a threshold of 4 against the CPU | 0.70x at 16 rows, 1.25x at 32, 2.34x at 64, 3.58x at 128 | llama.cpp b11242, the CPU at 4 threads, two passes within 2% [HW sweep 2026-09-30] |
 
-The 2026-10-09 table in §"Where the floor comes from" measures against the faster of 4 and 8 CPU
+The 2026-10-09 table in §"The default `ROCKET_MIN_M`" measures against the faster of 4 and 8 CPU
 threads, and gives 0.78x at 16 rows.
 
 ### Excluded causes

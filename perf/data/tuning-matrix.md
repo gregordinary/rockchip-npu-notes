@@ -828,11 +828,17 @@ this instrument cannot decompose an instruction count by which thread retired it
 
 **The standing negative does not survive its own cell.** It recorded whole-process
 `taskset 0xf0` as no win on Gemma-4-12B F16, with prefill flat and decode 34% down. Decode is
-untouched by every arm in every campaign here, all of which are `-n 0`, and giving up four cores
-for a bandwidth-bound decode remains a real cost. Prefill is the half that disagreed, and the
+untouched by every arm in every campaign here, all of which are `-n 0`. Prefill is the half that disagreed, and the
 third campaign below re-measures that exact model under the rotated-pass protocol: prefill is
 **not** flat there. The recorded cell had no raw evidence file and no recorded protocol anywhere
 in this workspace, and this board does not settle a sign at one process per arm.
+
+**The decode half does not survive either, on llama.cpp b11539.** `taskset 0xf0 -t 4` decodes
+Gemma-4-12B F16 at 1.07 t/s against 0.80 at `-t 8`, 1.33x, and is faster on all fifteen GGUFs
+measured, 1.32-4.22x [HW sweep 2026-11-01, RK1, 928 MHz, governor `performance`, `tg64 -r 3`, a
+memory reset per configuration, one pass]. So on this build, giving up the four A55 cores does not
+cost decode. The per-GGUF table is in `ggml-rocket/MEASUREMENTS.md`. An older build on
+which `-t 8` decoded faster is not excluded.
 
 **A second model, at the other end of the matrix and under the recipe the guide recommends.**
 `qwen35-9b` Q4_K_M with `ROCKET_QUANT_RESIDENT=auto` at the default `-ub`, three rotated passes,

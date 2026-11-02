@@ -22,9 +22,9 @@ last column gives what the external codec programs [source-confirmed: `rknpu2_ma
 | Offset | Register | Fields | External codec |
 |---|---|---|---|
 | 0x1100 | `DCOMP_CTRL` | `WT_DEC_BYPASS` (bit 3), `DECOMP_CONTROL` (bits 2:0) | 1 |
-| 0x1104 | `DCOMP_REGNUM` | number of compressed regions/groups in use | 0x55555555 |
+| 0x1104 | `DCOMP_REGNUM` | "weight decompress register number" [TRM]. Its meaning is not characterized | 0x55555555 |
 | 0x1110 | `DCOMP_ADDR0` | base address of the (compressed) weight stream. Doubles as the weight base | The stream base |
-| 0x1140..0x117C | `DCOMP_AMOUNT0..15` | per-group compressed byte counts (16 slots) | Each lane's stream length in 16-byte blocks, minus 1 |
+| 0x1140..0x117C | `DCOMP_AMOUNT0..15` | 16 slots, each the "amount of the weight decompress" for one decompress [TRM] | Each lane's stream length in 16-byte blocks, minus 1 |
 
 Mesa does not name the register gap 0x1114-0x113C, between `ADDR0` and `AMOUNT0`. That gap is
 a candidate location for the WMB/WGS surface addresses of the NVDLA format (§"NVDLA sparse
@@ -42,8 +42,8 @@ DCOMP_ADDR0   = <weight base IOVA>
 DCOMP_AMOUNT0..N = 0x0       # no compressed sizes
 ```
 
-`DECOMP_CONTROL=0` is the dense mode. A nonzero `DECOMP_CONTROL` selects a decompression mode,
-and the external codec enables it with `DCOMP_CTRL` = 1 [source-confirmed:
+A nonzero `DECOMP_CONTROL` selects a decompression mode, and the external codec enables it
+with `DCOMP_CTRL` = 1 [source-confirmed:
 `rknpu2_matmul_open`]. No compressed program has run on `rocket`.
 
 ## Compressed format
@@ -93,19 +93,22 @@ through the CBUF.
 
 A streamed weight cube is fetched at ~5.4 GB/s a core, fp16 and int8 alike, and three cores each
 keep that rate [HW sweep 2026-10-21] ([../perf/not-mac-bound.md](../perf/not-mac-bound.md)
-§"Weight bandwidth a core"). The fetch rate limits decode on the NPU
-([../perf/decode-gemv.md](../perf/decode-gemv.md)). A working int8 codec that shrinks the weight
-bytes is therefore expected to raise the weights fetched per second by its compression ratio
-[expected].
+§"Weight bandwidth a core"). The fetch rate limits decode on the NPU. A working int8 codec that
+shrinks the weight bytes is therefore expected to raise the weights fetched per second by its
+compression ratio [expected].
 
 The dense codec compresses int8 language-model weights quantized per output channel by
-1.11-1.12x [host-computed]. At that ratio a three-core weight stream of ~16.4 GB/s carries
-~18.4 GB/s of int8 weights [expected]. Native int4 weights are half the bytes of int8.
+1.11-1.12x [host-computed]. At that ratio a three-core weight stream of ~16.4 GB/s delivers
+~18.4 GB/s of int8 weights [expected]. That rate is below the CPU decode's own weight stream
+on the same board at its best thread count ([../perf/decode-gemv.md](../perf/decode-gemv.md)
+§"Weight-streaming bandwidth on `rocket`"). The codec therefore does not make decode on the
+NPU faster than decode on the CPU [expected], and DCOMP is not a decode option. Native int4
+weights are half the bytes of int8, with no codec.
 
 **Conditions:** the codec's stream size, computed on the host for every matmul weight tensor of
 three decoder layers spread over the model's depth. Each tensor is quantized per output channel,
 symmetric, round-to-nearest, with the scale at the channel's largest magnitude over the levels
-given. The Q8_0 row sizes a GGUF file's own codes, which carry one scale per 32 weights.
+given. The Q8_0 row sizes a GGUF file's own codes, which have one scale per 32 weights.
 
 | Weights | Levels a side | Compression | Bits per weight |
 |---|---:|---:|---:|
@@ -153,7 +156,7 @@ drives the decompressor, and the stack has no pruning pipeline.
 
 ### Dense (pass-through) programming
 
-Every program in the stack runs in the dense mode, and `librocketnpu`'s bit-exact matmul and
+Every program in the stack runs in the dense pass-through, and `librocketnpu`'s bit-exact matmul and
 conv tests validate it implicitly.
 
 ### Compressed format

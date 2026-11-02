@@ -8,9 +8,12 @@ slower than the CPU, because each op returns its tensors through host memory.
 
 ## Constraints
 
-`rocket_matmul_fp16` rejects unaligned N/K (for example N=100). In attention, the key count T
-is the N of the scores matmul and the K of the context matmul (ctx). Software must pad the key count to
-Tn=(T+31)&~31, and the query rows to Tp=(T+3)&~3 (M%4). Whisper's T=1500 is itself unaligned.
+`rocket_matmul_fp16` rejects unaligned N/K (for example N=100). Its planner rejects an M that
+is not a multiple of 4, apart from an M of 1, which it pads. The M rule is the library's, and a
+task computes at any M ([../matmul-as-conv.md](../matmul-as-conv.md#software-support)).
+In attention, the key count T is the N of the scores matmul and the K of the context matmul
+(ctx). Software that calls these entries must pad the key count to Tn=(T+31)&~31, and the query
+rows to Tp=(T+3)&~3. Whisper's T=1500 is itself unaligned.
 
 > [!CAUTION]
 > Zero pad keys give score 0, which softmax weights as exp(0). Software must mask the pad score
@@ -88,10 +91,9 @@ Cross-entropy is therefore the on-NPU logsumexp plus a host gather and subtract.
 strictly cheaper than LogSoftmax: it skips the tail per-row `ew_sub`, because only the M
 target log-probs are needed, not the full `[M,N]` output.
 
-There is no hardware gather on the RK3588 NPU. No indexed/scatter read path exists
-(the same fact the [reduce](feature-reduce.md) / attention notes record), so `logits[m][target[m]]`
-is M scalar host index-lookups, correct and free, exactly like softmax's host `1/s` and LogSoftmax's
-host `log(s)`. A gather is not a contraction or a pool, so neither the matmul nor the PPU supplies it.
+The NPU has no gather ([../hardware-overview.md](../hardware-overview.md)), so
+`logits[m][target[m]]` is M scalar host index-lookups, correct and free, like softmax's host
+`1/s` and LogSoftmax's host `log(s)`.
 
 The loss invariant is `s >= 1`, so `log(s) >= 0`, so `CE >= 0`.
 
@@ -126,7 +128,7 @@ factor.
 
 The fold also fills the channel lanes a one-channel input leaves empty, and shrinks a kernel
 wider than the RK3576's 5-bit kernel field
-([../chips/rk3576-regcmd.md](../chips/rk3576-regcmd.md#the-geometry-fields-are-narrower-than-their-register-halves)).
+([../chips/rk3576-regcmd.md](../chips/rk3576-regcmd.md#geometry-field-widths)).
 The STFT's real and imaginary outputs are clamped to ±255.89 before squaring, since a larger
 square leaves fp16's range.
 
@@ -153,21 +155,29 @@ the query rows are padded as §"Constraints" requires.
 
 `rocket_encoder_block_fp16` (`src/rocket_encoder.c`) is the Whisper pre-norm block:
 `x = x + MHA(LN1(x)); x = x + MLP(LN2(x))`, where `MLP`, the FFN, is
-`GELU(h·Wf1^T+bf1)·Wf2^T+bf2`. It runs on the NPU apart from the host steps named above
-(softmax's row-max and `1/s`, LayerNorm's per-row tail, the attention glue and bias adds):
+`GELU(h·Wf1^T+bf1)·Wf2^T+bf2`. These steps run on the NPU:
 
 - Both LayerNorms
 - All attention matmuls and every softmax
 - Both residual adds
 - The two FFN projection matmuls
-- The FFN's GELU
+- The `Φ(x)` pass of the FFN's GELU, on the DPU LUT
+
+By default the FFN runs through `rocket_mlp_fp16_fused`, which keeps the first projection's
+output in the cube layout through the second ([cross-op-chaining.md](cross-op-chaining.md)). It
+adds `bf1` on the NPU, and multiplies `x·Φ(x)` on the host unless `ROCKET_ACT_NPU_MUL` is set.
+`ROCKET_ENCODER_NOFUSE`, set to any value, returns each FFN op's output to the host instead.
+That path adds `bf1` on the host and multiplies `x·Φ(x)` on the DPU EW unit. The other host
+steps are those named above: softmax's row-max and `1/s`, LayerNorm's per-row tail, the
+attention glue, and `bf2`.
 
 ### GELU: the 2-pass `x·Φ(x)`
 
 GELU runs as two passes (like SiLU): `GELU(x)=x·Φ(x)`, where Φ is the Gaussian CDF. The
 CDF is a monotone `[0,1]` function on the clean unit-LUT geometry, free of the LUT's
-flat-region spike, followed by a DPU EW-mul by x. In the encoder FFN, `Φ(f1)` runs on the DPU
-LUT (`ROCKET_ACTIVATION_GELU_GATE`), then `f1·Φ(f1)` on the DPU EW-mul.
+flat-region spike, followed by a multiply by x. In the encoder FFN, `Φ(f1)` runs on the DPU
+LUT (`ROCKET_ACTIVATION_GELU_GATE`), and `f1·Φ(f1)` on the host or the DPU EW unit, as
+§"Encoder block" gives.
 
 ## Accuracy
 
@@ -222,7 +232,7 @@ base.en, channel 270 reaches |x|~1221 at every block, and channels 67/33/64/73/5
 channels grow large. The effects:
 
 - **fp16 square overflow.** Channel 270 squared is ~1.5e6 > fp16 max (65504), so a naive fp16
-  LayerNorm variance sum would be Inf. `rocket_layernorm_fp16`'s power-of-2 prescale
+  LayerNorm variance sum would overflow fp16 ([out-cvt-converter.md](out-cvt-converter.md) §"fp16 narrowing"). `rocket_layernorm_fp16`'s power-of-2 prescale
   ([rmsnorm-onnpu.md](rmsnorm-onnpu.md)) keeps the encoder finite and correct here. The
   prescale is active on every real Whisper block.
 - **Chaining error on outlier channels.** The next block's high-gain weights amplify a tiny
@@ -238,7 +248,9 @@ channels grow large. The effects:
 
 ### In-model fused integration
 
-**Conditions:** RK3588 (Turing RK1), NPU clock ~816 MHz, jfk.wav, encode time.
+**Conditions:** RK3588 (Turing RK1), NPU clock ~816 MHz, jfk.wav, `whisper-cli`'s encode
+time, 2026-06-24. The block's FFN returned each op's output to the host, the path
+`ROCKET_ENCODER_NOFUSE` now selects.
 
 The fused block is wired into whisper.cpp and measured on hardware [HW sweep]. Each encoder
 layer becomes one `ggml_map_custom1`, which calls `rocket_encoder_block_fp16`. The build
@@ -255,22 +267,22 @@ The fused path is 3.4-4.4x slower than the CPU, because it is transfer-bound. En
 | medium.en | 19606 | 73828 | 3.77x |
 
 The ratio improves with model size, but far too slowly to reach parity [expected]. A
-per-phase profile of base.en (`ROCKET_ENC_PROFILE`) attributes the cost: softmax 46%,
-attention total 75%, matmuls only 17%. The many small non-matmul NPU ops dominate the encoder,
+per-phase profile of base.en attributes the cost: softmax 46%, attention total 75%, matmuls
+only 17% [HW sweep 2026-06-24]. The many small non-matmul NPU ops dominate the encoder,
 because they repeatedly round-trip their tensors through host memory. The matmul MACs do not
 dominate it.
 
 Exp compute does not bound the path. With `ROCKET_ATTN_HOST_SOFTMAX=1`, a slower host `expf`
-softmax replaces the on-NPU LUT exp, and softmax is 3x faster (3636->1217 ms, encode −27%).
+softmax replaces the on-NPU LUT exp. Softmax then takes 1217 ms against the LUT path's 3636,
+3.0x faster, and the encode 27% less time.
 The host softmax skips the three NPU jobs (exp/row-sum/scale) and their transfers of the
 [Tp,Tn] score matrix between host and NPU. An exp-kernel optimization, such as the
 distribution-aware LUT of Sadheerthan et al. (Electronics 2026), does not address those
 transfers ([SOURCES.md](../SOURCES.md)).
 
 The matmul-only offload, the default drop-in, is faster than the CPU encoder, and its gain
-grows with model size. See the ASR section of [perf/benchmarks.md](../perf/benchmarks.md) and
-[perf/data/whisper-encoder.md](../perf/data/whisper-encoder.md). The fused whole-block path is
-therefore strictly worse.
+grows with model size ([perf/benchmarks.md](../perf/benchmarks.md#asr-whispercpp-via-ggml-rocket)).
+The fused whole-block path is therefore strictly worse.
 
 A composition that returns each intermediate to the host is bound by its per-op readback
 ([not-mac-bound.md](../perf/not-mac-bound.md)). A resident encoder is not, as the whole-graph
@@ -295,7 +307,7 @@ drop-in 585 ms, against 830 ms on the CPU. At 600 MHz the ratio is 1.60x, 364 ms
 Most of the RKNN encoder's wall-clock time is its fused attention op. `exSDPAttention` runs on
 one core whatever the core mask, and it takes 240 ms of the 345 ms per-op sum that
 `RKNN_QUERY_PERF_DETAIL` reports on three cores. Only the matmul-type ops split across cores,
-so three cores give 14% over one, 344 against 400 ms. No op runs on the CPU.
+so three cores take 14% less time than one, 344 against 400 ms. No op runs on the CPU.
 
 The attention op slows 1.56x from 1000 MHz to 300, but only 1.06x from 1000 to 600, and the
 frame follows it. DDR frequency does not bind it: DDR stays at 2112 MHz through the run, and
@@ -339,3 +351,8 @@ The harness is host-side and is not one of the library's tests. It has three par
 
 The reproduction harness and the whisper patcher are in
 [whisper-encoder-validation/](../whisper-encoder-validation/).
+
+### In-model fused integration
+
+The per-phase profile came from timers added to the library for that measurement and removed
+after it. No library build contains them.

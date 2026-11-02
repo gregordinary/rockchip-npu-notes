@@ -1,7 +1,7 @@
 # Whisper encoder on the NPU: validation and in-model integration
 
 Reproduction scripts for the Whisper-encoder-on-the-FOSS-NPU work written up in
-[encodings/whisper-encoder.md](../encodings/whisper-encoder.md) §"Validation against whisper.cpp"
+[encodings/whisper-encoder.md](../encodings/whisper-encoder.md) §"Validation against whisper.cpp (real base.en, real audio)"
 and §"In-model fused integration". Two things are reproduced here:
 
 1. **Per-layer fidelity** of `rocket_encoder_block_fp16` vs whisper.cpp's real `base.en` encoder
@@ -9,7 +9,7 @@ and §"In-model fused integration". Two things are reproduced here:
    audio; a double-precision golden of whisper's exact math is cross-checked == whisper at 0.99983).
 2. **In-model integration**: the whole encoder running on the NPU in stock whisper.cpp, producing a
    **byte-identical transcript** at base.en / small.en / medium.en. It is 3.4-4.4x slower than the
-   CPU encoder. The note's §"In-model fused integration" attributes the cost per phase (the fused
+   CPU encoder. whisper-encoder.md §"In-model fused integration" attributes the cost per phase (the fused
    path is transfer-bound) and compares it with the matmul-only offload.
 
 ## Files

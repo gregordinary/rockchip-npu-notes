@@ -1,9 +1,9 @@
 # Glossary
 
 The terms these notes use that Rockchip's and NVIDIA's documentation does not define, or defines
-in another sense. They are the NPU's block and stage names, which the TRM gives without
-expanding most of them, the notes' own terms, and the abbreviations and terms of the models the
-notes run. Register and field names are not listed: the note for each block gives them, and
+in another sense. They are the NPU's block and stage names, most of which the TRM does not
+expand, and the notes' own terms. They also include the abbreviations and terms of the models
+the notes run. Register and field names are not listed: the note for each block gives them, and
 [hardware-overview.md](hardware-overview.md) maps the blocks.
 
 An abbreviation's definition opens with its expansion, or with "Not expanded." where its
@@ -18,12 +18,12 @@ and a Rockchip term's NVDLA counterpart.
 | ASR | Automatic speech recognition. The transcription of speech audio to text | Field | |
 | Atom | The 16 bytes of channels at one position of a cube: the unit in which the DPU reads and writes the cube | NVDLA | |
 | Backstop | The job timeout of `rocket`: the time after a kick at which the driver retires a job that has not completed ([chips/rk3576.md](chips/rk3576.md)) | Coined | Job timeout |
-| Bit-exact | Equal, bit for bit, to a reference computed on the host | Field | |
+| Bit-exact | Equal, bit for bit, to a reference: a host computation, unless the claim names another reference | Field | |
 | Blind settle | The fixed wait after `PC_DONE` that `dpu_blind_us` sets. At its end, `rocket` signals the fence of a job flagged `ROCKET_JOB_NO_DPU_DONE`, whatever the program is still doing ([chips/rk3576.md](chips/rk3576.md)) | Coined | |
 | BN stage | Not expanded. The second of the DPU's three affine stages, after the BS stage and before the EW stage. NRDMA reads its operands from memory ([encodings/sdp-stage-precision.md](encodings/sdp-stage-precision.md)) | RK3588 TRM | NVDLA SDP X2 |
 | BO | Buffer object. A buffer allocated with `CREATE_BO` and mapped into the NPU's address space | Linux kernel | |
 | Bootstrap | The two device passes in which the RK3576 W8A8 path of `ggml-rocket` estimates each output column's accumulator maximum from the int8 matmul's own output ([perf/rk3576-w8a8-llm.md](perf/rk3576-w8a8-llm.md)) | Coined | |
-| Bracket | A `PREP_BO` and `FINI_BO` pair around a CPU access to a BO. `PREP_BO` syncs the BO for the CPU, and `FINI_BO` syncs it back for the device ([perf/bo-sync-cost.md](perf/bo-sync-cost.md)) | Coined | |
+| Bracket | A `PREP_BO` and `FINI_BO` pair around a CPU access to a BO. `PREP_BO` syncs the BO for the CPU, and `FINI_BO` syncs it back for the device ([chips/rk3576.md](chips/rk3576.md)). The cost of the sync is in [perf/bo-sync-cost.md](perf/bo-sync-cost.md) | Coined | |
 | BRDMA | B read DMA, with the B not expanded. The DPU_RDMA channel that reads the BS stage's operands from memory | RK3588 TRM, NVDLA | |
 | BS stage | Not expanded. The first of the DPU's three affine stages, which also contains the CPEND term. BRDMA reads its per-channel operands from the coefficient buffer ([encodings/sdp-stage-precision.md](encodings/sdp-stage-precision.md)) | RK3588 TRM | NVDLA SDP X1 |
 | C2 | The number of channels stored together at each position of a cube layout. It is 16 bytes divided by the element size: 8 at fp16 and 16 at int8. It is the C2 of RKNN's NC1HWC2 layout ([encodings/tile-layouts.md](encodings/tile-layouts.md)) | RKNN Toolkit2 | NVDLA atomic channel count |
@@ -34,9 +34,9 @@ and a Rockchip term's NVDLA counterpart.
 | Chained run | A maximal sequence of RK3576 layers whose register programs execute in one kick. Every layer but the last leaves a cube, and every layer but the first reads a cube that an earlier member wrote ([chips/rk3576.md](chips/rk3576.md)). A member is a convolution, a pool, or a placed concatenation, which has no register program | Coined | |
 | Clearing idle | The idle interval after which the NPU power domain suspends, which clears the wide-output hazard: twice `power/autosuspend_delay_ms` ([chips/rk3576.md](chips/rk3576.md)) | Coined | |
 | Clip fraction | The share of output columns, counted once per calibration forward, whose output saturates in the bootstrap's second pass. A column saturates when its largest int8 code reaches 127 ([perf/rk3576-w8a8-llm.md](perf/rk3576-w8a8-llm.md)) | Coined | Clipping rate |
-| Clock park | The rate to which the NPU clock returns while the NPU is idle ([perf/clock.md](perf/clock.md)) | Coined | |
+| Clock park | The return of the NPU clock to its idle rate, 198 MHz, when the NPU runtime-suspends, and that rate ([perf/clock.md](perf/clock.md)) | Coined | |
 | CNA | Not expanded. The convolution front end of an NPU core (registers `0x1xxx`). It loads feature data and weights into the CBUF and feeds them to the MAC array. Some third-party code expands the name as "Convolution Neural Accelerator", which no Rockchip document gives | RK3588 TRM | NVDLA CDMA and CSC |
-| Coefficient buffer | The buffer in memory that holds the BS stage's per-output-channel operands, organized in coefficient groups, which BRDMA reads ([encodings/out-cvt-converter.md](encodings/out-cvt-converter.md)) | Coined | |
+| Coefficient buffer | The buffer in memory that holds the BS stage's per-output-channel operands, organized in coefficient groups, which BRDMA reads ([chips/rk3576-regcmd.md](chips/rk3576-regcmd.md)) | Coined | |
 | Coefficient group | One entry of the coefficient buffer: 64 bytes, which hold the operands of 8 output channels. Each channel has an int32 bias `A`, an int16 CPEND operand `B` and an int16 multiplier `C`. The RK3576's depthwise path uses a shorter group ([chips/rk3576-regcmd.md](chips/rk3576-regcmd.md)) | Coined | |
 | CORE | The block of an NPU core that holds the MAC array and its accumulators (registers `0x3xxx`). The TRM also writes "NPU CORE" for a whole core, and these notes write CORE for the block and "core" for the core | RK3588 TRM | NVDLA CMAC and CACC |
 | CPEND | Not expanded. A BS-stage term that adds an operand times the window sum of the CNA's input, border pad included. Its operand is `DPU_BS_OW_OP` per tensor or the coefficient group's `B` per channel, and `DPU_BS_OW_CFG.OD_BYPASS` bypasses it ([depthwise-conv.md](depthwise-conv.md)) | RK3588 TRM | |
@@ -48,7 +48,7 @@ and a Rockchip term's NVDLA counterpart.
 | `Dcal` | The negative log-likelihood, in nats, that an RK3576 W8A8 configuration adds against its control, summed over the `llama-perplexity` windows that are calibration forwards ([perf/rk3576-w8a8-llm.md](perf/rk3576-w8a8-llm.md)) | Coined | |
 | DCOMP | Not expanded. The weight-decompression block inside the CNA, which expands compressed weights as the CNA loads them ([encodings/cna-dcomp-weight-decompression.md](encodings/cna-dcomp-weight-decompression.md)) | RK3588 TRM | |
 | DDMA | Not expanded. The block of an NPU core that arbitrates its reads and writes to system memory (registers `0x8xxx`) | RK3588 TRM | NVDLA MCIF |
-| De-tile | Converting a cube-layout output back to row-major order on the host | Coined | Unpack |
+| De-tile | Converting a cube-layout output back to row-major order. The host does it, unless a note names another engine | Coined | Unpack |
 | Decode | The phase of LLM inference after prefill, which generates one token at a time: a matrix-vector product per weight (M=1, a GEMV) | Field | |
 | Delta task | A task whose register program writes only the registers that differ from an earlier task's, and relies on the register groups for the rest ([encodings/regcmd-task-model.md](encodings/regcmd-task-model.md)) | Coined | |
 | Dense writer | The RK3576 register program that writes an int8 program's accumulators as raw int32, through the whole output stage. It delivers every output channel ([chips/rk3576-regcmd.md](chips/rk3576-regcmd.md)) | Coined | |
@@ -60,7 +60,7 @@ and a Rockchip term's NVDLA counterpart.
 | ERDMA | E read DMA, with the E not expanded. The DPU_RDMA channel that reads the EW stage's second operand from memory | RK3588 TRM, NVDLA | |
 | EW stage | Element-wise, as the TRM describes its operand. The third of the DPU's three affine stages, which can also combine each element with a second operand that ERDMA reads ([encodings/sdp-stage-precision.md](encodings/sdp-stage-precision.md)) | RK3588 TRM | NVDLA SDP Y |
 | Expert stack | The weights of one MoE layer's routed experts, which llama.cpp holds as one tensor | Coined | |
-| FA | Flash attention. Attention computed over blocks of keys with a running softmax, so that the whole matrix of scores is never held at once | Field | |
+| FA | Flash attention. Attention computed as one fused operation: the scores, their softmax and the product with the values. In these notes it is llama.cpp's `FLASH_ATTN_EXT` op and the `librocketnpu` handler that offloads it. The handler holds each head's whole score matrix, and runs the softmax on the host ([perf/attention-offload-crossover.md](perf/attention-offload-crossover.md)) | Field | |
 | Feature cube | An activation tensor in its cube layout | Coined | NVDLA feature data cube |
 | FFN | Feed-forward network. The sub-block of a transformer layer that applies two or three matmuls, with an activation between them, to each token independently ([encodings/ffn-block.md](encodings/ffn-block.md)). Other sources call it the MLP, the multilayer perceptron | Field | |
 | Flying mode | The input-source setting `flying_mode` = 1, in which a block reads its main input from memory instead of from the block before it. The DPU then reads through MRDMA instead of taking the convolution output, and the PPU reads memory instead of the DPU's output ([encodings/mrdma-trap.md](encodings/mrdma-trap.md)) | RK3588 TRM | NVDLA off-flying mode |
@@ -97,20 +97,20 @@ and a Rockchip term's NVDLA counterpart.
 | packA | The host pass that scatters a matmul's activation (A) into the cube layout | Coined | GEMM operand packing |
 | packB | The host pass that scatters a matmul's weight (B) into the cube layout | Coined | GEMM operand packing |
 | Packed image | An input of four or fewer channels stored with each pixel's channels adjacent, as an image is. The CNA reads one straight from memory in its ARGB input mode, `ARGB_IN` ([chips/rk3576.md](chips/rk3576.md)) | Coined | NVDLA image-input convolution |
-| Partial output stage | An RK3576 DPU output configuration for a four-byte element that changes only some of the whole output stage's words. Changing only the `out` field of `0x4010` is one. It triggers the wide-output hazard ([chips/rk3576.md](chips/rk3576.md)) | Coined | |
+| Partial output stage | An RK3576 DPU output configuration for an element wider than one byte that changes only some of the whole output stage's words. Changing only the `out` field of `0x4010` is one. It triggers the wide-output hazard ([chips/rk3576.md](chips/rk3576.md)) | Coined | |
 | PC | Not expanded. The block of an NPU core that fetches each task's register program from memory and writes each value into its block (registers `0x0xxx`). It then starts the blocks that the task's trailer names. The TRM's functional description calls it the register file fetch unit, and NVDLA has no counterpart | RK3588 TRM | |
 | Per-axis | A quantization scale given per output channel rather than per tensor, as TFLite defines it | TFLite | Per-channel quantization |
 | PPL | Perplexity. A language model's quality measure on a reference text, the exponential of its mean negative log-likelihood per token, where lower is better | Field | |
 | PPU | Planar Processing Unit. The pooling block of an NPU core (registers `0x6xxx`), which has its own read DMA, PPU_RDMA (registers `0x7xxx`) | RK3588 TRM | NVDLA PDP |
 | Pre-flight | The MoE residency check of `ggml-rocket`, run in `supports_op` before the first ingest. It reserves each expert stack's whole resident cost against the RAM and IOVA budgets. A stack that does not fit stays on the CPU ([TUNING.md](TUNING.md)) | Coined | |
-| Prefill | The phase of LLM inference that processes the prompt as one batch: a matrix-matrix product per weight (a GEMM) | Field | |
+| Prefill | The phase of LLM inference that processes the prompt's tokens in batches: a matrix-matrix product per weight (a GEMM) | Field | |
 | RDMA | Read DMA. A block's DMA channel for reading its operands from memory, as in DPU_RDMA and PPU_RDMA | NVDLA | |
 | regcmd | Register command. One 64-bit word of a register program: a target block, a register offset and a 32-bit value ([encodings/regcmd-task-model.md](encodings/regcmd-task-model.md)) | `rknpu` driver | Command buffer entry |
 | Regcmd encoder | The library code that writes register programs in one SoC's register encoding ([chips/porting-patterns.md](chips/porting-patterns.md)). Each SoC needs its own, because the encoding of the CNA, CORE and DPU geometry registers differs between SoCs | Coined | Command-stream generator |
 | Register group | One of a block's two copies of its configuration registers. The block runs from one group while software programs the other | RK3588 TRM | NVDLA ping-pong registers |
 | Register program | The sequence of regcmds for one task, ending in a trailer that starts the blocks ([encodings/regcmd-task-model.md](encodings/regcmd-task-model.md)) | Coined | Command buffer |
 | Requant | Converting an integer accumulator to a narrower integer output with a scale and a shift | Field | Requantization |
-| Resident weights | Weights packed into the cube layout once, at model load, and kept in BOs, rather than packed on every call | Coined | |
+| Resident weights | Weights packed into the cube layout once, at model load or on first use, and kept in BOs, rather than packed on every call | Coined | |
 | RKNPU | Rockchip's neural processing unit, derived from NVIDIA's NVDLA, which the RK3588 TRM documents as RKNN. Its datapath semantics are common to every SoC that integrates it, and its register encoding can differ between revisions ([chips/porting-patterns.md](chips/porting-patterns.md)) | `rknpu` driver | NPU |
 | `rknpu` | Rockchip's vendor driver for the RKNPU, in Rockchip's BSP kernel | `rknpu` driver | |
 | `rocket` | The mainline Linux DRM accel driver for the RKNPU, `drivers/accel/rocket`. It allocates buffers and submits register programs through the ioctls `CREATE_BO`, `SUBMIT`, `PREP_BO` and `FINI_BO` | Linux kernel | |
@@ -120,14 +120,14 @@ and a Rockchip term's NVDLA counterpart.
 | SDMA | Not expanded. The block of an NPU core that connects it to on-chip SRAM (registers `0x9xxx`) | RK3588 TRM | NVDLA SRAMIF |
 | Sentinel stamp | A known byte pattern written into an output BO, inside a bracket, before a submit. An element the NPU never wrote then differs from one it wrote as zero | Coined | |
 | Shift word | The 32-bit per-task operand that the RK3576's DPU reads through `BS_BASE_ADDR1` (`0x5024`). It contains the BS stage's right shift for a non-negative product in bits [5:0], and for a negative product in bits [13:8] ([chips/rk3576-regcmd.md](chips/rk3576-regcmd.md)) | Coined | |
-| Streaming path | The matmul path that packs its weights into the cube layout on every call, the alternative to resident weights | Coined | |
-| Submit | One `SUBMIT` ioctl to `rocket`: a job of one or more tasks | Coined | Job |
+| Streaming path | The matmul path that packs its weights into the cube layout on every call, the alternative to resident weights. It names where the weights are packed, and CBUF weight streaming names a task form | Coined | |
+| Submit | One `SUBMIT` ioctl to `rocket`: one or more jobs, each of one or more tasks | Coined | Command submission |
 | Super-group | A group of 32 output channels in the wide writer's output, which the DPU writes as one stream of `4·A` atoms. `A` is the output's pixel count ([chips/rk3576-regcmd.md](chips/rk3576-regcmd.md)) | Coined | |
 | Surface | One plane of a cube layout: every width and height position of one atom-wide group of channels. A surface stride is the distance between consecutive surfaces, and the notes do not use the word for an output tensor | NVDLA | |
 | Task | One register program with its descriptor, `{regcmd address, regcmd count}`: the unit the PC executes | RK3588 TRM | NVDLA hardware layer |
 | TDT | Token-and-duration transducer. A speech-model decoder that predicts each token together with the number of audio frames it spans | Field | |
 | Test point | One combination of the swept parameters in a measurement | Coined | Design point |
-| Tile | The part of a matmul that one task computes: `Mt × Nt` outputs over `Kt` of the contraction | Field | |
+| Tile | The part of an operation that one task computes. For a matmul, `Mt × Nt` outputs over `Kt` of the contraction. For a convolution, a range of output rows, columns and channels | Field | |
 | Transform-bound | Limited by the host's layout conversions, the pack into the cube layout and the de-tile out of it, rather than by NPU execution ([encodings/cross-op-chaining.md](encodings/cross-op-chaining.md)) | Coined | |
 | TTFT | Time to first token. The time from a prompt's submission to the first generated token, which prefill sets | Field | |
 | ViT | Vision transformer. An image model that splits an image into patches and runs them through transformer layers as tokens | Field | |
@@ -139,7 +139,7 @@ and a Rockchip term's NVDLA counterpart.
 | Whole output stage | The complete set of nine RK3576 DPU words that configure the output for a four-byte element. A program that sets all of them writes int32 or fp32 without the wide-output hazard ([chips/rk3576.md](chips/rk3576.md)) | Coined | |
 | Wide writer | The RK3576 register program that writes an int8 program's accumulators as raw int32, through a partial output stage. It delivers 8 output channels of every 16 ([chips/rk3576-regcmd.md](chips/rk3576-regcmd.md)) | Coined | |
 | Wide-output hazard | RK3576 erratum RK3576-E2. A program that writes a DPU output element wider than one byte through a partial output stage leaves the next submit unwritten. The next submit can be of any kind and from any process ([chips/rk3576.md](chips/rk3576.md)) | Coined | |
-| Worker fd | One of the several fds that a multicore matmul opens on the NPU's device node, to spread its tiles across the cores ([perf/iova-and-multicore.md](perf/iova-and-multicore.md)) | Coined | |
+| Worker fd | One of the several fds that a multicore operation opens on the NPU's device node, to spread its tiles across the cores. Matmul, convolution and flash attention open them ([perf/iova-and-multicore.md](perf/iova-and-multicore.md)) | Coined | |
 | Write guard | The RK3576 check in `librocketnpu` that every task of a submit wrote its output, and that the job completed before the backstop. A submit that fails it is redone after a power-domain cycle ([chips/rk3576.md](chips/rk3576.md)) | Coined | |
 
 ## Notation

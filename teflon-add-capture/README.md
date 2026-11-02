@@ -65,8 +65,7 @@ ERDMA-operand program computes a two-buffer EW op exactly, with no conv
 [HW sweep, RK3588, `tests/ew_int_probe.c`], once `DATA_CUBE_CHANNEL` carries `ORIG_CHANNEL`
 and `COMB_USE` bit 0 is clear. `gen_ew_mul_fp16` carries both wrong, which is why it
 fails. The fields are in
-[../encodings/sdp-stage-precision.md](../encodings/sdp-stage-precision.md) §"A two-buffer EW op
-needs no conv main feed".
+[../encodings/sdp-stage-precision.md](../encodings/sdp-stage-precision.md) §"Two-buffer EW op without a convolution".
 
 Feeding the EW operand path with an **identity matmul** as the main (the fp16 K-accum
 machinery, `gen_matmul_fp16` `accumulate=1`) and switching the EW op add->mul

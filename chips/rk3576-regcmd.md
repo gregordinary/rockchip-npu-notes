@@ -115,6 +115,11 @@ width in bits [31:24] and the height in [23:16]: `0x0202` at k=3, `0x0404` at k=
 > produce incorrect output in every element region [HW sweep, H96 MAX M9]. Software must
 > program the kernel width in bits [31:24] and the height in [23:16].
 
+On Inception V3, the 34 non-square layers are bit-exact with that assignment and wrong in every
+element region with the halves swapped. All 61 square-kernel convolutions are byte-identical
+either way [HW sweep, H96 MAX M9]. `ROCKET_RK3576_KSWAP=1` selects the transposed assignment,
+as a control.
+
 The OUT_CVT triple is `0x40AC` / `0x40B0` / `0x40B4`: offset, scale and shift, in three
 consecutive registers. It is the same requant the RK3588 programs at `0x4080`-`0x4088`
 [HW sweep, H96 MAX M9].
@@ -487,17 +492,16 @@ the coefficient-buffer layout below. With features and weights zero and a per-ch
 output matches the CPU model exactly across all 32 output channels. The OUT_CVT offset, scale
 and shift move that output exactly as predicted.
 
-The OUT_CVT requant rounds to nearest rather than truncating. A border whose exact value is
--10.0006 comes back as -10, where an arithmetic shift gives -11. Adding half an LSB before the
-shift, as `(acc*scale + (1<<(shift-1))) >> shift`, reproduces every pixel of the bias and
-OUT_CVT measurements above exactly. A CPU model without a rounding term is off by one wherever
-the fraction crosses a half. [HW sweep, H96]
-
-That half-up form differs from the hardware only at an exact tie, and the measurements above
-contain none. Every vendor program and `librocketnpu` leave `0x40B4` bit 30 (`CVT_ROUND`)
-clear. A tie then rounds half to even [HW sweep, H96 MAX M9, 2026-09-23]. The
-tie rule is in
+The OUT_CVT requant rounds to nearest, and a tie rounds half to even. Every vendor program and
+`librocketnpu` leave `0x40B4` bit 30 (`CVT_ROUND`) clear, which selects that tie rule
+[HW sweep, H96 MAX M9, 2026-09-23]. A border whose exact value is -10.0006 comes back as -10,
+where an arithmetic shift gives -11. A CPU model without a rounding term is off by one wherever
+the fraction crosses a half [HW sweep, H96]. The tie rule and the bit are in
 [../encodings/out-cvt-converter.md](../encodings/out-cvt-converter.md).
+
+The bias and OUT_CVT measurements above contain no exact tie, so a round-half-up model,
+`(acc*scale + (1<<(shift-1))) >> shift`, also reproduces every pixel of them. It differs from
+the hardware at a tie.
 
 All four operand DMAs are active and reach their programmed addresses. Each base below,
 pointed at an unmapped IOVA, makes the job fault with its own IOMMU status word, while an
@@ -590,7 +594,7 @@ which is what symmetric quantization needs.
 > fp16, where `1.0` is `0x3C00`. See
 > [the fp16 datapath](#fp16-direct-convolution).
 
-### The B term is added: `acc + B*sum(x)`
+### The B term
 
 The BS stage adds `B*sum(x)` to the accumulator [HW sweep, H96 MAX M9, measured 2026-07-27].
 Here `sum(x)` is the sum of the input elements the output contracted. The model
@@ -652,7 +656,7 @@ as a second DDR stride [HW sweep, H96 MAX M9].
 
 ### The windowed registers
 
-The three registers that take a second value on a windowed task [HW sweep, H96 MAX M9]:
+The windowed registers' fields, and the values measured on them [HW sweep, H96 MAX M9]:
 
 | Offset | Bits | Function | Measured values |
 |---|---|---|---|
@@ -710,13 +714,13 @@ submit-and-wait.
 Emitting a window's regcmd on the host takes 0.02-0.05 ms, and a single-task conv costs 1.2 ms
 whether its output is 2 KB or 1.6 MB.
 
-The fixed per-task cost is the driver's completion poll rather than NPU execution. The RK3576
-has no maskable completion IRQ, so `rocket` polls on an hrtimer, and the per-task cost follows
-the poll interval almost exactly. The DPU's writes drain after `PC_DONE` fires. Retiring on
-the DPU's own completion instead of `PC_DONE` is what makes a shorter interval safe. The patch
-`patches/rk3576/npu/0012` retires on the DPU's completion and takes the period to 50 us, and
-0011 removes the IOMMU half of the hazard. With 0012 the fixed per-task cost falls to the
-per-submit time in §"The per-submit floor is the driver's completion poll", below.
+The fixed per-task cost is the driver's completion poll rather than NPU execution. That module
+polls for `PC_DONE` on an hrtimer, because `PC_DONE` is read-only in `INTERRUPT_MASK`, and the
+per-task cost follows the poll interval almost exactly. Retiring on the DPU's own completion,
+which follows the write drain, instead of on `PC_DONE` is what makes a shorter interval safe.
+The patch `patches/rk3576/npu/0012` retires on the DPU's completion and takes the period to
+50 us, and 0011 removes the IOMMU half of the hazard. With 0012 the fixed per-task cost falls to
+the per-submit time in §"Per-submit cost and the completion poll", below.
 
 ### Software support
 
@@ -752,7 +756,7 @@ therefore mis-programs the stride. The defect appears only once a caller sends e
 through the planner, which is what a tiler does. Software must set `ih_full`/`oh_full` from
 the plane on every task.
 
-## The geometry fields are narrower than their register halves
+## Geometry field widths
 
 Each geometry extent is programmed into a 16-bit register half or a whole register. The
 RK3576 computes with fewer bits [HW sweep, H96 MAX M9, 2026-09-26]. The field widths, and what
@@ -851,7 +855,7 @@ counts, the sub-encoding's clearest signature in a capture.
 | Register | Normal path | int8 ARGB path |
 |---|---|---|
 | `0x100C` | `proc<<7 \| in<<4 \| conv_mode` | `GROUP_LINE_OFF \| ARGB_IN(8\|(ic-1))<<12 \| 6` |
-| `0x1020` weight elems | `ic*kh*kw` | `kh * round16(4*kw)`, a 16-byte row per kernel row |
+| `0x1020` weight bytes per output channel | `ic*kh*kw` | `kh * round16(4*kw)`, a 16-byte row per kernel row |
 | `0x101C` weight bytes | `ic*oc*kh*kw` | `oc * kh * round16(4*kw)` |
 | `0x1030` hi | `ic*kh*kw*2` | `weight_elems * 2` (same rule, folded count) |
 | `0x1028` lo | `ic-1` | `4*kw - 1`, the folded count |
@@ -1058,9 +1062,8 @@ strides, `k` 1/3/5/7 and `oc` 16/32/48/64.
 The fp16 program has no channel fold. The int8 path folds the kernel's width into the channel
 axis (4 lanes per pixel column, `kw` columns), so it programs 12 at `kw=3` against a feature
 DMA of 3. The float path does not fold: the programmed count is the image's, and the taps
-stay on the kernel axis. The `+1` granule goes with the fold, because it is the fold's
-lookahead (the last output column of a row reads `kw` pixels, which reach past its own
-granule). A float program at `k` 1, 3, 5 and 7 has the same entry count at every kernel size.
+stay on the kernel axis. The `+1` granule is the fold's lookahead, so the float path has none.
+A float program at `k` 1, 3, 5 and 7 has the same entry count at every kernel size.
 
 The decoded fp16 weight cube agrees independently. It has explicit `kh` and `kw` axes with four
 lanes inside a tap, where a folded cube would put the columns inside the lanes.
@@ -1544,8 +1547,10 @@ It is not a channel count.
 ## fp16 direct convolution
 
 An fp16 direct convolution is bit-faithful on the RK3576 and writes every output channel. One
-task contracts sixteen input channels. A convolution with more input channels runs as one
-task per 16-channel slice, with the partial outputs summed on the host.
+task of this program contracts sixteen input channels. A convolution with more input channels
+runs as one task per 16-channel slice, with the partial outputs summed on the host. The bound
+is the direct-convolution program's, not the SoC's: the matmul-form fp16 program contracts the
+whole of K in one task (§"Matmul precision").
 
 Each fact in this section is
 [source-confirmed, RKNN-Toolkit2 rk3576 float build, HW sweep, H96 MAX M9, measured 2026-07-26]
@@ -1619,7 +1624,7 @@ The three registers behave as follows:
 - In DPU `0x4050`, bit 31 is the float bit, and the low nibbles have no effect on the float
   mode. The values `0x00011111`, `0x00021111` and `0x00020000` all work. The value
   `0x80021111` returns `+inf`, because the accumulator has summed the doubled reads. The
-  nibble is the write-extent field described below.
+  nibble is the write-extent field (§"The write-extent field and the byte-placement words").
 
 ### Precision fields
 
@@ -1725,7 +1730,7 @@ accumulator, which an `ic` split needs.
 
 ### The contraction width
 
-The fp16 contraction is sixteen input channels wide.
+The direct-convolution program's fp16 contraction is sixteen input channels wide.
 
 > [!CAUTION]
 > Software must program each fp16 conv task with `ic = 16`. A task with any other count
@@ -1794,10 +1799,13 @@ over-estimate refuses early instead of corrupting.
 
 ### Cost of an fp16 conv
 
-The fp16 convolution runs as the `ic/16` split, and its cost follows the submits the split
-issues [HW sweep, H96 MAX M9, measured 2026-07-26].
+Through the fp16 output writer, the `ic/16` split's cost follows the submits it issues
+[HW sweep, H96 MAX M9, measured 2026-07-26].
 
-**Conditions:** `oc` 64.
+**Conditions:** H96 MAX M9, `oc` 64, each slice written as fp16, a `rocket` predating
+interface version 1.0, measured 2026-07-26. `rocket_conv2d_fp16_rk3576()` writes each slice in
+fp32 through the whole output stage instead. Its cost on `rocket` 1.6.0 is in the Software
+support section that follows [rk3576-hazards.md](rk3576-hazards.md) §"The whole output stage".
 
 | shape | submits | NPU | host pack + de-tile | total |
 |---|---|---|---|---|
@@ -1852,7 +1860,7 @@ reduces the wall-clock time by very nearly the grace, once per slice [HW sweep]:
 
 | `dpu_grace_us` | 8-slice wall-clock time | per slice |
 |---|---|---|
-| 500 (default) | 15.39-16.16 ms, median 15.89 | ~1.99 ms |
+| 500, that module's default | 15.39-16.16 ms, median 15.89 | ~1.99 ms |
 | 250 | 12.95-13.97 ms, median 13.29 | ~1.66 ms |
 
 Each slice saves 300 us for the 250 us cut, 1.20x over the eight slices [host-computed]. The
@@ -1890,11 +1898,11 @@ In float mode the DPU reads `A` (bias) as fp32 and `C` (multiplier) as fp16.
 > Software must program `C` as an fp16 value in float mode. The int8 default `C = 1` is the
 > denormal 6e-8, and underflows the whole output to empty. The fp16 value `1.0` is `0x3C00`.
 
-Asymmetric weights are a packing question, not an encoding one. The `B` field in the
-coefficient group is a per-output-channel int16 beside the bias `A` and the multiplier `C`.
-Driving a weight zero point through it needs no register change. The DPU adds the term, so
-software must program a weight zero point negated. The measurement is under "The B term is
-added" above. In `librocketnpu`, `rocket_rk3576_pack_coeff_asym()` takes the zero point.
+Asymmetric weights are a packing question, not an encoding one. The `B` field in the coefficient
+group is a per-output-channel int16 beside the bias `A` and the multiplier `C`. Driving a weight
+zero point through it needs no register change. The DPU adds the term, so software must program
+a weight zero point negated. The measurement is under "The B term" above. In `librocketnpu`,
+`rocket_rk3576_pack_coeff_asym()` takes the zero point.
 
 ## DPU shift operand (`0x5024`)
 
@@ -2099,11 +2107,11 @@ occasionally comes back wholly untouched.
 > A job that writes nothing leaves the previous job's output in the BO, so a repeated
 > configuration reads byte-exact. One configuration then appears byte-exact on every run, and
 > any other appears to write nothing. A fresh BO's zeros cannot separate a job that never ran
-> from one that wrote zeros (see the write guard in [rk3576.md](rk3576.md)). Software must stamp
-> the output BO with a sentinel before each job, through a `PREP_BO`/`FINI_BO` bracket. A bare
-> `memset` leaves dirty cache lines that race the DMA.
+> from one that wrote zeros (see [../perf/rk3576-graph.md](../perf/rk3576-graph.md) §"The write
+> guard on a graph"). Software must stamp the output BO with a sentinel before each job, through
+> a `PREP_BO`/`FINI_BO` bracket. A bare `memset` leaves dirty cache lines that race the DMA.
 
-## The per-submit floor is the driver's completion poll
+## Per-submit cost and the completion poll
 
 **Conditions:** H96 MAX M9, `rocket` with patches `0006`, `0009` and `0012`, from before
 interface version 1.0, measured 2026-07-28. The per-submit time on later modules is in
@@ -2112,8 +2120,9 @@ interface version 1.0, measured 2026-07-28. The per-submit time on later modules
 On the RK3576 the per-submit cost is set by the driver's completion poll, not by the NPU.
 `PC_DONE` is read-only in `INTERRUPT_MASK`, so it cannot be routed to the GIC. The RK3588 takes
 an interrupt, and on the RK3576 `patches/rk3576/npu/0006` polls the bit on an hrtimer instead.
-The poll period sets the minimum cost of a submit, so the cost of RK3576 work follows its
-submit count.
+The DPU completion pair (`DPU_0`/`DPU_1`) does reach the GIC, so the poll is the driver's
+choice [HW sweep, H96 MAX M9, 2026-08-13]. The poll period sets the minimum cost of a submit,
+so the cost of RK3576 work follows its submit count.
 
 `patches/rk3576/npu/0009` makes the period a module parameter. Patch `0012` sets it to 50 us
 and changes what the poll retires on. At that period a submit costs about a fifth of its time
@@ -2322,10 +2331,10 @@ the dense int32 writer go out without it.
 #### Completion and the wide-output hazard
 
 The narrow and wide int32 writers raise no DPU completion and also trigger the wide-output
-hazard (erratum RK3576-E2, [rk3576.md](rk3576.md) §"The poisoning is one hazard, and its cost
-is a system setting"). The two are separate. The fp16 programs trigger the hazard and raise
-their completion. With the DPU bit as the retire condition, the hazard's reach is unchanged
-[HW sweep, H96 MAX M9, measured 2026-07-28].
+hazard (erratum RK3576-E2, [rk3576-hazards.md](rk3576-hazards.md) §"The wide-output hazard").
+The two are separate. The fp16-output programs trigger the hazard and raise their completion.
+With the DPU bit as the retire condition, the hazard's reach is unchanged [HW sweep, H96 MAX M9,
+measured 2026-07-28].
 
 On the module before interface 1.0, a submit that the hazard left unwritten raised its DPU
 completion. A missing DPU bit did not detect the hazard there [HW sweep, H96 MAX M9, measured
@@ -2419,12 +2428,12 @@ device, which belongs to the OF core, so `rmmod`/`insmod` does not clear it. A f
 device comes back `active` and stays there until a reboot.
 
 > [!CAUTION]
-> On a device pinned runtime-active, every int32-output shape writes nothing, and every other
-> path still works. The power domain's cycling is what clears the int32 output writer's
-> wide-output hazard, and on a device that cannot suspend the hazard never clears. The symptom
-> matches a defect in the int32 path. A matmul measured in this state fails at every poll
-> period, whatever the period. Software must check `power/runtime_status` before trusting any
-> int32 result.
+> On a device pinned runtime-active, every int32-output shape through the narrow or the wide
+> writer writes nothing, and every other path still works. The power domain's cycling is what
+> clears those writers' wide-output hazard, and on a device that cannot suspend the hazard never
+> clears. The symptom matches a defect in the int32 path. A matmul measured in this state fails
+> at every poll period, whatever the period. Software must check `power/runtime_status` before
+> trusting a result from either writer.
 
 Without `0010` the state also sustains itself. One failed attach times out at 500 ms, and the
 timeout path calls `rocket_core_reset()`. That reset takes the IOMMU down, so the next attach
@@ -2432,15 +2441,15 @@ fails for real. With `0010` the driver retires the failed job with its error, th
 next submit attaches and computes normally, and the device suspends. [HW sweep, H96 MAX M9,
 measured 2026-07-27]
 
-### A per-job core reset is not the way to clear the poisoning
+### Per-job core reset
 
 **Conditions:** H96 MAX M9, a `rocket` from before interface version 1.0, measured
 2026-07-27.
 
 `rocket_core_reset()` is a `reset_control` bulk assert, `udelay(10)`, then a deassert, and the
 driver runs it on a job timeout. Called at job start, it does not replace the power-cycle idle
-that an int32-output job forces on the next submit. Asserted before every job, it takes the
-IOMMU down with it:
+that a narrow- or wide-writer int32 job forces on the next submit. Asserted before every job,
+it takes the IOMMU down with it:
 
 ```
 rk_iommu 27702000.iommu: Error during raw reset. MMU_DTE_ADDR is not functioning
@@ -2605,7 +2614,7 @@ the reset detaches explicitly. On both SoCs the path a client reaches is the res
 IRQ handler, and the two differ only in whether the detach WARNs. [HW sweep, Turing RK1,
 2026-07-28]
 
-## A BO in an in-flight job must survive the file that made it
+## BO lifetime across file close
 
 **Conditions:** mainline `rocket`, in code that the RK3576 enablement does not touch, and which
 declares no interface version. Measured on H96 MAX M9, 2026-07-28.
@@ -2715,10 +2724,10 @@ contracts the whole of K in one task. Its cost against the int8 matmul is in
 
 **Conditions:** H96 MAX M9, `M*K = 262144`, measured 2026-07-27.
 
-Matmul throughput on the RK3576 is set by the MACs per submit. A submit costs the same
-whatever work it contains (§"The per-submit floor is the driver's completion poll"). The feature budget caps `M*K`, and the resident weight slice caps K,
-so N is the only free axis. At the feature-budget cap, throughput scales almost linearly with N
-[HW sweep]:
+Matmul throughput on the RK3576 is set by the MACs per submit. A submit costs the same whatever
+work it contains (§"Per-submit cost and the completion poll"). The feature budget caps `M*K`,
+and the resident weight slice caps K, so N is the only free axis. At the feature-budget cap,
+throughput scales almost linearly with N [HW sweep]:
 
 | N | 32 | 64 | 128 | 256 | 512 | 1024 | 2048 | 2560 |
 |---|---|---|---|---|---|---|---|---|
@@ -2799,7 +2808,7 @@ The regcmd encoder's `gen_conv2d_int8_rk3576_i32out()` emits this program. The e
 `rocket_matmul_int8_rk3576_i32()` places the channels this way when its dense writer is off
 (`ROCKET_RK3576_I32_DENSE=0`, or a writer forced with `ROCKET_RK3576_I32_OC_MULT`), and it is
 bit-exact against a CPU int32 model. By default the entry writes through the dense writer
-(§"The dense writer: every accumulator as an int32, and no poisoning").
+(§"The dense writer").
 
 #### Output-channel registers
 
@@ -2979,14 +2988,15 @@ writer is selected, and a tie goes to the narrow one. `ROCKET_RK3576_I32_OC_MULT
 On that path the wide writer is not chosen for any shape in the sweep, and a shape outside it
 can still reach it. [HW sweep, H96 MAX M9]
 
-### The dense writer: every accumulator as an int32, and no poisoning
+### The dense writer
 
 **Conditions:** H96 MAX M9, `rocket` 1.6.0, measured 2026-09-30.
 
-Eight DPU words make the int8 direct program write every accumulator as a raw int32. Emitted
-together over it, one task delivers all `M*N` accumulators exactly, in `M*N` words, with no bias
-added. Seven are the `charsiu` project's wide output stage, read from vendor streams
-(`src/job.c`), and its `0x40B8` is theirs too, fitted there at one row:
+Nine DPU words, the whole output stage, make the int8 direct program write every accumulator as
+a raw int32. Emitted together over it, one task delivers all `M*N` accumulators exactly, in `M*N`
+words, with no bias added. Eight are the `charsiu` project's wide output stage, read from vendor
+streams (`src/job.c`). The ninth, `0x40B8`, is that project's closed form too, fitted there at one
+row:
 
 | register | int8 direct | dense int32 |
 |---|---|---|
@@ -3025,24 +3035,24 @@ output exactly at `K` 32, so the wide writer's 8 KiB bound does not hold for thi
 
 **Not characterized:** `0x40B8` for a row window.
 
-The dense writer does not leave the next submit unwritten: see [rk3576.md](rk3576.md) §"The
-poisoning is one hazard".
+The dense writer does not leave the next submit unwritten: see
+[rk3576-hazards.md](rk3576-hazards.md) §"The whole output stage".
 
 ### The wide-output hazard after an int32-output job
 
 **Conditions:** H96 MAX M9, measured 2026-07-27 and 2026-07-28, on a `rocket` from before
 interface version 1.0.
 
-An int32-output job through the narrow or the wide writer leaves the next submit unwritten
-until the NPU power domain cycles. This is erratum RK3576-E2, the wide-output hazard. The
-hazard, the idle that clears it and the workaround are in [rk3576.md](rk3576.md) §"The
-poisoning is one hazard, and its cost is a system setting". The dense writer does not
-trigger it (§"The dense writer: every accumulator as an int32, and no poisoning"). This
-section gives the register conditions under which the int32 programs trigger it.
+An int32-output job through the narrow or the wide writer leaves the next submit unwritten until
+the NPU power domain cycles. This is erratum RK3576-E2, the wide-output hazard. The hazard, the
+idle that clears it and the workaround are in [rk3576-hazards.md](rk3576-hazards.md) §"The
+wide-output hazard". The dense writer does not trigger it (§"The dense writer"). This section
+gives the register conditions under which the int32 programs trigger it.
 
 On the narrow and wide writers, the entry `rocket_matmul_int8_rk3576_i32()` sizes its idle
-from the driver's autosuspend delay, at twice the delay plus 20 ms. It idles between its own
-submits and once more on the way out, and retries any submit whose own region came back
+from the driver's autosuspend delay, at twice the delay plus 5 ms. Where the sysfs delay is
+writable, it drives the power cycle directly instead of waiting out the idle. It idles between
+its own submits and once more on the way out, and retries any submit whose own region came back
 untouched.
 
 #### Register conditions
@@ -3063,9 +3073,9 @@ three does not. The sufficient condition is joint, not one register:
 | fp16 first conv | each of its 19-register delta, one at a time | yes, all 19 |
 
 The same `out` value is therefore clean on one program and triggers the hazard on another. A
-leave-one-out over the whole fp16 first-conv delta clears nothing, because either of
-`0x4038[4]` and `0x4050[17]` triggers it on the fp16 programs. The dense writer's whole output
-stage sets both bits and does not trigger it ([rk3576.md](rk3576.md) §"The register
+leave-one-out over the whole fp16 first-conv delta clears nothing, because either of `0x4038[4]`
+and `0x4050[17]` triggers it on the fp16 programs. The dense writer's whole output stage sets
+both bits and does not trigger it ([rk3576-hazards.md](rk3576-hazards.md) §"The register
 conditions").
 
 The mechanism is undecoded. The next job programs `0x4010` back to all-int8 and still comes back empty. The state is
@@ -3075,13 +3085,9 @@ their addresses does not clear it.
 #### Driver completion poll
 
 `patches/rk3576/npu/0012` closes the completion-visibility race. It retires the poll on the
-DPU's own completion bit rather than on `PC_DONE`. The reproducer and the fix are under "The
-per-submit floor is the driver's completion poll" above. The module parameter
-`poll_interval_us` is live, so the poll period can be swept from sysfs with no rebuild.
-
-The per-submit cost on the RK3576 is set by the driver's poll, not by the silicon. PC_DONE is
-not routable to the GIC on the RK3576, so `patches/rk3576/npu/0006` polls it where the RK3588
-takes an interrupt. Every RK3576 cost table is therefore a submit-count table.
+DPU's own completion bit rather than on `PC_DONE`. The reproducer and the fix are under
+"Per-submit cost and the completion poll" above. The module parameter `poll_interval_us` is
+live, so the poll period can be swept from sysfs with no rebuild.
 
 #### Related hazards
 
@@ -3436,7 +3442,7 @@ On a module before 1.6.0, the job falls through to the `dpu_grace_us` deadline. 
 out in full on every submit [HW sweep, H96 MAX M9, 2026-07-31]. The wait tracks the parameter
 count for count: 641 us at 500, 389 at 250 and 213 at 100. On `rocket` 1.6.0, where
 `dpu_grace_us` 0 waits for the writing block, a pool submitted without the PPU flag below waits
-the 125 ms backstop instead ([rk3576.md](rk3576.md) §"Pool completion").
+the 125 ms backstop instead ([../perf/rk3576-graph.md](../perf/rk3576-graph.md) §"Pool completion").
 
 The PPU's own bits are two positions over in the same register: `PPU_0` at `0x400` and
 `PPU_1` at `0x800`, against the DPU's `0x100`/`0x200`. The patch `patches/rk3576/npu/0021`
@@ -3465,15 +3471,16 @@ whole kick has retired, which closes that window [source-confirmed: patch
 `rocket_pool_int8_rk3576()` is the library entry over the pooling program. It takes
 row-major `[C][IH][IW]` in and out, and handles the cube, the sentinel, the submit and the
 de-tile, the same shape the convolution entries have. It is a separate entry rather than a
-dispatch from the RK3588's `rocket_pool_int8()`. The RK3588 entry truncates the average
-toward zero and this one rounds half to even, and two roundings are two functions. It takes
-an input zero point, which the RK3588 entry does not, because the average path pads with it.
+dispatch from the RK3588's `rocket_pool_int8()`. The RK3588 entry runs the fp16 pool and rounds
+its average to nearest, and this one rounds the PPU's int8 average half to even. Two roundings
+are two functions. It takes an input zero point, which the RK3588 entry does not, because the
+average path pads with it.
 
 The function `rocket_pool_int8_rk3576_exact()` reports whether a descriptor's average is
 exactly rounded, without running it. The field `pool_params_rk3576_t.src_surf_elems` holds
 the source surface stride, and 0 keeps the vendor's `round4`.
 
-## The unprivileged double free, and the crashes it was mistaken for
+## The unprivileged double free
 
 **Conditions:** mainline `rocket` at v7.1, unchanged by the RK3576 series. The RK3588 reaches
 the same path. Measured on H96 MAX M9 and Turing RK1, 2026-07-29. In the RK3576 series the fix,
@@ -3735,8 +3742,9 @@ These registers and functions are not characterized on the RK3576:
   arrangements read, and what they give its epilogue, is not known. Under the epilogue
   arrangement, one output in four survives. "The vendor's float BS arrangement" and "The BS
   operand source" have the measurements.
-- Register `0x1060` is probably `CVT_OFFSET3`. Registers `0x1054`-`0x105C` are the first three
-  CVT offsets and there are four CVT scales, so the fourth offset almost certainly sits here.
+- Register `0x1060` is probably `CVT_OFFSET3` [expected]. Registers `0x1054`-`0x105C` are the
+  first three CVT offsets and there are four CVT scales, so the fourth offset almost certainly
+  sits here.
   Every capture leaves it zero, including the ARGB ones, which use only three channels, and
   nothing confirms it.
 - Register `0x1064` is the offset the RK3588 calls `CNA_FC_CON1`. A live vendor dump, an

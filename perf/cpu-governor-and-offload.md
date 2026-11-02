@@ -3,7 +3,7 @@
 A process that hands its heavy arithmetic to the NPU is blocked while the NPU runs, with its
 threads off the run queue. A load-sampling CPU governor reads that as idle and lowers the big
 cores toward their minimum frequency. The half of the work that never left the host, the cube
-scatter and gather, then runs at that frequency. The NPU-offloaded configuration slows, and the
+scatter and gather, then runs at that frequency. The NPU-offloaded configuration slows, but the
 CPU-only configuration does not. A comparison taken under the default governor therefore
 understates the offload, and can show it as a regression [HW sweep 2026-08-25].
 
@@ -37,8 +37,8 @@ A76 cluster. The two boards run the same governor with the same tunables (`up_th
 | vendor, kernel 6.1 | 408 MHz | 2 352 MHz | 5.8x | 3.2x |
 
 The penalty follows the platform's CPU frequency configuration, and the mechanism is identical
-under both drivers. The board whose A76 cluster can drop to 408 MHz loses about 2.5x more to
-it. A board read right after a delegated run shows the cluster at its minimum frequency.
+under both drivers. The delegated configuration takes 3.2x as long where the A76 cluster can
+drop to 408 MHz, and 1.27x as long where its minimum is 1 200 MHz. A board read right after a delegated run shows the cluster at its minimum frequency.
 
 ## The deep CPU idle state
 
@@ -64,15 +64,15 @@ completion's wakeup does not account for the cost (§"Excluded causes").
 ## The DDR frequency governor on a vendor kernel
 
 The vendor kernel also scales the DDR frequency, and there the bias runs the other way. The
-CPU-only configuration slows, and the NPU configuration does not. Its `dmc` devfreq node runs
+CPU-only configuration slows, but the NPU configuration does not. Its `dmc` devfreq node runs
 `dmc_ondemand` over 528, 1068, 1560 and 2112 MHz. An NPU job drives DDR to the top rate by
-itself, and a multi-threaded CPU encoder does not. Pinning `dmc` to `performance` makes the CPU
-configuration 4.7% faster and removes nearly all of its spread. The NPU configurations move by
+itself, and a multi-threaded CPU encoder does not. Pinning `dmc` to `performance` cuts the CPU
+configuration's time by 4.7% and removes nearly all of its spread. The NPU configurations move by
 nothing measurable [HW sweep 2026-09-26].
 
 **Conditions:** the vendor RK1 on `6.1.172-vendor-rk35xx`, `rknpu` 0.9.8, NPU clock 1000 MHz,
 CPU governor `performance` on every policy, `taskset -c 4-7`. The workload is the whisper
-base.en encoder at a 20 s window. Each value is the median of three passes.
+base.en encoder at a 20 s window.
 
 | configuration | `dmc_ondemand` (ms) | `dmc` at 2112 MHz (ms) | DDR below 2112 MHz under `dmc_ondemand` |
 |---|---:|---:|---|
@@ -91,8 +91,8 @@ Phi-4 `Q4_K_M` [HW sweep 2026-09-29]. The CPU-only configuration of the same mod
 every core busy. It matches, within 2%, an earlier measurement series that recorded no governor
 ([cpu-repack-baseline.md](cpu-repack-baseline.md)).
 
-**Conditions:** the mainline RK1, `rocket` 1.3.0, pp2048 with `-b 2048 -ub 2048`, llama.cpp
-b11242.
+**Conditions:** the mainline RK1, `rocket` 1.3.0, NPU clock ~816 MHz, pp2048 with
+`-b 2048 -ub 2048`, llama.cpp b11242.
 
 ## A per-node offload inside a model
 
@@ -167,7 +167,7 @@ as long per base step under `performance` with `cpu-sleep` off as under `ondeman
 [HW sweep 2026-10-10].
 
 **Conditions:** whisper.cpp v1.9.4, greedy decoding (`-bs 1 -nf`), 4 threads,
-`taskset -c 4-7`.
+`taskset -c 4-7`. The NPU row at NPU clock ~816 MHz.
 
 | Decoder step | `ondemand` | `performance`, `cpu-sleep` off |
 |---|---:|---:|
@@ -229,6 +229,7 @@ have read them as an effect.
 ### The DDR frequency governor on a vendor kernel
 
 The configurations alternated the DDR governor over three passes, with DDR sampled every 50 ms.
+Each value is the median of the three passes.
 The samples have no timestamps, so which phase of a run the low ones fall in is not known.
 
 ### LLM prefill

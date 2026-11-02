@@ -13,14 +13,15 @@ few (Erratum E4) [HW sweep].
 
 Software must reserve one slack bank for the int8 feature [HW sweep]:
 
-- `data_bank = min(fd_banks + 1, 11)`, where `fd_banks` is the exact fit.
+- `data_bank = fd_banks + 1`, where `fd_banks` is the exact fit.
 - `weight_bank = 12 − data_bank`.
 
 The weight always has room: its per-kernel bytes are <= one bank, and it never needs all the
 leftover. A tiler must reserve the matching bank, so that it never picks a tile whose feature
-cannot get its `+1`. Software must budget feature and weight to 11 banks, not 12
-(`I8_BUDGET = CBUF_BANKS − 1`). The cost is zero for real model shapes, since `Kt` is
-unchanged. Only feature tiles already near 11 banks shrink by one K-step.
+cannot get its `+1`. Software must budget feature and weight to 11 banks, not 12, so `fd_banks`
+is at most 10. Clamping `data_bank` to 11 for a larger feature removes the slack bank and
+restores the exact fit. The cost is zero for real model shapes, since `Kt` is unchanged. Only
+feature tiles already near 11 banks shrink by one K-step.
 
 > [!NOTE]
 > The failing tile geometries have no closed form, so no arithmetic test predicts them. Give
@@ -31,18 +32,19 @@ control at the identical `(Mtile=144, Ktile=672)` tile is bit-exact while int8 c
 
 ## Software support
 
-The matmul generator is `gen_matmul_int8`, run as a 1×1 convolution. The host tiler budgets
-feature and weight to 11 banks (`I8_BUDGET`).
+The matmul generator is `gen_matmul_int8`, run as a 1×1 convolution. The int8 matmul plans
+withhold one bank from the tiling budget (`bank_slack` in `mm_geom`, `src/rocket_matmul.c`),
+and `gen_matmul_int8` refuses a feature whose `fd_banks + 1` exceeds 11 rather than clamping it.
 
 The int8 and uint8 convolution path has the same exact-fit sizing and the same fix. Its
 generator is `gen_conv2d_int8_fill`, shared by `gen_conv2d_int8` and `gen_conv2d_dw_int8`. Its
-direct-convolution tiler is `conv2d_int8_run`. Without the slack bank, both use
+direct-convolution tiler is `conv2d_int8_plan`. Without the slack bank, both use
 `data_bank = ceil(feat_bytes/bank)`, and the tiler budgets feature and weight to all 12 banks.
 The fix mirrors the matmul:
 
-- `gen_conv2d_int8_fill`: `data_bank = min(fd_banks + 1, 11)`, `weight_bank = 12 −
-  data_bank` (shared by direct and depthwise).
-- `conv2d_int8_run` (direct tiler): reserve the matching bank,
+- `gen_conv2d_int8_fill`: `data_bank = fd_banks + 1`, `weight_bank = 12 − data_bank` (shared
+  by direct and depthwise), and a refusal where `fd_banks + 1` exceeds 11.
+- `conv2d_int8_plan` (direct tiler): reserve the matching bank,
   `feat_budget = (12 − 1 − weight_banks)·32 KB`, int8 feature ceiling `CONV_FEAT_BUDGET_I8
   = 7` banks (fp16 stays 8, it is immune).
 - **Depthwise** (`conv2d_dw_int8_run`) needs no tiler change. Its weight is one per-channel
@@ -72,9 +74,9 @@ reverse-engineering.
   different defect class, nondeterminism over the worker count. The worker count changes the
   per-worker `Nt`, which changes `Kt`, which changes whether an emitted tile falls on a
   resonant `(Mtile, Ktile)`. The root cause is the same.
-- **Workaround:** Software must program `DATA_BANK` as `min(fd_banks + 1, 11)` and
-  `WEIGHT_BANK` as `12 − DATA_BANK` for an int8 or uint8 feature. Software must budget
-  feature and weight to 11 banks.
+- **Workaround:** Software must program `DATA_BANK` as `fd_banks + 1` and `WEIGHT_BANK` as
+  `12 − DATA_BANK` for an int8 or uint8 feature. Software must budget feature and weight to 11
+  banks, so that `fd_banks + 1` never exceeds 11.
 - **Status:** Open.
 
 Failing matmul tile geometries [HW sweep]:

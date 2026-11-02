@@ -2,14 +2,14 @@
 
 The last stage of the DPU before write-back is the output converter, from the NVDLA SDP
 lineage. NVDLA documents it as `y = sat((x − offset) * scale >> shift)`. On the RK3588's
-integer path the offset is added after the shift instead (below). Three registers drive
+integer path `cvt_type` selects where the offset enters (below). Three registers drive
 it:
 
 | reg | addr | fields |
 |---|---|---|
-| `DPU_OUT_CVT_OFFSET` | `0x4080` | signed 32-bit offset, added after the shift on the integer path: the output zero point |
+| `DPU_OUT_CVT_OFFSET` | `0x4080` | signed 32-bit offset, the output zero point. `cvt_type` selects where it enters (§"Integer convert") |
 | `DPU_OUT_CVT_SCALE`  | `0x4084` | `[15:0]` scale (multiplier), signed 16-bit. `[16]` `FP32TOFP16_EN` |
-| `DPU_OUT_CVT_SHIFT`  | `0x4088` | `[5:0]` integer shift. `[19:12]` `minus_exp`. `[30]` `CVT_ROUND`, the tie rule. `[31]` `cvt_type` |
+| `DPU_OUT_CVT_SHIFT`  | `0x4088` | `[11:0]` integer shift. `[19:12]` `minus_exp`. `[30]` `CVT_ROUND`, the tie rule. `[31]` `cvt_type`, the order of the multiply and the offset: 0 multiply first, 1 offset first [TRM] |
 
 ## Operating modes (cvt_type)
 
@@ -28,19 +28,38 @@ out = (float_or_int)( round_half_to_even( (acc_i32 * SCALE) >> SHIFT ) )
   multiplier therefore has 15 bits.
 - `SHIFT` is an integer right-shift in the integer domain, applied before any float cast.
   It rounds to nearest (see the tie rule below).
-- `minus_exp` (bits[19:12]) and `cvt_type` are no-ops on the integer accumulator path.
-  They matter only on the LUT/EW float datapath (below).
+- `minus_exp` (bits[19:12]) is a no-op on the integer accumulator path. It matters only on
+  the LUT/EW float datapath (below).
 - The BN-MUL operand (`DPU_BN_MUL_CFG[31:16]`) is likewise an integer multiply with the
   operand read as uint16 (`0x3800 -> ×14336`), redundant with `SCALE` here.
 
 The integer convert is the QNNPACK requantization form (15-bit multiplier + shift +
 zero-point offset -> int8/int16).
 
-With an int8 output the order is `sat8(round_half_to_even(acc * SCALE >> SHIFT) + OFFSET)`:
-the offset is added after the rounding shift, and saturation comes after the offset. The int8
-depthwise path is bit-exact against that model at output zero points from -128 to 127, at two
-scales [HW sweep, RK1, measured 2026-09-23]. Under the NVDLA order, subtracting before the
-multiply, the zero point scales down to a fraction of one.
+`cvt_type` selects where the offset enters [HW sweep 2026-11-02]. At an offset of 0 the two
+settings compute the same value:
+
+| `cvt_type` | Integer convert with an offset |
+|---|---|
+| 0 | `round_half_to_even(acc * SCALE / 2^SHIFT + OFFSET)`: the offset is added at the output scale, after the multiply and the shift and before the rounding |
+| 1 | `round_half_to_even((acc + OFFSET) * SCALE / 2^SHIFT)`: the offset is added before the multiply, the order the TRM gives |
+
+**Conditions:** RK3588 (Turing RK1), `rocket` 1.3.0, NPU clock 928 MHz, 2026-11-02. An int8
+matmul through the integer convert, fp32 output, `CVT_ROUND` 0.
+
+At `cvt_type` 0, an offset added before the rounding and one added after it differ only at a
+tie with an odd offset. There the order above rounds the sum to even. The result is then one
+count from `round_half_to_even(acc * SCALE >> SHIFT) + OFFSET`.
+
+With an int8 output, at `cvt_type` 0, saturation comes after the offset. The int8 depthwise
+path is bit-exact against `sat8(round_half_to_even(acc * SCALE >> SHIFT) + OFFSET)` at output
+zero points from -128 to 127, at two scales [HW sweep, RK1, measured 2026-09-23]. That model
+rounds before it adds the offset, so it differs from the `cvt_type` 0 order only at a tie with
+an odd zero point. With an odd `MUL`, a tie is one accumulator residue in `2^SHIFT`
+(§"The `CVT_ROUND` tie rule"), about `2^-SHIFT` of the outputs. Under the NVDLA order,
+subtracting before the multiply, the zero point scales down to a fraction of one.
+
+**Not characterized:** the int8-output writer at a tie with an odd zero point.
 
 ### The `CVT_ROUND` tie rule
 
@@ -53,7 +72,8 @@ exact half goes:
 | 1 | half away from zero, the NVDLA documentation's rule and TFLite's | 1, 2, -1, -2 |
 
 The rule is measured on both SoCs [HW sweep 2026-09-23]. The bit is bit 30 of `0x4088` on the
-RK3588, and bit 30 of `0x40B4` on the RK3576.
+RK3588, and bit 30 of `0x40B4` on the RK3576. The TRM gives the two settings as "If the integer
+is odd, carry 1" and "Carry 1 no matter what the integer is" [TRM].
 
 The vendor's programs clear the bit: none of the 206 `OUT_CVT_SHIFT` writes in the RK3576
 vendor-capture corpus sets bit 30. The rule in effect is therefore half to even.
@@ -88,6 +108,35 @@ value in the float/EW datapath (for example a LUT output `q`), `cvt_type=1` sele
 [dpu-lut-activation.md](dpu-lut-activation.md). `q` is not the raw integer accumulator,
 which is why `minus_exp` is inert on the plain matmul path.
 
+### fp16 narrowing
+
+`FP32TOFP16_EN`, bit 16 of `OUT_CVT_SCALE`, narrows the converter's fp32 result to fp16 [TRM].
+The fp16 matmul writes its fp16 output through it.
+
+**Conditions:** RK3588 (Turing RK1), `rocket` 1.3.0, NPU clock 928 MHz, 2026-11-02. One fp16
+matmul task with fp16 output, integer operands, results from ±1000 to ±1000000.
+
+The narrowing rounds to nearest with ties to even, and a result past the fp16 range is written
+as infinity [HW sweep 2026-11-02]:
+
+| fp32 result | fp16 written |
+|---|---|
+| 65472 | 65472 (`0x7BFE`) |
+| 65488, a tie | 65472 (`0x7BFE`), the even neighbor |
+| 65500 to 65519 | 65504 (`0x7BFF`) |
+| 65520 and above | +inf (`0x7C00`) |
+
+A negative result is written with the same magnitude and the sign bit set (`0xFBFE`, `0xFBFF`,
+`0xFC00`).
+
+> [!CAUTION]
+> An fp16 output of magnitude 65520 or more is written as ±inf, and one from 65504 to 65519 as
+> ±65504. Software that can produce a result past 65504 must bound its operands, or treat both
+> ±65504 and ±inf as an overflow.
+
+**Not characterized:** the fp16 outputs of the EW and LUT paths. Also the flash attention's
+score program, whose softmax stayed finite at raw scores past the fp16 range (Evidence).
+
 ## Derivation of MUL and SHIFT from a float scale
 
 A float requant scale becomes the pair by QNNPACK's derivation. `MUL` is the scale's implicit
@@ -101,9 +150,9 @@ gain.
 > `rkt_regcmd.c`]. Where mantissa bits [22:9] are all set, the hardware applies half the scale
 > or the scale negated (table below). When software derives the scale, it must keep the carry.
 
-Mesa masks `(bits >> 9) & 0x7fff`, which takes the exponent's low bit as the multiplier's bit
-14, and forces bit 14 afterwards. The two derivations agree except where mantissa bits [22:9]
-are all set:
+Mesa masks `(bits >> 9) & 0x7fff`, which takes the exponent's low bit as the multiplier's
+bit 14. It adds the `+1`, and sets bit 14 only where the sum is below `2^14`. The two
+derivations agree except where mantissa bits [22:9] are all set:
 
 | Biased exponent | Mesa's `MUL` | Gain the hardware applies |
 |---|---|---|
@@ -182,7 +231,7 @@ goes on the BS stage's multiplier, which reads a per-channel operand [HW sweep]:
 | `DPU_RDMA_BRDMA_CFG` `0x501C` | `BRDMA_DATA_USE` 7 (`0xE`) | BRDMA reads a 64-byte group per 8 output channels: int32 `A[8]` at 0, int16 `B[8]` at 32, int16 `C[8]` at 48. Data use 1 reads a dense int32 bias alone |
 | `DPU_BS_CFG` `0x4040` | `0x20140` | the ALU adds `A` from DMA, the multiplier is live (`BS_MUL_BYPASS` clear) |
 | `DPU_BS_MUL_CFG` `0x4048` | `(s << 8) \| 1` | `BS_MUL_SRC` reads `C` per channel. `[13:8]` shifts a **non-negative** product |
-| `DPU_DATA_FORMAT` `0x4010` | `[9:4]` = s | `BS_MUL_SHIFT_VALUE_NEG` shifts a **negative** product |
+| `DPU_DATA_FORMAT` `0x4010` | `[9:4]` = s | `BS_MUL_SHIFT_VALUE_NEG` shifts a **negative** product. The TRM names it the BS shift value for negative data [TRM] |
 
 The stage computes:
 
@@ -280,7 +329,7 @@ The fp16 output of the int8 datapath is not available in rocket-userspace.
 
 `rocket_conv2d_int8_q` in rocket-userspace programs whole groups, with zero kernels in the
 padding. Through `tflite-rocket` it runs MobileDet and SSD MobileNet v2 1.19-1.27x faster than
-the int32-raw path [HW sweep, RK1].
+the int32-raw path [HW sweep, RK1, ~816 MHz, 2026-09-27].
 
 ### Per-axis depthwise entry
 
@@ -296,7 +345,8 @@ next channel's `C` would fall under 2048. A wide spread then costs tasks rather 
 resolution.
 
 Through `tflite-rocket`, EfficientDet-Lite0's 76 per-axis depthwise layers run on this entry
-[HW sweep, RK1, ~816 MHz, 2026-09-27]. The model runs 1.095-1.104x warm, 133 -> 121 ms. COCO
+[HW sweep, RK1, ~816 MHz, 2026-09-27]. The model runs 1.095-1.104x warm, 133 -> 121 ms, against
+those layers on the fp16 depthwise path. COCO
 mAP over 100 images is 0.3019 against the CPU's 0.2996. The depthwise term falls from 43.2 to
 34.7 ms of the op sum, and most of that is the delegate's host stages around the call. The
 library call itself moves 28.6 -> 26.8 ms. Most of these layers are small enough that the fixed
@@ -309,6 +359,18 @@ per-call overhead sets their cost.
 A ratio classifier confirms the `SCALE` multiplier on hardware. The sign bit is measured on
 the RK3588 and the RK3576, 64 of 64 elements at two scales each, with
 `tests/requant_edge_probe.c` (2026-09-27).
+
+The offset placement ran through the int8 matmul's integer convert (`ROCKET_INT8_DEQ=1`, fp32
+output) at M 16, K 64 and N 32. Operands were in [−8, 7] and accumulators from −587 to 571. It used
+17 settings of (`SCALE`, `SHIFT`, `OFFSET`), from (1, 0, 0) to (9, 5, 40000), among them odd
+offsets at shifts 1 to 6, at each `cvt_type`. Every element was scored against five offset
+placements (none, after the rounding, before the shift unscaled, before the multiply, and at
+the output scale before the rounding), each under three rounding rules (half to even, rounding
+down, half away from zero).
+
+At `cvt_type` 0 only the output-scale placement with ties to even is exact at all 17
+settings. At `cvt_type` 1 only the offset before the multiply, with ties to even, is.
+The odd offsets at a tie separate the two placements at `cvt_type` 0.
 
 ### The `CVT_ROUND` tie rule
 
@@ -325,6 +387,23 @@ element. The runs per SoC:
 
 No ordinary test reaches a tie. `requant_round_probe` picks a scale whose top 14 mantissa bits
 are all ones, and asserts the rule on both SoCs.
+
+### fp16 narrowing
+
+The table comes from one `gen_matmul_fp16` task with `fp32tofp16` = 1, M 4, K 512, N 16. Each
+weight column holds integers of at most 2048, which are exact in fp16. Its sum is one
+target: 1000, 2048, 65472, 65488, 65500, 65504, 65505, 65519, 65520, 65535, 65536, 70000,
+100000, 135000, 262144 or 1000000. The activation rows are +1, −1, +1 and −1. Every sum is an
+integer below 2^24, so the fp32 accumulation is exact, and the raw fp16 bits were read from an
+output stamped `0xAA`. All 64 elements equal the IEEE round-to-nearest-even conversion of
+their sum.
+
+An earlier measurement, ggml-rocket's `test-rocket-fa` with `ROCKET_FA_QSCALE=0` (RK1,
+~816 MHz, 2026-10-09), leaves a raw `q·k` of 60000 to 135000 on the flash attention's fp16
+scores. The host softmax that reads the scores returned no non-finite output, where an inf
+score gives NaN. It differed from a double reference by up to 1.0. That run recorded the
+softmax output, not the value of an overflowed score. It was read as a converter that
+saturates at ±65504, which the one-task measurement does not show.
 
 ### Derivation of MUL and SHIFT from a float scale
 

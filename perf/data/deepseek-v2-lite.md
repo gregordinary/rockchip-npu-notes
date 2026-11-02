@@ -133,7 +133,7 @@ build: 171974745 (10558)
      The question was where the per-expert row floor belongs; it had been placed at the tile
      granule (64) by mechanism and never measured as the edge. The answer is that a row floor
      cannot be placed at all -- M_e = 96 is 1.77x on gpt-oss and 0.94x on DeepSeek. Analysis and
-     the replacement gate are in ../benchmarks.md, "The accept boundary". -->
+     the replacement gate are in ../moe-placement.md, "The accept boundary". -->
 
 ```
                      M_e   work/dispatch   ROCKET_MOE=0        default            ratio

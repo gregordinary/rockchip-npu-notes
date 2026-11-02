@@ -13,10 +13,11 @@ ggml-rocket/          # ggml backend: LLM / Whisper frontend
 tflite-rocket/        # TFLite delegate: detection / Frigate frontend
 ort-rocket/           # ONNX Runtime execution provider: encoders and per-layer convolutions
 rknpu-submit/         # optional submit provider for the vendor rknpu kernel driver
-patches/rocket/       # optional kernel patches (clock, perf counters); patches repo, rocket/ scope
+patches/rocket/       # optional kernel patches to the rocket driver (the patches repo's rocket/)
 ```
 
-The component repositories live under `github.com/gregordinary/`, each by the name above.
+The component repositories live under `github.com/gregordinary/`, each by the name above. The
+kernel patches are the `rocket/` directory of the `patches` repository there.
 
 ## The stack
 
@@ -33,7 +34,12 @@ The component repositories live under `github.com/gregordinary/`, each by the na
 `rocket` is a generic register-command submitter: the kernel runs whatever CNA→CORE→DPU
 register program you hand it. The library runs a matmul as a 1×1 convolution over those
 blocks, and emits those programs. The frontends map a model's operators onto the
-library. The optional patches tune the kernel side. For the hardware reasoning, start with
+library.
+
+The kernel patches raise the NPU clock, keep each core's IOMMU domain attached between jobs, and
+run a job's tasks in one hardware kick. They also fix driver defects, among them a use-after-free
+on file close and an oops on a malformed submit. Their `rocket/README.md` lists each patch, its
+dependencies, and what leaving it out costs. For the hardware reasoning, start with
 [../hardware-overview.md](../hardware-overview.md) and
 [../matmul-as-conv.md](../matmul-as-conv.md).
 
@@ -55,9 +61,9 @@ and is usable on its own.
 
 The NPU compute clock boots pinned at 198 MHz, one-fifth of its 1 GHz spec max. The clock
 patch in `patches/rocket` raises it with a 900 MHz request (`rocket_npu_clk_hz=900000000`),
-which runs at 928 MHz at the 0.80 V rail. The 600 MHz request, ~816 MHz at that rail, gives
-~1.43x on prefill over the boot clock. The patch is a module rebuild that never touches the kernel image or device tree. Apply it
-before benchmarking. The background is in
+which runs at 928 MHz at the 0.80 V rail. There Gemma-4-12B F16 prefill runs 1.66x as fast as
+at the boot clock (2026-11-02). The patch is a module rebuild that never touches the kernel
+image or device tree. Apply it before benchmarking. The background is in
 [../perf/clock.md](../perf/clock.md).
 
 ## 3. Choose a frontend
@@ -69,7 +75,7 @@ into stock llama.cpp and whisper.cpp. Point `GGML_BACKEND_PATH` at the `.so`, an
 matmul operators offload to the NPU. Everything else falls back to the CPU.
 
 It runs the Whisper encoder end to end and LLM prefill on the NPU. Decode stays on the
-CPU, where the single-row GEMV is far more efficient. See its README for build and usage.
+CPU, which runs the single-row GEMV faster than the NPU does. See its README for build and usage.
 
 ### tflite-rocket: detection
 
@@ -82,7 +88,7 @@ consumer is Frigate on mainline RK3588. See its README for build and integration
 ort-rocket is an ONNX Runtime execution provider. ONNX Runtime loads it for an unmodified
 `.onnx` model. It offloads a recognized encoder (plain and windowed ViTs, ModernBERT text
 encoders) and `ConvTranspose` and `Conv` nodes (`Conv` behind a cost rule), and leaves the rest
-of the graph on the CPU. See its README for build and usage.
+of the graph on the CPU. A vision encoder runs one image per run. See its README for build and usage.
 
 ### A vendor kernel
 
@@ -90,17 +96,17 @@ Most Rockchip distributions ship the vendor BSP kernel, where the NPU is an `rkn
 not `/dev/accel/accel0`. `rknpu-submit` is a submit provider for that driver. Built against it,
 `librocketnpu` and every frontend above run unchanged on a vendor kernel. See its README.
 
-## 4. (Optional) Probe DMA registers
+## 4. (Optional) Measure DMA traffic
 
 > [!CAUTION]
 > Reading the `0x2000` "amount" page hard-locks the SoC. The RK3588 has no usable hardware
 > DMA byte counters, and the legacy `0x8000` offsets are configuration only. See
 > [../perf/hw-byte-counters.md](../perf/hw-byte-counters.md).
 
-The perf-counter patch in `patches/rocket` therefore provides only a safe, read-only DDMA
-register probe (`0x8000`, disarmed unless loaded with `rocket_ddma_probe=1`). The probe
-characterizes those registers, and does not count the bytes moved. Infer DMA traffic from
-wall-clock time, or measure it externally with a DDR/NOC PMU.
+Measure DMA traffic outside the NPU instead. The DDR controller's `perf` PMU,
+`rockchip_ddr`, counts the board's DDR bytes to within 0.4%, with no attribution to the NPU
+(`sudo perf stat -a -e rockchip_ddr/bytes/`). The same note gives a safe design for a
+read-only DDMA register probe, which the patch series does not include.
 
 ## Further reading
 

@@ -14,10 +14,10 @@ backend. The two effects are independent: the NPU shortens time-to-first-token, 
 raises the decode rate and determines whether a model fits in RAM. Each model's section below gives
 its prefill, decode, interactive and faithfulness results.
 
-**Conditions:** RK3588 on a Turing RK1 (4xA76 + 4xA55, shared LPDDR), NPU clock ~816 MHz
-(the clock patch's 600 MHz request at a 0.80 V rail, [clock.md](clock.md)). Figures are warm
-medians, and each comparison runs the same GGUF or model on the NPU and on the CPU (8 threads)
-[HW sweep].
+**Conditions:** RK3588 on a Turing RK1 (4xA76 + 4xA55, shared LPDDR). Figures are warm, and each
+comparison runs the same GGUF or model on the NPU and on the CPU [HW sweep]. Each table states its
+NPU clock: 928 MHz is the 900 MHz request and ~816 MHz the 600 MHz request, both at the 0.80 V
+rail ([clock.md](clock.md)).
 
 > [!NOTE]
 > The NPU clock returns to its 200 MHz idle rate between runs, so a cold run measures ~15% low.
@@ -25,90 +25,106 @@ medians, and each comparison runs the same GGUF or model on the NPU and on the C
 
 ### LLM and multimodal (llama.cpp via ggml-rocket)
 
-F16 prefill is fastest on short prompts, and slows as output-tile readback grows with M at longer
-prompts. A quantized GGUF's prefill instead rises with prompt length, as its per-micro-batch
-dequantization amortizes (`-b 2048 -ub 2048`,
-[quant-prefill-microbatch.md](quant-prefill-microbatch.md)). Rows are sorted by size. In the table:
+The table gives each model's prefill at pp2048 against the CPU, its decode rate and its
+faithfulness. Rows are sorted by size. In the table:
 
-- Prefill is F16, a model's fastest prefill, where F16 fits a board. Otherwise it is the top
-  precision that runs, tagged with that precision. Q4 is Q4_K_M, MXFP4 is the gpt-oss native
-  block-float, and the tagged models are all F16-untenable on a 31 GB board.
-- The two prefill columns show pp512 -> pp2048, to show the trend with prompt length.
-- Decode and Fits are Q4_K_M, the fastest decode and the smallest fit.
+- Prefill runs the F16 GGUF where it fits a 31 GiB board. Otherwise it runs the top precision
+  that does, named in the GGUF column: Q4_K_M, or MXFP4, the gpt-oss native block-float.
+- Decode and the GGUF size are Q4_K_M's, the fastest decode and the smallest fit, and MXFP4's on
+  gpt-oss-20b.
 - PPL Δ is NPU−CPU on the same GGUF.
 
-| Model | Params | Prefill NPU t/s, pp512->2048 | x CPU, pp512->2048 | Decode Q4 t/s | Fits Q4, GB | NPU−CPU PPL Δ |
-|---|---:|---:|---:|---:|---:|---:|
-| SmolVLM2-2.2B (llama+SigLIP) | 1.8B | 99.0 -> 52.6 | 3.5x -> 1.9x | 14.5 | 1.0 | −0.07% |
-| Llama-3.2-3B | 3.2B | 61.8 -> 45.5 | 3.4x -> 2.6x | 7.9 | 1.9 | +0.02% |
-| Ministral-3-3B | 3.4B | 57.6 -> 39.8 | 3.2x -> 2.4x | 7.7 | 2.0 | −0.04% |
-| Phi-4-mini | 3.8B | 55.4 -> 39.8 | 3.4x -> 2.6x | 7.0 | 2.3 | −0.12% |
-| Ministral-3-8B | 8.5B | 27.4 -> 21.4 | 3.8x -> 3.1x | 3.8 | 4.8 | −0.01% |
-| Qwen3.5-9B | 9.0B | 25.9 -> 24.9 | 3.6x -> 3.5x | 3.6 | 5.3 | +0.05% |
-| Gemma-4-12B | 11.9B | 17.4 -> 15.0 | 3.6x -> 3.2x | 2.5 | 6.9 | −0.81% |
-| Phi-4 (14B) | 14.7B | 10.3 -> 11.8 (Q4) | 2.9x -> 3.5x | 2.2 | 8.3 | −0.31% |
-| DeepSeek-V2-Lite (MoE+MLA) | 15.7B | 26.0 -> 28.4 (Q4) ‡ | 1.33x -> 1.53x | 7.8 | 9.7 | −0.42% |
-| gpt-oss-20b (MoE) | 20.9B | 22.0 -> 28.1 (MXFP4) ‡ | 1.81x -> 2.38x | 7.2 | 11.3 | cosine 0.9998 † |
-| Qwen3.6-27B (hybrid) | 27.3B | 5.4 -> 7.8 (Q4) | 3.0x -> 4.4x | 1.1 | 15.9 | −0.26% |
+| Model | Params | GGUF | NPU prefill, pp2048, t/s | x CPU, pp2048 | Decode Q4, t/s | Q4 GGUF, GiB | NPU−CPU PPL Δ |
+|---|---:|---|---:|---:|---:|---:|---:|
+| SmolVLM2-2.2B (llama+SigLIP) | 1.8B | F16 | 117.8 | 4.2x | 20.7 | 1.0 | −0.07% |
+| Llama-3.2-3B | 3.2B | F16 | 85.1 | 5.0x | 11.1 | 1.9 | +0.02% |
+| Ministral-3-3B | 3.4B | F16 | 75.0 | 4.7x | 10.5 | 2.0 | −0.04% |
+| Phi-4-mini | 3.8B | F16 | 76.1 | 5.0x | 8.8 | 2.3 | −0.12% |
+| Ministral-3-8B | 8.5B | F16 | 39.6 | 5.8x | 4.7 | 4.8 | −0.01% |
+| Qwen3.5-9B | 9.0B | F16 | 36.1 | 4.9x | 4.0 | 5.3 | +0.05% |
+| Gemma-4-12B | 11.9B | F16 | 24.6 | 5.2x | 3.1 | 6.9 | −0.81% |
+| Phi-4 (14B) | 14.7B | Q4_K_M | 21.9 | 4.0x | 2.7 | 8.3 | −0.31% |
+| DeepSeek-V2-Lite (MoE+MLA) | 15.7B | Q4_K_M | 43.4 | 1.83x | 13.5 | 9.7 | −0.42% |
+| gpt-oss-20b (MoE) | 20.9B | MXFP4 | 37.8 | 2.29x | 9.1 | 11.3 | cosine 0.9998 † |
+| Qwen3.6-27B (hybrid) | 27.3B | Q4_K_M | 11.5 | 3.8x | 1.3 | 15.9 | −0.26% |
 
-**Conditions:** the CPU column is the same llama.cpp binary with the backend unloaded, unpinned.
-F16 runs at the llama.cpp default `-ub 512`, and a quantized GGUF at `-b 2048 -ub 2048`. The two
-MoE prefill rows are 2026-08-27 builds (‡).
+**Conditions:** NPU clock 928 MHz, CPU governor `performance`, llama.cpp b11539 [HW sweep
+2026-11-01]. Each speedup pairs the NPU with the 8-thread CPU backend, the same binary with the NPU
+backend unloaded, on the same GGUF. The F16 rows run at llama.cpp's default `-b` and `-ub`. The
+four quantized rows run at `-b 2048 -ub 2048`, with llama.cpp's weight repack on in the CPU
+backend. Decode is the CPU backend's `tg64` at `-t 4` on the four A76 cores (`taskset 0xf0`). The
+PPL Δ column comes from each model's section, measured on 2026-07 builds and, for DeepSeek-V2-Lite,
+on 2026-08-27.
 
 † gpt-oss is a reasoning model, so wikitext PPL is not a valid metric for it. Its faithfulness
 figure is the per-matmul cosine against an fp64 reference.
 
-‡ A 2026-10-09 `librocketnpu` build packs the experts faster and runs the group-wise int8 readback
-as NEON. Under governor `ondemand` it measures gpt-oss pp512 at 24.90-25.23 t/s and
-DeepSeek-V2-Lite pp2048 at 32.69-32.83 t/s (§"gpt-oss-20b (MXFP4, MoE)"). Its x CPU ratio is not
-characterized.
-
 Notes on the table:
 
-- Phi-4 (14B) also runs Q8_0 at essentially the same prefill.
-- Qwen3.5-9B also runs IQ4_XS (decode 4.1 t/s, 4.8 GB, same NPU path).
-- SmolVLM2's 1.0 GB is its 1.81 B LLM half, plus ~0.8 GB fp16 vision mmproj.
+- Phi-4 (14B) also runs Q8_0, at essentially the Q4_K_M prefill on the ~816 MHz sweep of its
+  section.
+- Qwen3.5-9B also runs IQ4_XS (4.80 GiB) on the same NPU path. Its section gives the IQ4_XS
+  figures.
+- SmolVLM2's 1.0 GiB is its 1.81 B LLM half, plus ~0.8 GB fp16 vision mmproj.
 
 > [!NOTE]
-> The quantized rows' x CPU column compares against an unrepacked CPU. The NPU configuration must
-> run without llama.cpp's weight repack, and the repack speeds the CPU configuration 1.26-1.71x at
-> pp2048 on these four models. Against a repacked CPU at pp2048 the NPU leads Phi-4 3.06x and
-> DeepSeek-V2-Lite 1.44x. It leads gpt-oss-20b 1.90x and Qwen3.6-27B 3.21x [HW sweep 2026-09-29,
-> llama.cpp b11242, governor pinned]. [cpu-repack-baseline.md](cpu-repack-baseline.md) has the
-> method. The F16 rows are unaffected.
+> The quantized rows' x CPU column compares against the CPU backend with llama.cpp's weight
+> repack on. The NPU configuration runs without the repack. The repack speeds the CPU
+> configuration 1.26-1.71x at pp2048 on these four models [HW sweep 2026-09-29, ~816 MHz,
+> llama.cpp b11242].
+> [cpu-repack-baseline.md](cpu-repack-baseline.md) has the method. The F16 rows are unaffected.
 
-The prefill multiple grows with model size, up to Qwen3.6-27B's 4.4x at pp2048, the largest here.
-It grows because the CPU baseline degrades faster than the NPU as the matmuls grow. The exceptions
-are architectural.
+At pp2048 the NPU prefills a dense F16 model at 4.2-5.8x the CPU. It prefills a dense quantized
+model at 3.8-4.0x the repacked CPU, and a MoE model at 1.83-2.29x. Held resident under
+`ROCKET_QUANT_RESIDENT=auto` at the default `-ub`, a Q4_K_M GGUF of 1.8-9.0 B prefills at
+3.2-4.2x the repacked CPU [HW sweep 2026-11-02]. F16 prefill falls slightly with
+prompt length: from pp512 to pp2048, Ministral-3-8B measures 44.0 -> 39.6 t/s and Gemma-4-12B 25.6
+-> 24.6 t/s on the same series. A streamed quantized GGUF dequantizes its weights to fp16 again on
+every micro-batch, which `-b 2048 -ub 2048` amortizes
+([quant-prefill-microbatch.md](quant-prefill-microbatch.md)).
+
+Decode at `taskset 0xf0 -t 4` measures 1.62-4.22x the 8-thread rate on the table's GGUFs [HW sweep
+2026-11-01].
 
 The MoE expert FFNs of gpt-oss-20b and DeepSeek-V2-Lite run through `MUL_MAT_ID`, whose NPU path
 holds each quantized expert resident as native int8. Residency removes the per-micro-batch host
-dequantization that makes the naive expert offload a loss. The path is on by default from the
-2026-08-27 build. On that build it takes gpt-oss to 2.38x at pp2048, against 1.15x with the experts
-on the CPU.
+dequantization that makes the naive expert offload a loss. The path is on by default. On the
+2026-08-27 build at ~816 MHz, against an unrepacked CPU, it took gpt-oss to 2.38x at pp2048, where
+the experts on the CPU measured 1.15x.
 
-The default claims an expert op only where two conditions hold. A residency pre-flight must be
-able to reserve the whole expert stack before ingesting it. The per-expert GEMM must also contain
-enough work to repay its own dispatch cost (`M_e · K · N`, where `M_e` =
-`n_tokens · n_used / n_expert`). DeepSeek's experts (6-of-64 routing, 2048×1408 each) therefore
-stay on the CPU at short prefill, and move onto the NPU past ~1250 tokens.
+The default claims an expert op only where every one of these holds [source-confirmed,
+`ggml-rocket.cpp` `supports_op`]:
+
+- The micro-batch has at least `ROCKET_MOE_MIN_TOKENS` (512) tokens.
+- The expert stack is GGUF-quantized, with `K` and `N` multiples of 32.
+- The per-expert row count `M_e` = `n_tokens · n_used / n_expert` reaches the 64-row granule,
+  `ROCKET_MOE_M_BUCKET`.
+- The per-expert GEMM contains enough work to repay its own dispatch cost: `M_e · K · N` of at
+  least `ROCKET_MOE_MIN_WORK`, 340 mega-MACs.
+- A residency pre-flight reserves the whole expert stack before ingesting it.
+
+DeepSeek's experts (6-of-64 routing, 2048×1408 each) therefore stay on the CPU at short prefill,
+and move onto the NPU past ~1250 tokens in a micro-batch
+([moe-placement.md](moe-placement.md)).
 
 DeepSeek adds MLA attention. The flash-attention (FA) offload accepts DK≠DV and is bit-faithful.
-Its DeepSeek case is not exercised on the device, so attention stays on the CPU here. Qwen3.6-27B's
-Gated-DeltaNet hybrid keeps its linear-attention layers on the CPU, and they do not limit the
-speedup. The two MoE models decode faster than their parameter counts suggest (gpt-oss 7.2 t/s,
-DeepSeek 7.8 t/s), because only ~3.6 B (gpt-oss) and ~2.4 B (DeepSeek) params are active per token.
+On DeepSeek-V2-Lite at `-b 2048 -ub 2048`, `-fa on` prefills 1.04-1.05x as fast as `-fa off` at
+pp2048 and 1.10-1.11x at pp4096 [HW sweep 2026-11-02]. Its output under `-fa` was not compared
+against the CPU's. Qwen3.6-27B's Gated-DeltaNet
+hybrid keeps its linear-attention layers on the CPU, a small share of its prefill FLOPs. The two
+MoE models decode faster than their parameter counts suggest (gpt-oss 9.1 t/s, DeepSeek 13.5 t/s),
+because only ~3.6 B (gpt-oss) and ~2.4 B (DeepSeek) params are active per token.
 
 Every NPU−CPU PPL Δ sits within its per-run stderr, so the fp16-accumulation prefill is faithful.
 The absolute PPL of an instruct or reasoning model is not meaningful, and only the delta is.
 
 SmolVLM2's vision half (SigLIP-SO400M, 729 tokens) also offloads, through clip.cpp. It runs in
-7.90 -> 6.66 s warm (1.19x), with a projected-embedding cosine of 0.99998 against the CPU. The
-speedup is modest, limited by the graph breaking into 272 CPU↔NPU splits. The figure is for the
-generic drop-in, not the resident `rocket_siglip_encoder`. The offload requires
-`MTMD_BACKEND_DEVICE=ROCKET`.
+7.90 -> 6.66 s warm (1.19x) at ~816 MHz, with a projected-embedding cosine of 0.99998 against the
+CPU [HW sweep 2026-07-04]. The speedup is modest, limited by the graph breaking into 272 CPU↔NPU
+splits. The figure is for the generic drop-in, not the resident `rocket_siglip_encoder`. The
+offload requires `MTMD_BACKEND_DEVICE=ROCKET`.
 
-### What tuning buys per model (stock -> recommended, pp2048)
+### Tuning gain per model (stock -> recommended, pp2048)
 
 The table gives the gain from each model's recommended settings over stock, with both
 configurations on the NPU [HW sweep 2026-08-28..31]. Stock is llama-bench's own defaults with the
@@ -145,17 +161,20 @@ those models.
 | Qwen3.6-27B Q4_K_M | `-ub 2048` | 6.1 | 9.3 | **1.53x** |
 | Qwen3-30B-A3B Q4_K_M (MoE) | defaults, every tuned configuration loses | 14.7 | 14.7 | **1.00x** |
 
-**Conditions:** pp2048, governor pinned, both configurations on the NPU.
+**Conditions:** pp2048, NPU clock ~816 MHz, governor pinned, both configurations on the NPU.
 
 The table abbreviates the options. In it, `-ub 2048` means `-b 2048 -ub 2048`. The entry
 `QUANT_RESIDENT` is `ROCKET_QUANT_RESIDENT=auto`, which dequantizes each weight once and holds it
 resident as fp16. It needs the fp16 image in RAM. The entry `F16_RESIDENT` is
 `ROCKET_F16_RESIDENT=auto`.
 
-The Qwen3.5-0.8B row uses the combined form, and its residency-only form was not measured. Every
-other resident row is residency alone, `Gemma-4-12B` included. Gemma-4-12B places only part of its
-weights, and residency alone is still faster there. It also places more of them: 83-87% resident,
-against 73-74% for the combined form. The combined form, `-b 2048 -ub 2048`, uses that RAM for
+The Qwen3.5-0.8B row uses the combined form. At 928 MHz residency alone is bimodal by process
+on that model, 132 t/s in three processes and 151-155 t/s in two. The combined form measures
+140-142 t/s in all five [HW sweep 2026-11-02].
+
+Every other resident row is residency alone, `Gemma-4-12B` included. Gemma-4-12B places only
+part of its weights, and residency alone is still faster there. It also places more of them:
+83-87% resident, against 73-74% for the combined form. The combined form, `-b 2048 -ub 2048`, uses that RAM for
 compute buffers before the memory reserve stops placement.
 
 The table omits the Qwen3.5-0.8B F16 GGUF, because its residency option reaches only 24 weights at
@@ -176,7 +195,12 @@ encoder-output cosine is 0.9998.
 | large-v3 | 1280 / 32 | 36399.9 -> 17013.5 ms | 2.14x |
 | large-v3-turbo | 1280 / 32 | 32957.2 -> 15544.1 ms | 2.12x |
 
-**Conditions:** encoder latency from `whisper-bench` encode-only, warm.
+**Conditions:** NPU clock ~816 MHz, encoder latency from `whisper-bench` encode-only, warm
+[HW sweep 2026-07-04].
+
+The CPU encoder's thread count does not move these ratios. At 8 unpinned threads it measures
+within 2% of 4 threads on the A76 cores [HW sweep 2026-11-02, whisper.cpp v1.9.5]. Base measures
+1510-1565 against 1522-1556 ms, and small 5419-5481 against 5530-5548 ms.
 
 The speedup grows monotonically with the encoder (matmul work ~d_model², host packing ~linear).
 The large-v3-turbo model pairs the full 32-layer encoder with a 4-layer decoder (~6x cheaper per
@@ -199,7 +223,9 @@ how much of decode is offloadable prefill rather than per-token M=1 steps.
 | MOSS 0.9B | Whisper-Med + Qwen3-0.6B AR | 1.08x | 0.42x | best diarization (33 seg + timestamps) |
 
 **Conditions:** Q8_0, warm, pinned to the A76 cores, a hard 120 s two-speaker clip, one fresh
-process per figure.
+process per figure [HW sweep 2026-07-21].
+
+**Not characterized:** the NPU clock of these runs.
 
 The cross-attention decoder (Granite) offloads decode best, because its per-step cross-attn over
 the encoder is a large-K matmul (~1.9x). A large decoder-only model over long audio (Voxtral 3B)
@@ -216,7 +242,7 @@ Accuracy is COCO mAP.
 |---|---|
 | COCO mAP@[.5:.95] | 0.3325 NPU vs 0.3301 CPU over 500 images (2026-10-29) |
 | Single-stream latency, warm | 51.4 ms with the governor pinned, 73.5 ms on `ondemand`, NPU 928 MHz (2026-10-29) |
-| Multi-camera pool, P=1->4 | 3.33-3.51x at P=4 in the delegate's own pool test (2026-10-29); live in Frigate, 3.20 -> 9.55 detection_fps (2.98x) at a ~336 ms single stream |
+| Multi-camera pool, P=1->4 | 3.33-3.51x at P=4 in the delegate's own pool test (2026-10-29); live in Frigate, 3.20 -> 9.55 detection_fps (2.98x) on a 2026-07-01 build at ~816 MHz, ~336 ms a single inference |
 
 ## LLM (llama.cpp via ggml-rocket)
 
@@ -226,53 +252,71 @@ plus a streaming rate, set by decode. Faithfulness is a differential perplexity.
 through the NPU prefill and through the CPU, and the NPU−CPU delta isolates the fp16-accumulation
 fidelity of the NPU matmul.
 
-**Conditions:** as for the LLM table in §"At a glance", unless a model's section states
-otherwise.
+**Conditions:** RK3588 on the RK1. Each table states its NPU clock and date. A 2026-11-01 figure
+belongs to the series of the table in §"At a glance": NPU clock 928 MHz, governor `performance`,
+llama.cpp b11539. That series' prefill baseline is the 8-thread CPU backend, and its decode runs at
+`taskset 0xf0 -t 4`. The earlier per-model sweeps ran at ~816 MHz with the flags and 8-thread CPU
+baseline of §"Method".
 
 ### Ministral-3-8B-Instruct-2512
 
 Ministral-3-8B is Mistral's December-2025 8B (arch `mistral3`, GQA, interleaved sliding-window
 attention), with 8.49 B params. The GGUFs come from `unsloth/Ministral-3-8B-Instruct-2512-GGUF`,
-and F16 is derived from the published BF16. The results below were measured at ~816 MHz on
-2026-07-01 [HW sweep].
+and F16 is derived from the published BF16.
 
 **Prefill (prompt processing), t/s (the NPU's job).**
 
 | test | F16 CPU->NPU | Q8_0 CPU->NPU | Q4_K_M CPU->NPU |
 |---|---|---|---|
-| pp512  | 7.2 -> **27.4** (3.8x) | 6.9 -> 17.4 (2.5x) | 6.5 -> 17.0 (2.6x) |
-| pp1024 | 7.0 -> **24.4** (3.5x) | 6.7 -> 19.3 (2.9x) | 6.4 -> 19.1 (3.0x) |
-| pp2048 | 6.8 -> **21.4** (3.1x) | 6.4 -> 17.7 (2.8x) | 6.0 -> 17.4 (2.9x) |
+| pp512  | 7.2 -> **44.0** (6.1x) | 12.8 -> 50.2 (3.9x) | 10.3 -> 50.5 (4.9x) |
+| pp1024 | 7.1 -> **41.5** (5.8x) | 12.4 -> 48.4 (3.9x) | 10.1 -> 47.9 (4.7x) |
+| pp2048 | 6.8 -> **39.6** (5.8x) | 11.7 -> 45.0 (3.8x) | 9.6 -> 45.1 (4.7x) |
 
-NPU prefill runs at ~3x the CPU rate on F16, and ~2.5-3x on the quantized GGUFs. F16 has the
-fastest prefill (27 t/s), because a quantized GGUF re-dequantizes to fp16. Quantization therefore
-does not raise prefill speed at this operating point, where the datatype-independent dispatch
-overhead is the limit ([not-mac-bound.md](not-mac-bound.md)).
+**Conditions:** NPU clock 928 MHz, the default `-b` and `-ub` [HW sweep 2026-11-01]. The quantized
+GGUFs run under `ROCKET_QUANT_RESIDENT=auto`, against a CPU backend with llama.cpp's weight repack
+on.
 
-**Decode (generation), t/s (CPU-bound on both, LPDDR-bandwidth-limited).**
+The quantized GGUFs prefill faster on the NPU than F16 does. Quantized residency holds all 235 of
+their weights resident as fp16. The F16 GGUF streams its weights, because the default F16
+residency admits only a weight with `K` <= 2048, and this model has none. The quantized speedups
+are lower than F16's because the repacked CPU backend runs those GGUFs faster.
+
+A board without RAM for the fp16 copy streams the quantized GGUF. Each weight is then dequantized
+to fp16 again on every micro-batch, which `-b 2048 -ub 2048` amortizes
+([quant-prefill-microbatch.md](quant-prefill-microbatch.md)):
+
+| test | Q8_0 CPU->NPU, streamed | Q4_K_M CPU->NPU, streamed |
+|---|---|---|
+| pp512  | 6.9 -> 17.4 (2.5x) | 6.5 -> 17.0 (2.6x) |
+| pp1024 | 6.7 -> 19.3 (2.9x) | 6.4 -> 19.1 (3.0x) |
+| pp2048 | 6.4 -> 17.7 (2.8x) | 6.0 -> 17.4 (2.9x) |
+
+**Conditions:** NPU clock ~816 MHz, `-b 2048 -ub 2048`, against a CPU backend built without the
+weight repack [HW sweep 2026-07-01].
+
+**Decode (generation), t/s (CPU-bound, LPDDR-bandwidth-limited).**
 
 | | F16 | Q8_0 | Q4_K_M |
 |---|---|---|---|
-| tg64 CPU | 1.37 | 2.46 | 3.76 |
-| tg64 NPU | 1.43 | 2.47 | 3.83 |
+| tg64, CPU backend | 1.60 | 3.01 | 4.72 |
 
-Decode in the NPU configuration matches the CPU, and decode stays off the NPU
-([decode-gemv.md](decode-gemv.md)). Its rate depends on the quantization, not the backend: F16 1.4
--> Q4_K_M 3.8 t/s (2.8x). Quantization is the only setting that raises decode speed.
+**Conditions:** `taskset 0xf0 -t 4`, llama.cpp b11539 [HW sweep 2026-11-01].
 
-**Interactive.** TTFT and streaming are derived from the measured pp and tg rates.
+Decode runs on the CPU in both configurations ([decode-gemv.md](decode-gemv.md)). Its rate
+follows the bytes each token reads: F16 1.6 -> Q8_0 3.0 -> Q4_K_M 4.7 t/s (2.9x).
+
+**Interactive.** TTFT and streaming are computed from the rates above [host-computed]. The TTFT is
+the prompt over the pp2048 rate, and the total adds 200 tokens at the decode rate.
 
 | scenario | config | TTFT | stream | total turn |
 |---|---|---|---|---|
-| RAG / summarize, 2048-tok prompt -> 200 out | F16 CPU | 299 s | 1.4 t/s | 445 s |
-| | F16 + NPU | **96 s** | 1.4 t/s | 236 s |
-| | Q4_K_M + NPU | 118 s | 3.8 t/s | **170 s** |
-| chat, 128-tok prompt -> 400 out | F16 + NPU | 5 s | 1.4 t/s | 285 s |
-| | Q4_K_M + NPU | 8 s | 3.8 t/s | **112 s** |
+| RAG / summarize, 2048-tok prompt -> 200 out | F16 CPU | 301 s | 1.6 t/s | 426 s |
+| | F16 + NPU | 52 s | 1.6 t/s | 177 s |
+| | Q4_K_M + NPU, `ROCKET_QUANT_RESIDENT=auto` | **45 s** | 4.7 t/s | **88 s** |
 
-With a long prompt, the NPU cuts the time to first token ~3x (F16 299->96 s) and nearly halves the
-turn. In a short-prompt, long-reply chat the turn is decode-bound: the NPU changes it little, and
-quantization shortens it (F16 285 -> Q4_K_M 112 s).
+On this prompt the NPU cuts the time to first token 5.8x and the turn 2.4x (F16). A short chat
+turn is mostly decode, so the quantization sets its length: 400 tokens take 250 s at F16 and 85 s
+at Q4_K_M.
 
 **Faithfulness: differential perplexity, wikitext test, 12 chunks (same GGUF, NPU prefill vs
 CPU).**
@@ -282,16 +326,18 @@ CPU).**
 | F16    | 6.8621 | 6.8615 | −0.01% |
 | Q4_K_M | 6.9626 | 6.9597 | −0.04% |
 
+**Conditions:** NPU clock ~816 MHz [HW sweep 2026-07-01].
+
 The per-chunk stderr is ±0.43, so the NPU−CPU delta is ~100x smaller than the noise. The NPU
 prefill matches the CPU to within 0.05% on both GGUFs, so the fp16-accumulation path has no
 measurable accuracy cost. The Q4_K_M−F16 gap (6.96 vs 6.86) is the expected quantization cost,
 present equally on both backends.
 
-**Verdict.** For a 16 GB+ board on batch or RAG workloads, use F16 + NPU (fastest prefill). For
-most boards and mixed interactive use, use Q4_K_M + NPU. It keeps ~2.9x prefill and a 2.8x-faster
-stream in 4.83 GB, which fits an 8 GB board. It is also faster on a mixed turn (combined
-pp2048+tg128: Q4_K_M 12.3 t/s, F16 10.3 t/s). Q8_0 (9 GB) is the near-lossless option between
-them.
+**Verdict.** Run this model as Q4_K_M with the NPU. Under `ROCKET_QUANT_RESIDENT=auto` it
+prefills faster than F16 (45.1 against 39.6 t/s at pp2048) and decodes 2.9x as fast, at the same
+faithfulness. Residency holds an fp16 copy of the weights, 13.8 GB, which needs a board with that
+RAM free. Without it, the 4.83 GiB GGUF fits an 8 GB board and prefills at the streamed rate.
+Q8_0 (8.40 GiB) sits between them in size and decode rate.
 
 ### gpt-oss-20b (MXFP4, MoE)
 
@@ -310,26 +356,30 @@ GGUF comes from `ggml-org/gpt-oss-20b-GGUF` (11.27 GiB), and the raw data is in
 In llama.cpp the expert FFNs run through `GGML_OP_MUL_MAT_ID`, and they are the bulk of prefill
 FLOPs (~75%). The dense attention projections and `lm_head` are the rest.
 
-**Prefill (prompt processing), t/s (MXFP4, `-b 2048 -ub 2048`).** The expert path is on by default
-from the 2026-08-27 build, behind a residency pre-flight. Setting `ROCKET_MOE=1` also claims what
-the pre-flight declines [HW sweep 2026-08-27, ~816 MHz, governor `performance`, llama.cpp
-171974745].
+**Prefill (prompt processing), t/s (MXFP4, `-b 2048 -ub 2048`).** The expert path is on by
+default, behind a residency pre-flight. With the default placement, gpt-oss-20b prefills at
+37.8 t/s at pp2048, 2.29x the CPU backend with llama.cpp's weight repack on. The default places
+62 of its 72 expert stacks, every placed expert resident [HW sweep 2026-11-01, NPU clock 928 MHz,
+the series of §"At a glance"].
 
-| test | CPU | NPU, `ROCKET_MOE=0` | **NPU, default** | NPU, `ROCKET_MOE=1` |
+Setting `ROCKET_MOE=1` also claims what the pre-flight declines. On one build, the configurations
+compare as follows [HW sweep 2026-08-27, ~816 MHz, governor `performance`, llama.cpp 171974745]:
+
+| test | CPU, unrepacked | NPU, `ROCKET_MOE=0` | **NPU, default** | NPU, `ROCKET_MOE=1` |
 |---|---:|---:|---:|---:|
 | pp512  | 12.17 | 14.08 (1.16x) | **22.0 (1.81x)** | 24.81 (2.04x) |
 | pp2048 | 11.80 | 13.62 (1.15x) | **28.1 (2.38x)** | 34.01 (2.88x) |
 
 > [!NOTE]
-> The default configuration varies from run to run: 20.5-22.8 t/s at pp512 and 26.9-28.7 at
-> pp2048, at identical placement (63 of 72 stacks, 1656 experts, 0 streamed). Average several runs
-> before comparing it with another configuration.
+> The default configuration varies from run to run. On the 2026-08-27 build it measured
+> 20.5-22.8 t/s at pp512 and 26.9-28.7 at pp2048, at identical placement (63 of 72 stacks, 1656
+> experts, 0 streamed). Average several runs before comparing it with another configuration.
 
-The expert path accounts for this model's result. Holding the routed experts on the NPU as native
-int8 gives 2.06x the experts-on-CPU configuration and 2.38x the CPU at pp2048 on the 2026-08-27
-build. It is faster at every prefill length. CPU prefill is itself fast on this model (~12 t/s,
-against ~7 for a dense 8B), because only ~3.6 B params are active per token. The 2.38x is therefore
-against a strong baseline.
+The expert path accounts for this model's result. On the 2026-08-27 build at pp2048, holding the
+routed experts on the NPU as native int8 gives 2.06x the experts-on-CPU configuration. It gives
+2.38x the unrepacked CPU. It is faster at every prefill length. CPU prefill is itself fast on this
+model (~12 t/s, against ~7 for a dense 8B), because only ~3.6 B params are active per token. The
+2.38x is therefore against a strong baseline.
 
 By design, the default is slower than `ROCKET_MOE=1`. Over two sessions on 2026-08-27,
 `ROCKET_MOE=1` measures 6-13% faster at pp512 and 18-21% faster at pp2048 [HW sweep]. The table's
@@ -353,7 +403,8 @@ residency: the fastest configuration measured is 91% resident. The crossover lie
 The headline table runs at `-b 2048 -ub 2048`, the setting for the expert path. At `-ub 512` the
 expert path measures 22.2 t/s (21.7-22.7) at pp512 and 22.5 (22.4-22.8) at pp2048 [HW sweep
 2026-08-27, ~816 MHz]. With the experts on the CPU it measures 14.13 and 13.53. The expert path is
-therefore about 1.6x and 1.7x faster at the llama.cpp default micro-batch. Against the `-ub 2048`
+therefore about 1.6x and 1.7x the experts-on-CPU configuration at the llama.cpp default
+micro-batch. Against the `-ub 2048`
 figures of 22.0 and 28.1, the smaller micro-batch costs ~20% at pp2048 and nothing at pp512.
 
 Two mechanisms cause that cost. Neither is the per-expert dequantization, because the
@@ -372,142 +423,6 @@ experts per micro-batch.
 > [!NOTE]
 > Compare gpt-oss configurations at one `-ub`. On this model `-ub 2048` slows the dense graph, and
 > the CPU configuration does not depend on `-ub`, so the best `-ub` differs per configuration.
-
-### The accept boundary, and why the per-expert row count is the wrong handle
-
-The MoE placement threshold keeps a small expert GEMM on the CPU. It is a threshold on the work per
-dispatch, `M_e · K · N`. A threshold on the per-expert row count, `M_e` =
-`n_tokens · n_used / n_expert`, does not separate wins from losses across architectures [HW sweep
-2026-08-27]. One lower bound on `M_e` is the tile granule, 64 rows, the smallest tile the resident
-path can run. That bound comes from the mechanism, and the measured sign change is not at it.
-
-The map below plots `M_e` against `default ÷ ROCKET_MOE=0` over `-p 512,768,1024,1536,2048` on both
-MoE models.
-
-| | `M_e` | work per dispatch | `ROCKET_MOE=0` | default | ratio |
-|---|---:|---:|---:|---:|---:|
-| **gpt-oss-20b**, 4-of-32, expert GEMM 2880×2880 | 64 | 5.31e8 | 14.08 | 23.08 | **1.64x** |
-| | 96 | 7.96e8 | 14.22 | 25.13 | **1.77x** |
-| | 128 | 1.06e9 | 14.10 | 26.92 | **1.91x** |
-| | 192 | 1.59e9 | 13.88 | 28.38 | **2.05x** |
-| | 256 | 2.12e9 | 13.64 | 28.30 | **2.08x** |
-| **DeepSeek-V2-Lite**, 6-of-64, expert GEMM 2048×1408 | 48 | 1.38e8 | 25.94 | 26.03 | 1.00 (declined) |
-| | 72 | 2.08e8 | 26.35 | 24.86 | **0.94x** |
-| | 96 | 2.77e8 | 23.06 | 24.18 | 1.049x *(marginal)* |
-| | 144 | 4.15e8 | 22.33 | 27.20 | **1.22x** |
-| | 192 | 5.54e8 | 21.60 | 28.37 | **1.31x** |
-
-**Conditions:** RK1, NPU clock ~816 MHz pinned, governor `performance`, `-b 2048 -ub 2048`. Every
-offloaded test point is 100% resident with 0 streamed, so no ratio here is a residency effect.
-
-**Not characterized:** the `M_e` = 72 and 96 test points on the 2026-10-09 build. Its readback and
-activation-pack changes reduce the expert call's cost on gpt-oss's shape
-(§"gpt-oss-20b (MXFP4, MoE)"). The threshold is fitted on the 2026-08-27 measurements.
-
-The gpt-oss model is 1.64x faster at `M_e` = 64, while DeepSeek is 5-6% slower at `M_e` = 72. Any
-row threshold low enough to admit the first admits the second, and no row threshold separates
-them. The loss at `M_e` = 72 belongs to the expert path, not to the threshold. Auto placement admits
-every DeepSeek stack at every prefill length, so `ROCKET_MOE=1` is the same placement there. It
-measures 25.55 against the same 26.35 control.
-
-The threshold amortizes a per-dispatch cost, incurred once per `(op, expert-with-rows)`:
-
-- One gather
-- One per-`(row, K-group)` activation quantize
-- One submit
-- One fence
-- One scatter
-
-One dispatch performs `M_e · K · N` MACs. For the NPU to beat the CPU on that expert,
-`fixed_dispatch < M_e · K · N · (1/rate_cpu − 1/rate_npu)` must hold. The condition is a threshold
-on the product, and `M_e` stands in for it only while `K · N` is held constant. Across these two
-models `K · N` is not constant. The gpt-oss expert GEMM is 2.88x larger than DeepSeek's at the same
-row count, which accounts for the whole of the discrepancy above.
-
-Ordered by that product, the test points of both architectures separate with no overlap:
-
-- The one clear loss is at 2.08e8 MACs.
-- The boundary test point at 2.77e8 is a marginal 1.049x (0.94-1.08 over its repeats), which does
-  not repay its own ingest.
-- Every test point with a material gain is at or over 4.15e8.
-
-The default threshold is the geometric midpoint of that last gap, 340 mega-MACs.
-
-### The third architecture, and the threshold declines it correctly
-
-On Qwen3-30B-A3B, a third MoE architecture, the default declines the experts at `-ub` 2048 and
-below. Forcing them onto the NPU with `ROCKET_MOE=1` measures 0.834x at `-ub` 2048 and 0.661x at
-`-ub` 1024 [HW sweep 2026-08-27]. The decision is right on this model, and right for the reason
-the threshold was derived from: the work per dispatch.
-
-**Conditions:** RK1 (RK3588), NPU clock ~816 MHz pinned, governor `performance`, Qwen3-30B-A3B,
-`-b/-ub` as shown, 2026-08-27.
-
-**Not characterized:** the threshold's position. At 201 MMAC the test point is far enough below
-340 that it tests the threshold's sign, not its position. A model between 277 and 415 MMAC is what
-would move it.
-
-Qwen3-30B-A3B has 128 experts, 8 active, `n_embd` 2048 and `moe_intermediate` 768. Its `K · N`
-is therefore 1.573e6, 5.3x smaller than gpt-oss's and 2.7x smaller than DeepSeek's. At `-ub` 2048
-it reaches `M_e` = 128 and 201 mega-MACs, under the threshold. Clearing 340 needs `M_e` >= 217,
-which is more than 3472 tokens in one micro-batch. The default therefore declines its experts at
-`-ub` 2048 and below, and accepts them at `-ub` 4096, which the RK1 runs. The accept side is
-measured below.
-
-| test point | work/dispatch | configuration | t/s | ratio |
-|---|---:|---|---:|---:|
-| `ub` 2048, `M_e` 128 | 201 MMAC | `ROCKET_MOE=0` | 13.38 / 13.32 / 13.31 | n/a |
-| | | **default** | 13.32 / 13.34 | **1.000x** |
-| | | `ROCKET_MOE=1` | 11.31 / 10.98 / 11.08 | **0.834x** |
-| `ub` 1024, `M_e` 64 | 101 MMAC | `ROCKET_MOE=0` | 14.62 | n/a |
-| | | `ROCKET_MOE=1` | 9.66 | **0.661x** |
-
-The default measures 1.000x the `ROCKET_MOE=0` configuration and prints no MoE line at all. Its
-ingest is zero.
-
-The conclusion does not depend on residency. Experts make up 29 of this model's 30.5 B parameters,
-so it cannot be held resident on a 31 GB board at any budget. Under `ROCKET_MOE=1` the int8 ingest
-stops at 9539 of 15277 experts, 62.4%, and the rest streams. Two results separate the work per
-dispatch from residency:
-
-- At matched residency, halving the work per dispatch lowers the ratio from 0.834 to 0.661. The
-  `ub` 1024 test point holds residency at 62.5% against the `ub` 2048 test point's 62.4%, 9548
-  experts against 9539. Work per dispatch alone moves the result by 0.17, and it behaves exactly as
-  the cost model predicts.
-- Raising residency to 70.8% with `ROCKET_MOE_CACHE_MB` raises the ratio only to 0.863. The
-  forced configuration loses at every residency this board can reach.
-
-The threshold's position rests on DeepSeek-V2-Lite's bracket alone. The gpt-oss model contributes
-nothing to where it sits. Its smallest reachable test point, 5.31e8, is 1.56x the 3.4e8
-threshold and above the bracket's upper end of 4.15e8 [host-computed]. The threshold's form is
-derived and its value is fitted on two architectures, so it is a measured boundary rather than a
-bound. The form does not contain `rate_cpu`, and the two models'
-CPU kernels differ (MXFP4 against Q4_K). The gpt-oss model at 5.31e8 therefore wins 1.64x where
-DeepSeek at 5.54e8 wins 1.31x, with the same work per dispatch and a different margin.
-
-On a third architecture the threshold changes placement. A 128-expert, 8-used model with a
-2048×768 expert is at 201 MMAC at `M_e` = 128, which a row threshold accepts and this one
-declines.
-
-The threshold demands a material gain rather than `> 1.00`, because of the one-time expert ingest.
-The ingest takes ~18 s per `llama_context` on DeepSeek and ~21 s on gpt-oss [HW sweep 2026-10-09,
-RK1, ~816 MHz, governor `ondemand`]. The ingest is charged only on an accepted offload, so the
-threshold is the one place where it can be avoided. An offload at ratio `r` saves `1 − 1/r` of
-prefill wall-clock time, so the ingest breaks even after:
-
-| test point | ratio | saves | breaks even after |
-|---|---:|---:|---:|
-| DeepSeek `M_e` = 96 | 1.05x | 4.8% | ~7 700 tokens of prefill at that shape |
-| DeepSeek `M_e` = 144 | 1.22x | 18.0% | ~2 300 tokens |
-| DeepSeek `M_e` = 192 | 1.31x | 23.7% | ~1 800 tokens |
-| gpt-oss `M_e` = 64 | 1.64x | 39.0% | ~1 100 tokens |
-
-**Conditions:** the ratios are the 2026-08 test points. Each break-even count is that test point's
-count at the 2026-08 ingest, scaled by the model's ingest ratio [host-computed]. The ingest ratio,
-current pack against earlier pack, is 0.47x on DeepSeek and 0.51x on gpt-oss.
-
-A test point a few percent above parity therefore costs a short-lived context more than it saves.
-The threshold is placed above 1.00 for that reason.
 
 ### gpt-oss-20b native-quant expert path and results
 
@@ -549,13 +464,9 @@ once.
 > to is ingested inside the first timed repetition that routes to it. A MoE prefill figure from
 > `llama-bench` therefore includes part of the ingest.
 
-The 2026-10-09 `librocketnpu` build runs the resident group-wise int8 readback as NEON. The int8
-activation pack's group copy also stops compiling to a byte loop. End to end, on llama.cpp
-a7fb71f with `--repack 0` and `-p 512 -n 0 -b 2048 -ub 2048`, gpt-oss measures pp512 24.90-25.23
-t/s [HW sweep 2026-10-09]. The gain over the build before it is 1.093-1.098x, with the ingest
-unchanged at 20.7-21.1 s. DeepSeek-V2-Lite at `-p 2048 -ub 2048` measures pp2048 32.69-32.83 t/s,
-with an ingest of 18.2-18.4 s. The 2026-08-27 tables in this section and the previous one predate
-both changes.
+The resident group-wise int8 readback runs as NEON. The 2026-08-27 figures in this section and in
+§"gpt-oss-20b (MXFP4, MoE)" predate that readback and the faster pack. The 2026-11-01 figures run on a build that
+has both.
 
 Attention stays on the CPU on this model, as a correctness requirement. The gpt-oss model has an
 attention sink, a learned per-head logit that joins the softmax denominator. The NPU FLASH_ATTN
@@ -568,20 +479,21 @@ pp2048, because the accepted offload takes real time to compute the wrong answer
 > softmax past the `n_kv` threshold of 1024. The handler drops the sinks (`src[4]`), and the model
 > still produces fluent text and a plausible perplexity.
 
-**Decode (generation), t/s (CPU-bound on both).**
+**Decode (generation), t/s (CPU-bound).**
 
 | | MXFP4 |
 |---|---|
-| tg64 CPU | 7.15 |
-| tg64 NPU | 7.16 |
+| tg64, CPU backend | 9.11 |
+
+**Conditions:** `taskset 0xf0 -t 4`, llama.cpp b11539 [HW sweep 2026-11-01].
 
 Decode stays on the CPU, as for every model here. The MoE's small active-parameter count makes it
-comparatively fast (7.2 t/s, roughly Ministral's Q4_K_M rate at ~half the bytes touched).
+comparatively fast: 9.1 t/s, against Ministral-3-8B Q4_K_M's 4.7.
 
-**Interactive.** On a 2048-token prompt the default configuration reaches the first token in ~73 s,
-against ~174 s on the CPU [host-computed]. Both follow from the pp2048 rates of the prefill table,
-28.1 and 11.80 t/s. Decode runs at 7.2 t/s on both backends, and there is no quant option to raise
-it, since MXFP4 is the only distribution.
+**Interactive.** On a 2048-token prompt the default configuration reaches the first token in
+~54 s, from the 2026-11-01 pp2048 rate of 37.8 t/s [host-computed]. The repacked CPU backend
+takes 2.29x as long. There is no quant option to raise the 9.1 t/s decode, since MXFP4 is the only
+distribution.
 
 **Faithfulness: per-matmul cosine and paired differential perplexity.**
 
@@ -622,9 +534,10 @@ Both NPU configurations run the same dense fp16 offload. The dense path is itsel
 all eight chunks negative), which would otherwise be credited to the experts.
 
 **Verdict.** The `MUL_MAT_ID` handler closes the op-coverage gap. With the experts held resident on
-the NPU as native int8, it is a 2.38x prefill win at pp2048 (1.81x at pp512) on the 2026-08-27
-build. It wins at every length on this model, and eligibility on another model is per architecture
-(see "The accept boundary"). The speedup comes from residency: each expert is converted to int8
+the NPU as native int8, it prefills at 2.29x the repacked CPU at pp2048 (2026-11-01). On the
+2026-08-27 build it measured 2.38x at pp2048 and 1.81x at pp512 against the unrepacked CPU. It wins
+at every length on this model, and eligibility on another model is per architecture
+([moe-placement.md](moe-placement.md) §"The accept boundary"). The speedup comes from residency: each expert is converted to int8
 once and held resident, which removes the per-micro-batch dequantization the fp16 path incurs.
 
 `ROCKET_MOE` is **on by default** on builds from 2026-08-27. Without a pre-flight, the expert
@@ -642,299 +555,16 @@ it regresses DeepSeek-V2-Lite 27% at pp512 at 100% residency.
 The recommended invocation on a 31 GiB board is the default, with `-b 2048 -ub 2048`. Expect the
 one-time expert ingest, 20.6-21.7 s on gpt-oss, at the first prefill of each `llama_context`.
 
-### The accept side of the same floor, and the budget above it
+### MoE expert placement
 
-At `-ub` 4096, Qwen3-30B-A3B reaches `M_e` = 256 and 403 mega-MACs, and the default accepts its
-experts. It is the first test point this model reaches above the 340 MMAC threshold. The default
-measures 1.016x the `ROCKET_MOE=0` configuration, and `ROCKET_MOE=1` measures 0.964x [HW sweep
-2026-08-28]. At only 1.19x the threshold, the test point tests its position rather than clearing it
-comfortably.
-
-**Conditions:** RK1 (RK3588), NPU clock ~816 MHz pinned, governor `performance`, Qwen3-30B-A3B,
-`-p 4096 -b 4096 -ub 4096`, 2026-08-28.
-
-**Not characterized:** the threshold's position apart from a residency term, and any other
-architecture or operating point.
-
-The result covers one architecture at one operating point. The clock, the governor and `rate_npu`
-are held fixed, on one model. Residency cannot reach 100% on this model on this board. Only a model
-that both falls near 340 MMAC and fits resident can separate the position from residency.
-
-At 403 MMAC this test point is 1.19x the threshold. The tightest accept-side test point this
-architecture reaches is `-ub` 3584 -> `M_e` 224 -> 352 MMAC, 1.035x the threshold. A run there
-would test the position rather than the sign.
-
-`M_e` is set by the micro-batch, so `-ub` is the only option that moves the test point. The
-prompt length `-p` needs only to be large enough to fill it. A 31 GiB board runs
-`-b 4096 -ub 4096` with the 17.28 GiB model loaded.
-
-| configuration | t/s, three processes | spread | paired ratios | mean | placement |
-|---|---|---:|---|---:|---|
-| `ROCKET_MOE=0` | 10.29 / 10.32 / 10.31 | 0.3% | n/a | n/a | n/a |
-| **default** | 10.40 / 10.50 / 10.50 | 1.0% | 1.011 / 1.017 / 1.018 | **1.016x** | 79 stacks, 0 streamed |
-| `ROCKET_MOE=1` | 9.80 / 9.93 / 10.09 | 2.9% | 0.952 / 0.962 / 0.979 | **0.964x** | 62.6% resident, 5703 streamed |
-
-The two configurations place the experts differently. The default reserves whole stacks and streams
-nothing: it holds 79 and leaves the rest on the CPU. Its placement is the same in all three
-processes: 8818 experts, 14877 MB, 0 streamed. With `ROCKET_MOE=1`, every expert is claimed and
-37% of them stream. Published figures for this model elsewhere are `ROCKET_MOE=1` figures, and do
-not describe the default.
-
-The three `ROCKET_MOE=1` test points are residency-matched (62.6% against 62.4%). They trace the
-ratio against work per dispatch alone: 101 MMAC -> 0.661, 201 -> 0.834, 403 -> 0.964. The curve is
-saturating rather than linear. A cost model predicts the third point out of sample to 0.4%. The
-model is `ratio = A / (B + (P/ub)·k)`, with one term fixed per prefill and one proportional to the
-dispatch count. Fitted on the two lower test points, it gives `k` = 0.314A and `B` = 0.885A, and
-predicts 0.960 here against 0.964 measured.
-
-> [!NOTE]
-> Where the ingest is charged moves this test point by 12%. The `llama-bench` warm-up incurs most of
-> the one-time expert ingest, and the timed repetitions incur only the experts it never routed to.
-> With the warm-up off, the same test point measures 0.934x instead of 1.016. A figure quoted from
-> this test point must state which charging it used.
-
-#### The auto budget and `ROCKET_MOE_CACHE_MB`
-
-The automatic budget over-places, and on this model the over-placement costs the whole offload.
-The option `ROCKET_MOE_CACHE_MB` sets the pre-flight's budget directly. On the default
-configuration it changes only the number of admitted stacks, with zero streaming at every budget.
-The ladder below therefore has one regime and one varying quantity [HW sweep 2026-08-28].
-
-**Conditions:** as above. Ratios are against the pooled `ROCKET_MOE=0` mean of six processes. The
-`n` column is the number of processes, and the rep sd column the spread between repetitions.
-
-The ingest and repaid-after columns assume an NPU-BO pack of ~505 MB/s [HW sweep 2026-08-28]. The
-pack measured on gpt-oss runs ~1.3 GB/s [HW sweep 2026-10-09]. At that rate the pack term of each
-ingest is ~0.35x as large, so both columns overstate the cost [host-computed].
-
-| budget | stacks | resident | IOVA | ingest | t/s | n | ratio | rep sd | ingest repaid after |
-|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| off | 0 | n/a | n/a | n/a | 10.32 | 6 | 1.000x | ±0.01 | n/a |
-| 12000 MB | 38 | 7813 MB | 7296 | 20.2 s | 10.65 | 1 | 1.032x | ±0.00 | ~6 700 tokens |
-| **18000 MB** | **58** | 11430 MB | 11136 | 30.9 s | **10.76** | 3 | **1.043x** | ±0.03-0.08 | ~7 400 |
-| **21000 MB** | **67** | 13167 MB | 12864 | 36.7 s | **10.83** | 4 | **1.049x** | ±0.04-0.08 | ~7 700 |
-| auto (24425) | 79 | 14877 MB | 15168 | 43.2 s | 10.47 | 3 | 1.014x | ±0.6 | ~34 000 |
-| 28000 MB | 90 | 16716 MB | 17280 | 48.5 s | 10.31 | 1 | 0.999x | ±1.02 | never |
-
-The ratio rises to a plateau and then falls, and the automatic budget is past the fall. The
-18000 MB and 21000 MB budgets, 58 and 67 stacks, are one plateau, pooled at 1.046x over seven
-processes. Between 67 and 79 stacks the ratio falls to 1.014.
-
-The 12000 MB and 28000 MB rows are one process each. A single process on this board can sit ~10%
-off the level its own configuration repeats at [HW sweep 2026-08-28]. The 28000 MB row's 0.999x
-therefore shows one process at parity, not that the offload gives nothing at 90 stacks.
-
-**Not characterized:** the depth of the fall past 79 stacks.
-
-The ladder's repaid-after column uses the 2026-08 pack rate. At that rate the materiality table's
-test points break even after ~16 300 tokens (1.05x), ~4 800 (1.22x) and ~3 800 (1.31x). Against
-those counts, the automatic budget's admission repays after ~34 000 tokens, about twice the 1.05x
-test point the threshold was fitted to exclude. The plateau repays after ~7 500, between the 1.05x
-and 1.22x test points. The recommended budget is therefore a range, 18000-21000 MB, rather than a
-value that has to be hit exactly.
-
-#### Budget units and the charge factor
-
-The `ROCKET_MOE_CACHE_MB` budget is in code-relative units, so a value does not transfer to another
-quant or another board. The budget bounds the admission charge rather than RAM. The charge is the
-int8 codes plus the per-(channel, K-group) scales plus that expert's GGUF source bytes. A budget
-therefore gives strictly less residency than it names. Across the ladder:
-
-| budget | resident int8 | budget / resident |
-|---:|---:|---:|
-| 18000 MB | 11430 MB | 1.58 |
-| 21000 MB | 13167 MB | 1.60 |
-| 24425 MB | 14877 MB | 1.64 |
-| 28000 MB | 16716 MB | 1.68 |
-
-The charge's own form predicts the ratio. Per expert, the charge is `N·K` code bytes +
-`N·(K/group)·4` scale bytes + the source stride `nb[2]`. Against the codes alone:
-
-```
-charge / codes  =  1 + 4/group + source_bits_per_weight/8
-```
-
-This GGUF is 18556686912 bytes for 30.5 B parameters, which is 4.87 bits/weight. At `K`=2048
-the group auto-picks to 512, giving 1.617. The scales term is the small one (0.8% here), and the
-source term sets the ratio.
-
-The pre-flight's log gives the factor directly, and that is the number to compare against. The
-budget-over-resident column above only estimates it, since a budget is what was requested. The
-pre-flight prints both halves of the charge:
-
-```
-[moe-int8] resident budget reached after 79 expert stacks (24425MB RAM, 15168MB IOVA)
-```
-
-RAM is the charge and IOVA is the int8 codes, so their ratio is `1 + 4/group + bits/8` with nothing
-inferred. Measured that way, on two models and two quant formats:
-
-| model | quant | charged / codes | derived | agreement |
-|---|---|---:|---:|---:|
-| Qwen3-30B-A3B | Q4_K_M, group 512 | 24425 / 15168 = **1.610** | 1.617 | 0.4% |
-| gpt-oss-20b | MXFP4, group 576 | 21433 / 14092 = **1.521** | 1.538 | 1.1% |
-
-The first row is [HW sweep 2026-08-28, RK1]. The second row comes from four archived runs
-([data/gpt-oss-20b.md](data/gpt-oss-20b.md)), whose six such lines measure 1.5209-1.5211. The
-derived value is ~1% high in both cases, so the form is a good sizing rule and not an exact one.
-Two caveats on its input explain the direction. The whole file's average, 4.87 bits/weight, stands
-in for the expert tensors' own rate, and a Q4_K_M GGUF mixes types.
-
-The same physical placement therefore needs a different budget for a different quant of the same
-model. The factor is about 2.07 for Q8_0 (8.5 bits/weight) and 1.54 for IQ4_XS (4.25)
-[expected: derived from bits/weight, not measured].
-
-To size a budget before a run, derive the factor. For an exact value, read the factor off the
-pre-flight line. The derivation transfers across quants and boards, and the log fixes the factor
-for one model. Take the ratio from a line whose stack count is limited by RAM, which says "budget
-reached ... Bound by RAM". A run at a pinned `ROCKET_MOE_CACHE_MB` stops at the pin rather than at
-the natural budget.
-
-#### RAM and IOVA budgets
-
-The factor also decides which budget binds, and on this path it is never the IOVA window. The
-pre-flight holds two budgets: RAM, and `ROCKET_N_THREADS x 3840 MB` of NPU IOVA. It charges each
-stack `codes + scales + source` against the first. It charges `codes` alone against the second.
-The window therefore binds first only where
-
-    RAM budget / IOVA budget  >  1 + 4/group + source_bits_per_weight/8
-
-which is the same factor. On `gpt-oss-20b` MXFP4 the right side is 1.538, and the left is 1.28 at
-the default five workers. RAM binds, by a margin no worker count can close, because raising
-`ROCKET_N_THREADS` grows only the denominator. At 5 and at 8 workers the admitted set is the same,
-and the pre-flight reports `Bound by RAM` [HW sweep 2026-09-02].
-
-The window cannot bind on this path at or above the default worker count. The threshold is set by
-the source rather than by the board. At five workers it would need `MemAvailable` above 35.7 GB,
-and each further worker adds about 5.9 GB to that. On a 32 GiB board the inequality needs a source
-under about 2.2 bits per weight, which no quantization this path ingests approaches. MXFP4, the
-densest measured, is 4.25. The option that `Bound by RAM` names, `ROCKET_MOE_CACHE_MB`, is the only
-one this path's line ever asks for.
-
-> [!NOTE]
-> A model can print no pre-flight line at all, and that does not mean the pre-flight passed. Auto
-> placement checks the tile granule and the per-dispatch work threshold before it calls the
-> pre-flight [source-confirmed, `ggml-rocket.cpp`]. If the line is missing, raise `-ub` before
-> concluding anything about RAM or the window.
-
-`Qwen3-30B-A3B` Q4_K_M at `-b 2048 -ub 2048` has 128 experts with 8 used. A 2048-token micro-batch
-therefore gives `M_e` = 128, and the work threshold declines it first. Two runs at that shape, at 5
-workers and at 8, emit no `[moe-int8]` line at all [HW sweep 2026-09-02, RK1]. The same model
-reaches the pre-flight at `-ub 4096`, where `M_e` is 256.
-
-#### Over-placement mechanism
-
-The automatic budget over-places because of an omission in the charge [hypothesis]. The pre-flight
-charges each placed expert as int8 codes plus that expert's GGUF source bytes. It does not charge
-two things. The first is the rest of the expert GGUF, the unplaced experts, which the CPU reads
-from the same mmap every micro-batch. The second is the placed experts' own source pages, which the
-ingest faulted moments earlier. Charging the whole expert GGUF against the anonymous int8 set gives:
-
-| stacks | anonymous int8 | + whole expert GGUF (16.3-17.8 GB) | vs 31744 MB total |
-|---:|---:|---:|---|
-| 38 | 7813 | 24.1-25.6 GB | under by 6-7.6 |
-| 58 | 11430 | 27.7-29.2 GB | under by 2.5-4 |
-| 67 | 13167 | 29.5-31.0 GB | under by 0.8-2.3 |
-| **79** | 14877 | **31.2-32.7 GB** | **crosses 31.7** |
-| 90 | 16716 | 33.0-34.5 GB | over by 1.3-2.8 |
-
-The crossing is at 79 stacks, which is where the ratio falls. The expert GGUF's own size is bounded
-rather than known, because the stacks are not equal-sized. The pre-flight's per-stack charge puts
-it at 16.3 GB at low placement and 17.8 GB at high placement. The fit is therefore one of ordering
-and magnitude, not a coincidence to 0.1%. The 6 GiB reserve exists to absorb exactly this, and the
-uncharged remainder here is 7-12 GB.
-
-The fit needs the placed experts' source pages to stay resident after ingest. Without them the hot
-set is flat across the five budgets and crosses nothing.
-
-**Not characterized:** which pages the kernel retains, and for how long.
-
-The factor also reconciles the RAM arithmetic with the recommended budget. On this board,
-`MemTotal` minus the whole expert GGUF minus the reserve is 31.7 − 17.3 = 14.4 GB, far from
-21000 MB. Converted through the measured factor, with a runtime-headroom term, it gives
-`1.610 × (31.7 − 17.3 − 1.2)` = 21.3 GB. The form is consistent and is not an independent
-prediction: the headroom term is the one free parameter, chosen to match the measured plateau.
-
-The mechanism predicts its own scope, and the prediction holds where it can be checked. The defect
-needs the experts to dominate the model and the GGUF to be large against RAM. The gpt-oss-20b model
-is neither (11.27 GiB). There, `ROCKET_MOE_CACHE_MB=28000` measured +8.3% / +14.1% with no
-degradation. The gpt-oss ladder is one `-r 3` process per configuration, so the two deltas have the
-same n=1 caveat as this ladder's ends. They show a direction rather than a magnitude.
-
-The two ladders jointly establish the sign flip between model classes, a comparison of directions
-that the single-process caveat does not affect. A `ROCKET_MOE_CACHE_MB` recommendation is therefore
-scoped to the model class, not to the board size.
-
-### The induced-scarcity ladder: the budget mechanism does not produce an inverted U
-
-On gpt-oss-20b, a ballast of `B` GiB of touched anonymous memory is held beside the run. Prefill
-throughput falls as `B` rises, with no turn at any step [HW sweep 2026-08-28]. Every step
-reports 100% resident, 0 streamed, and no OOM line in `dmesg`. Fewer stacks are placed, and the
-rest stay on the CPU, which the code calls "a partial offload and not a loss".
-
-**Conditions:** RK1 (RK3588), NPU clock ~816 MHz pinned, governor `performance`, gpt-oss-20b MXFP4,
-`-p 2048 -n 0 -r 1 -b 2048 -ub 2048`, one process per step, 2026-08-28. The page cache is dropped
-and `compact_memory` run before every step.
-
-| `B` | MemAvailable | pre-flight budget | stacks placed | resident | streamed | pp2048 t/s | vs `B`=0 |
-|---:|---:|---:|---:|---:|---:|---:|---:|
-| 0 | 30.2 GB | 24598 MB | 63 | 13454 MB | **0** | 28.93 | 1.000 |
-| 4 | 26.2 | 20488 | 52 | 11317 | **0** | 24.04 | 0.831 |
-| 8 | 22.2 | 16401 | 42 | 9486 | **0** | 20.89 | 0.722 |
-| 12 | 18.2 | 12290 | 31 | 7348 | **0** | 18.16 | 0.628 |
-| 16 | 14.2 | 8225 | 21 | 5372 | **0** | 15.36 | 0.531 |
-
-Throughput falls monotonically and very nearly linearly in the number of placed stacks
-(`t/s = 8.32 + 0.315 x stacks`, residuals within ±0.8 t/s over a 15-29 range).
-
-The ladder's variable and the pre-flight's input are the same quantity. The pre-flight budget is
-`MemAvailable - 6 GiB`, and the budget column falls by exactly 4096 MB per 4 GiB step. Ballast
-therefore makes the pre-flight more conservative, never less. The memory the ballast removes is
-removed from the budget first.
-
-> [!NOTE]
-> An induced-scarcity ladder of this shape cannot test whether the pre-flight over-places. The
-> pre-flight subtracts the ballast from its budget first, so the expert path never holds more than
-> the board can honor. Only memory that disappears after the budget is frozen reaches that state.
-
-The hot-set account of int8 codes, the whole GGUF and the ballast over-counts a file-backed GGUF.
-At `B` = 16 the accounted hot set is 5372 MB of int8 codes + 11.27 GiB of GGUF + 16 GiB of
-ballast. The total is 32.5 GB against 31.7 GB of RAM, and yet nothing streamed, nothing was killed,
-and the linear fit did not bend. At least some of what that account calls hot is therefore
-reclaimed under pressure. The GGUF, file-backed unlike the ballast, is the only candidate
-[hypothesis: not separated from a smaller-than-assumed activation footprint].
-
-The charge model treats each placed expert's source bytes as unreclaimable because decode reads
-them from the mmap every token. During a `-n 0` prefill they are not touched after ingest.
-
-The ladder does not refute the charge omission itself. The uncharged remainder is still real and
-still largest at low placement, and the ladder never reaches a state where it takes effect. Memory
-that disappears after the budget is frozen reaches that state, and the pre-flight cannot see it by
-construction.
-
-> [!CAUTION]
-> The pre-flight resolves its budget once and keeps it. Memory that another process takes after
-> that is still counted as available, so the expert path reserves stacks against RAM that is gone.
-> In the run below the kernel OOM killer fired, and the run still exited with status 0 and a
-> plausible throughput. Nothing in its output says a process was killed.
-
-In the second row below, the 16 GiB of ballast is allocated after the pre-flight line prints, with
-the same model and flags. The run reaches the over-placed state [HW sweep 2026-08-28, RK1]:
-
-| | budget frozen at | MemAvailable when the ingest ran | stacks reserved | outcome |
-|---|---:|---:|---|---|
-| ballast **before** (`B`=16 step above) | 8225 MB | 14.2 GB | 21 | 100% resident, 0 streamed, no OOM |
-| ballast **after** the freeze | **24608 MB** | **11.1 GB** | **63** | kernel **OOM-killer fired**, 91% resident, 144 streamed, pp2048 25.53 |
-
-The pre-flight resolved the budget at 24608 MB against an idle board, and kept it while 18 GB of
-the board disappeared. It therefore went on reserving 63 stacks and 24529 MB against 11.1 GB of
-available RAM. The board recovered only because the OOM killer picked the ballast, 16.8 GB of
-anonymous RSS, the largest badness score on the board. A competing allocation smaller than the
-inference process would have made `llama-bench` the victim instead.
-
-The two rows are a controlled pair. At essentially the same free RAM (14.2 against 11.1 GB), the
-pre-flight reserved 8225 MB in one and 24608 MB in the other. The only difference is when the
-memory went away: the pre-flight has no run-time `MemAvailable` check.
+The default places an expert stack on the NPU only where one expert dispatch performs at least
+340 mega-MACs (`M_e · K · N`). It also requires the residency pre-flight to reserve the whole stack.
+The threshold separates gpt-oss-20b's gains from DeepSeek-V2-Lite's loss at a similar per-expert row
+count, and declines Qwen3-30B-A3B's experts at `-ub` 2048 and below. Forcing them onto the NPU there
+measures 0.800x the experts-on-CPU configuration [HW sweep 2026-08-30, ~816 MHz]. On an
+expert-dominated model the automatic budget places more stacks than the board can hold, and a
+smaller `ROCKET_MOE_CACHE_MB` is faster. The accept-boundary map, the cost model and the budget
+series are in [moe-placement.md](moe-placement.md).
 
 ### Qwen3.5-9B
 
@@ -942,22 +572,26 @@ Qwen3.5-9B is Alibaba's Qwen3.5 9B (arch `qwen35`, dense, GQA), with 8.95 B para
 come from `unsloth/Qwen3.5-9B-GGUF` (base model `Qwen/Qwen3.5-9B`), and the F16 is derived from the
 published BF16. Three GGUFs are measured: F16, Q4_K_M and IQ4_XS, an importance-matrix 4-bit quant.
 
-**Conditions:** RK3588, NPU clock ~816 MHz, the flags and 8-thread CPU baseline of §"Method",
-measured 2026-07-02 [HW sweep].
-
-**Prefill (prompt processing), t/s (the NPU's job).**
+**Prefill (prompt processing), t/s (the NPU's job).** At pp2048 the F16 GGUF prefills at
+36.1 t/s, 4.9x the CPU [HW sweep 2026-11-01, NPU clock 928 MHz, the default `-b` and `-ub`]. Held resident under `ROCKET_QUANT_RESIDENT=auto` at the default `-ub`, the Q4_K_M
+GGUF prefills at 41.3 t/s, 3.9x the repacked CPU. At pp128 the F16 GGUF measures 3.3-3.4x the
+CPU [HW sweep 2026-11-02].
+The sweep below gives the rest of the prompt-length range and the quantized GGUFs:
 
 | test | F16 CPU->NPU | Q4_K_M CPU->NPU | IQ4_XS CPU->NPU |
 |---|---|---|---|
 | pp512  | 7.25 -> **25.86** (3.6x) | 6.25 -> 16.68 (2.7x) | 7.44 -> 16.33 (2.2x) |
 | pp1024 | 7.14 -> **25.14** (3.5x) | 6.21 -> 21.31 (3.4x) | 7.37 -> 20.87 (2.8x) |
-| pp2048 | 7.08 -> **24.85** (3.5x) | 6.15 -> 22.88 (3.7x) | 7.29 -> 22.49 (3.1x) |
+| pp2048 | the 2026-11-01 figure above | 6.15 -> 22.88 (3.7x) | 7.29 -> 22.49 (3.1x) |
 
-NPU prefill runs at ~3.5x the CPU rate on F16, flat at ~25 t/s from pp512 to pp2048, where
-Ministral-3-8B's F16 rate declines. The quants' NPU rates rise with M (Q4_K_M 16.7->22.9, IQ4_XS
-16.3->22.5). A quantized GGUF is dequantized to fp16 again on every micro-batch. At pp512 (one
-512-row batch) the dequantization is a large fixed fraction of prefill time. By pp2048 it amortizes
-and the quants close on F16.
+**Conditions:** NPU clock ~816 MHz, the flags and 8-thread CPU baseline of §"Method" [HW sweep
+2026-07-02]. The quantized GGUFs stream at `-b 2048 -ub 2048`, against a CPU backend built
+without the weight repack.
+
+On that sweep the F16 rate was flat across pp512 and pp1024, where Ministral-3-8B's declined. The
+quants' NPU rates rise with M (Q4_K_M 16.7->22.9, IQ4_XS 16.3->22.5). A quantized GGUF is
+dequantized to fp16 again on every micro-batch. At pp512 (one 512-row batch) the dequantization is
+a large fixed fraction of prefill time, and by pp2048 it amortizes.
 
 The same mechanism sets the tuning for a quantized GGUF. Where its fp16 image fits,
 `ROCKET_QUANT_RESIDENT=auto` at the default `-ub` removes the per-micro-batch dequantization. Where
@@ -970,18 +604,23 @@ a `to_float` trait and 256-element super-blocks, so `K%32` holds. Its prefill GE
 dequantize to fp16 and offload exactly as Q4_K_M's do, and the importance-matrix quants use the
 full quantized-prefill path.
 
-**Decode (generation), t/s (CPU-bound on both, LPDDR-bandwidth-limited).**
+**Decode (generation), t/s (CPU-bound on both, LPDDR-bandwidth-limited).** Q4_K_M decodes at
+4.00 t/s at `taskset 0xf0 -t 4` on llama.cpp b11539 [HW sweep 2026-11-01]. F16 decodes at 1.56 t/s and IQ4_XS at 4.49 t/s there [HW sweep 2026-11-02]. The July build's
+8-thread pairing gives the other GGUFs:
 
 | | F16 | Q4_K_M | IQ4_XS |
 |---|---|---|---|
 | tg64 CPU | 1.35 | 3.60 | 4.08 |
 | tg64 NPU | 1.34 | 3.59 | 4.09 |
 
+**Conditions:** 8 threads, unpinned [HW sweep 2026-07-02].
+
 Decode with the NPU backend loaded matches the CPU, and runs on the CPU
 ([decode-gemv.md](decode-gemv.md)). Its rate scales with the bytes each token reads, so the smallest
-quant decodes fastest: F16 1.4 -> Q4_K_M 3.6 (5.28 GB) -> IQ4_XS 4.1 t/s (4.80 GB).
+quant decodes fastest. At 8 threads it measures F16 1.4 -> Q4_K_M 3.6 (5.28 GiB) -> IQ4_XS
+4.1 t/s (4.80 GiB).
 
-**Interactive.** TTFT and stream rate are derived from the measured pp and tg rates
+**Interactive.** TTFT and stream rate are derived from the 2026-07-02 pp2048 and tg64 rates
 [host-computed].
 
 | scenario | config | TTFT | stream | total turn |
@@ -1008,16 +647,18 @@ CPU).**
 | Q4_K_M | 9.2358 | 9.2294 | −0.07% |
 | IQ4_XS | 9.3502 | 9.3411 | −0.10% |
 
-The per-chunk stderr is ±0.43, so the NPU−CPU delta is ~100x smaller than the noise. The NPU prefill
-matches the CPU to within 0.10% on all three, so the fp16-accumulation path is faithful for the
-importance-matrix quant as well. The PPL rise from F16 to Q4_K_M to IQ4_XS (9.06 -> 9.24 -> 9.35)
-is the expected quantization cost, present equally on both backends.
+The per-chunk stderr is ±0.43, so the NPU−CPU delta is 49-93x smaller than the noise
+[host-computed]. The NPU prefill matches the CPU to within 0.10% on all three, so the
+fp16-accumulation path is faithful for the importance-matrix quant as well. The PPL rise from F16 to
+Q4_K_M to IQ4_XS (9.06 -> 9.24 -> 9.35) is the expected quantization cost, present equally on both
+backends.
 
-**Verdict.** For batch or RAG workloads on a board with 16 GB or more, F16 + NPU gives this model's
-fastest prefill. It holds a flat ~25 t/s across the prompt curve. For most boards, use IQ4_XS + NPU.
-It fits an 8 GB board (4.80 GB), has the fastest stream (4.1 t/s), keeps ~3x NPU prefill on long
-prompts, and is faithful (Δ −0.10%). Q4_K_M has marginally higher fidelity (PPL 9.23 against 9.35),
-at 5.28 GB and a 3.6 t/s stream.
+**Verdict.** For batch or RAG workloads on a board with 16 GB or more, F16 + NPU prefills at 36.1
+t/s at pp2048, 4.9x the CPU. For most boards, use IQ4_XS + NPU. It fits an 8 GB board (4.80 GiB) and
+had the fastest stream on the July build (4.1 t/s at 8 threads). It keeps ~3x NPU prefill on long
+prompts at ~816 MHz, and is faithful (Δ −0.10%). Q4_K_M has marginally higher fidelity (PPL 9.23
+against 9.35), at 5.28 GiB and a 3.6 t/s stream on the same July build. On b11539 Q4_K_M streams at
+4.00 t/s at 4 threads, and IQ4_XS is not re-measured there.
 
 ### Phi-4-mini-instruct
 
@@ -1025,36 +666,43 @@ Microsoft's Phi-4-mini-instruct (arch `phi3`, dense, GQA) has 3.84 B params. The
 `unsloth/Phi-4-mini-instruct-GGUF` (base model `microsoft/Phi-4-mini-instruct`), and the F16 is
 derived from the published BF16.
 
-**Conditions:** RK3588, NPU clock ~816 MHz, the flags and 8-thread CPU baseline of §"Method",
-measured 2026-07-02 [HW sweep].
-
-**Prefill (prompt processing), t/s (the NPU's job).**
+**Prefill (prompt processing), t/s (the NPU's job).** At pp2048 the F16 GGUF prefills at
+76.1 t/s, 5.0x the CPU [HW sweep 2026-11-01, NPU clock 928 MHz, the default `-b` and `-ub`]. Held resident under `ROCKET_QUANT_RESIDENT=auto` at the default `-ub`, the Q4_K_M
+GGUF prefills at 87.4 t/s, 4.2x the repacked CPU. `ROCKET_F16_RESIDENT=auto` lifts the F16 GGUF
+to 88.4 t/s, and at pp128 it measures 3.2x the CPU [HW sweep 2026-11-02].
+The sweep below gives the rest of the prompt-length range and the quantized GGUFs:
 
 | test | F16 CPU->NPU | Q8_0 CPU->NPU | Q4_K_M CPU->NPU |
 |---|---|---|---|
 | pp512  | 16.55 -> **55.44** (3.4x) | 15.20 -> 37.26 (2.5x) | 13.85 -> 36.70 (2.6x) |
 | pp1024 | 15.96 -> **47.86** (3.0x) | 14.81 -> 38.77 (2.6x) | 13.55 -> 37.29 (2.8x) |
-| pp2048 | 15.07 -> **39.79** (2.6x) | 13.90 -> 34.91 (2.5x) | 12.89 -> 33.42 (2.6x) |
+| pp2048 | the 2026-11-01 figure above | 13.90 -> 34.91 (2.5x) | 12.89 -> 33.42 (2.6x) |
 
-F16 NPU prefill reaches 55 t/s at pp512, and its speedup falls with prompt length (3.4x->2.6x) as
-the NPU rate declines 55->40. On a model this small the per-op readback and dispatch are a larger
-fixed fraction, and they grow with M (more output tiles to read back). The F16 rate therefore falls
-with M, where the Qwen3.5-9B F16 rate is flat. The quants are flatter (~33-39 t/s). At pp2048 they
-close much of the gap to F16 (33-35 against 40), as their per-micro-batch dequantization amortizes
-while F16's readback grows.
+**Conditions:** NPU clock ~816 MHz, the flags and 8-thread CPU baseline of §"Method" [HW sweep
+2026-07-02]. The quantized GGUFs stream at `-b 2048 -ub 2048`, against a CPU backend built
+without the weight repack.
 
-**Decode (generation), t/s (CPU-bound on both, LPDDR-bandwidth-limited).**
+On that sweep F16 NPU prefill reaches 55 t/s at pp512, and its speedup falls with prompt length
+(3.4x->3.0x by pp1024) as the NPU rate declines 55->48. On a model this small the per-op readback
+and dispatch are a larger fixed fraction, and they grow with M (more output tiles to read back).
+The quants are flatter (~33-39 t/s), as their per-micro-batch dequantization amortizes.
+
+**Decode (generation), t/s (CPU-bound on both, LPDDR-bandwidth-limited).** Q4_K_M decodes at
+8.77 t/s at `taskset 0xf0 -t 4` on llama.cpp b11539 [HW sweep 2026-11-01]. F16 decodes at 3.34 t/s and Q8_0 at 6.19 t/s there [HW sweep 2026-11-02]. The July build's
+8-thread pairing gives the other GGUFs:
 
 | | F16 | Q8_0 | Q4_K_M |
 |---|---|---|---|
 | tg64 CPU | 2.86 | 4.86 | 7.04 |
 | tg64 NPU | 2.84 | 4.82 | 6.95 |
 
-Decode with the NPU backend loaded matches the CPU, and runs on the CPU
-([decode-gemv.md](decode-gemv.md)). At 3.84 B it decodes at F16 2.9 -> Q8_0 4.9 -> Q4_K_M 7.0 t/s,
-an interactive stream from a 2.31 GB file.
+**Conditions:** 8 threads, unpinned [HW sweep 2026-07-02].
 
-**Interactive.** TTFT and stream rate are derived from the measured pp and tg rates
+Decode with the NPU backend loaded matches the CPU, and runs on the CPU
+([decode-gemv.md](decode-gemv.md)). At 3.84 B it decodes at F16 2.9 -> Q8_0 4.9 -> Q4_K_M 7.0 t/s
+at 8 threads, an interactive stream from a 2.31 GiB file.
+
+**Interactive.** TTFT and stream rate are derived from the 2026-07-02 pp2048 and tg64 rates
 [host-computed].
 
 | scenario | config | TTFT | stream | total turn |
@@ -1088,11 +736,9 @@ favor (lower PPL), so no accuracy is lost. The absolute PPL is high, ~11, becaus
 largely on curated and synthetic data and models raw wikitext poorly. As with the other instruct
 models, only the NPU−CPU delta is informative, not the absolute value.
 
-**Verdict.** Phi-4-mini suits a small or edge board. With 7 GB of RAM available, F16 + NPU gives
-this model's fastest prefill, 55 t/s at pp512. Q4_K_M + NPU is the practical choice: 2.31 GB (fits
-a 4 GB board), ~2.6x NPU prefill, and an interactive 7 t/s stream. As this small model's per-op
-readback grows with M, the NPU's prefill speedup narrows with prompt length (F16 3.4x->2.6x). The
-largest speedups are therefore on short-to-medium prompts.
+**Verdict.** Phi-4-mini suits a small or edge board. With 7 GB of RAM available, F16 + NPU
+prefills at 76.1 t/s at pp2048, 5.0x the CPU. Q4_K_M + NPU is the practical choice: 2.31 GiB (fits
+a 4 GB board), ~2.6x NPU prefill at ~816 MHz, and an interactive 8.8 t/s stream at 4 threads.
 
 ### Gemma-4-12B-it
 
@@ -1100,60 +746,66 @@ Google's Gemma-4-12B-it (arch `gemma4`, dense, GQA) has 11.91 B params. The GGUF
 `unsloth/gemma-4-12b-it-GGUF` (base model `google/gemma-4-12b-it`), and the F16 is derived from the
 published BF16.
 
-**Conditions:** RK3588, NPU clock ~816 MHz, the flags and 8-thread CPU baseline of §"Method",
-measured 2026-07-02 [HW sweep].
-
 **Prefill (prompt processing), t/s (the NPU's job).**
 
 | test | F16 CPU->NPU | Q8_0 CPU->NPU | Q4_K_M CPU->NPU |
 |---|---|---|---|
-| pp512  | 4.82 -> **17.42** (3.6x) | 4.52 -> 11.41 (2.5x) | 4.23 -> 11.20 (2.6x) |
-| pp1024 | 4.78 -> **16.09** (3.4x) | 4.35 -> 13.53 (3.1x) | 4.15 -> 13.19 (3.2x) |
-| pp2048 | 4.63 -> **14.98** (3.2x) | 4.16 -> 13.43 (3.2x) | 4.02 -> 13.28 (3.3x) |
+| pp512  | 4.98 -> **25.62** (5.1x) | 8.44 -> 26.45 (3.1x) | 6.84 -> 26.25 (3.8x) |
+| pp1024 | 4.87 -> **25.31** (5.2x) | 8.14 -> 26.58 (3.3x) | 6.67 -> 25.38 (3.8x) |
+| pp2048 | 4.72 -> **24.64** (5.2x) | 7.78 -> 24.75 (3.2x) | 6.42 -> 24.51 (3.8x) |
 
-NPU prefill runs at up to 3.6x the CPU rate on F16, against a ~4.6 t/s CPU baseline for this 12 B
-model. F16 has the highest NPU rate, 17.4 t/s at pp512. Its speedup narrows with prompt length
-(3.6x->3.2x) as the NPU rate falls 17.4->15.0. The NPU rate falls because each matmul has more
-output tiles to read back as M grows.
+**Conditions:** NPU clock 928 MHz, the default `-b` and `-ub` [HW sweep 2026-11-01]. The quantized
+GGUFs run under `ROCKET_QUANT_RESIDENT=auto`, against a CPU backend with llama.cpp's weight repack
+on.
 
-The quants move the opposite way, rising with M (Q4_K_M 11.2->13.3, 2.6x->3.3x). A quantized GGUF
-is dequantized to fp16 again on every micro-batch. At pp512 that dequantization is a large fixed
-fraction, and by pp2048 it amortizes (the mechanism behind `-b 2048 -ub 2048`,
+NPU prefill runs at 5.1-5.2x the CPU rate on F16 from pp512 to pp2048, against a 4.7-5.0 t/s CPU
+baseline for this 12 B model. Under quantized residency the Q8_0 and Q4_K_M GGUFs prefill at about
+the F16 rate at every length, with 92-95% of their weights resident (298-310 of 325). The rest
+stream, because the RAM reserve or the NPU's IOVA window stops the admission. The F16 GGUF streams
+its weights, because the default F16 residency admits only a weight with `K` <= 2048.
+
+A board without RAM for the fp16 copy streams the quantized GGUF, at `-b 2048 -ub 2048`:
+
+| test | Q8_0 CPU->NPU, streamed | Q4_K_M CPU->NPU, streamed |
+|---|---|---|
+| pp512  | 4.52 -> 11.41 (2.5x) | 4.23 -> 11.20 (2.6x) |
+| pp1024 | 4.35 -> 13.53 (3.1x) | 4.15 -> 13.19 (3.2x) |
+| pp2048 | 4.16 -> 13.43 (3.2x) | 4.02 -> 13.28 (3.3x) |
+
+**Conditions:** NPU clock ~816 MHz, the flags and 8-thread CPU baseline of §"Method", against a
+CPU backend built without the weight repack [HW sweep 2026-07-02].
+
+Streamed, the quantized rates rise with M (Q4_K_M 11.2->13.3, 2.6x->3.3x). A streamed quantized
+GGUF is dequantized to fp16 again on every micro-batch. At pp512 that dequantization is a large
+fixed fraction, and by pp2048 it amortizes (the mechanism behind `-b 2048 -ub 2048`,
 [quant-prefill-microbatch.md](quant-prefill-microbatch.md)).
 
-By pp2048 all three measure ~13-15 t/s. A quantized GGUF does not prefill faster than F16 at this
-operating point, and only reduces memory use ([not-mac-bound.md](not-mac-bound.md)).
-
-**Decode (generation), t/s (CPU-bound on both, LPDDR-bandwidth-limited).**
+**Decode (generation), t/s (CPU-bound, LPDDR-bandwidth-limited).**
 
 | | F16 | Q8_0 | Q4_K_M |
 |---|---|---|---|
-| tg64 CPU | 0.94 | 1.75 | 2.44 |
-| tg64 NPU | 0.94 | 1.59 | 2.50 |
+| tg64, CPU backend | 1.07 | 1.97 | 3.05 |
 
-Decode with the NPU backend loaded matches the CPU, and runs on the CPU
-([decode-gemv.md](decode-gemv.md)). At 12 B, F16 decode runs at 0.94 t/s, because every token
-streams 22 GiB of weights from LPDDR. Decode scales with the bytes each token reads, so quantization
-is the only option that raises it. Quantization raises it 2.7x: F16 0.94 -> Q8_0 1.7 -> Q4_K_M 2.5
-t/s. For interactive use of this model, use a quantized GGUF.
+**Conditions:** `taskset 0xf0 -t 4`, llama.cpp b11539 [HW sweep 2026-11-01].
 
-**Interactive.** TTFT and stream rate are derived from the measured pp and tg rates
-[host-computed].
+Decode runs on the CPU in both configurations ([decode-gemv.md](decode-gemv.md)). At 12 B, F16
+decode runs at 1.07 t/s, because every token streams 22 GiB of weights from LPDDR. Decode scales
+with the bytes each token reads: F16 1.07 -> Q8_0 1.97 -> Q4_K_M 3.05 t/s (2.9x). For interactive
+use of this model, use a quantized GGUF.
+
+**Interactive.** TTFT and stream rate are computed from the rates above [host-computed]. The TTFT
+is the prompt over the pp2048 rate, and the total adds 200 tokens at the decode rate.
 
 | scenario | config | TTFT | stream | total turn |
 |---|---|---|---|---|
-| RAG / summarize, 2048-tok prompt -> 200 out | F16 CPU | 442 s | 0.9 t/s | 655 s |
-| | F16 + NPU | **137 s** | 0.9 t/s | 350 s |
-| | Q8_0 + NPU | 152 s | 1.6 t/s | 278 s |
-| | Q4_K_M + NPU | 154 s | 2.5 t/s | **234 s** |
-| chat, 128-tok prompt -> 400 out | F16 + NPU | 7 s | 0.9 t/s | 433 s |
-| | Q4_K_M + NPU | 11 s | 2.5 t/s | **171 s** |
+| RAG / summarize, 2048-tok prompt -> 200 out | F16 CPU | 434 s | 1.07 t/s | 621 s |
+| | F16 + NPU | **83 s** | 1.07 t/s | 270 s |
+| | Q4_K_M + NPU, `ROCKET_QUANT_RESIDENT=auto` | 84 s | 3.05 t/s | **149 s** |
 
-On a 2048-token prompt the NPU shortens the first-token wait ~3.2x (F16 442->137 s). The stream
-dominates the turn on this model: even with NPU prefill, F16 needs ~350 s for a 200-token reply.
-Quantization shortens the turn more than the backend does (Q4_K_M 234 s, and the chat turn
-433->171 s). Q4_K_M + NPU is the best interactive configuration, with the NPU's short TTFT and
-Q4_K_M's fastest stream.
+On a 2048-token prompt the NPU shortens the first-token wait 5.2x (F16 434->83 s). The stream
+dominates the turn on this model: with NPU prefill, F16 still needs 270 s for a 200-token reply. A
+400-token chat answer takes 374 s at F16 and 131 s at Q4_K_M. Q4_K_M + NPU is the best interactive
+configuration, with the NPU's short TTFT and Q4_K_M's fastest stream.
 
 **Faithfulness: differential perplexity, wikitext test, 12 chunks (same GGUF, NPU prefill vs CPU).**
 
@@ -1163,16 +815,19 @@ Q4_K_M's fastest stream.
 | Q8_0   | 639.9257 | 652.1588 | +1.91% |
 | Q4_K_M | 670.6969 | 675.4451 | +0.71% |
 
+**Conditions:** NPU clock ~816 MHz [HW sweep 2026-07-02].
+
 The per-run stderr is ±~65 (~±10%). All three NPU−CPU deltas (−0.8%, +1.9%, +0.7%) are well inside
 it, so the fp16-accumulation prefill path is faithful across F16 and both quants. The absolute PPL
 (~630+) is not meaningful. Gemma-4-12B-it is instruction- and reasoning-tuned, and scores raw
 wikitext very poorly. As with the other instruct models, only the NPU−CPU delta is informative.
 
-**Verdict.** For batch or RAG work on a 32 GB board (the F16 GGUF is 22 GiB), F16 + NPU gives this
-model's fastest prefill (17.4 t/s at pp512, 3.6x the CPU). Its 0.94 t/s decode makes long replies
-slow on either backend. Q4_K_M + NPU is the practical choice: 6.86 GB (fits an 8 GB board), ~3.3x
-NPU prefill on long prompts, and a 2.7x-faster stream. It gives the shortest effective turn in both
-the RAG and chat scenarios. Q8_0 (11.78 GB) is the near-lossless middle option.
+**Verdict.** Q4_K_M + NPU is the practical choice. It decodes at 2.9x the F16 rate, and under
+`ROCKET_QUANT_RESIDENT=auto` it prefills at about the F16 rate (24.5 t/s at pp2048), which gives
+the shortest turn. Its 6.86 GiB GGUF fits an 8 GB board, where it streams its weights and prefills
+at the streamed rate. For batch or RAG work on a 32 GB board (the F16 GGUF is 22 GiB), F16 + NPU
+prefills at 24.6 t/s at pp2048, 5.2x the CPU. Its 1.07 t/s decode makes long replies slow on
+either backend. Q8_0 (11.78 GiB) sits between them in size and decode rate.
 
 ### Qwen3.6-27B (hybrid Gated-DeltaNet, Q4_K_M)
 
@@ -1182,45 +837,44 @@ Gated-DeltaNet linear-attention / SSM-scan layers with dense GQA attention (GGUF
 Only Q4_K_M (15.92 GiB) is measured. At 27 B the F16 GGUF (~54 GB) and Q8_0 (~29 GB) do not fit the
 31 GB board.
 
-**Conditions:** RK3588, NPU clock ~816 MHz, the flags and 8-thread CPU baseline of §"Method",
-measured 2026-07-03 [HW sweep].
-
-**Prefill (prompt processing), t/s (the NPU's job).**
+**Prefill (prompt processing), t/s (the NPU's job).** At pp2048, Q4_K_M at `-b 2048 -ub 2048`
+prefills at 11.5 t/s [HW sweep 2026-11-01, NPU clock 928 MHz]. A CPU backend with llama.cpp's weight
+repack on runs at 3.0 t/s, and the NPU measures 3.8x it. The sweep below gives the shorter prompts:
 
 | test | Q4_K_M CPU->NPU |
 |---|---|
 | pp512  | 1.79 -> 5.38 (3.0x) |
 | pp1024 | 1.79 -> 6.78 (3.8x) |
-| pp2048 | 1.78 -> **7.78 (4.4x)** |
 
-NPU prefill runs at 3.0x the CPU rate at pp512, rising to 4.4x at pp2048. Two effects combine. The
-NPU rate climbs from 5.4 to 7.8 t/s as the per-micro-batch dequantization amortizes (the
-`-b 2048 -ub 2048` mechanism, [quant-prefill-microbatch.md](quant-prefill-microbatch.md)). The CPU
-baseline is ~1.8 t/s, a 27 B model streamed through 8 CPU cores. The NPU's speedup over it is larger
-than on any smaller model. The speedup grows with model size because the CPU rate falls
-faster than the NPU rate as the matmuls grow.
+**Conditions:** NPU clock ~816 MHz, the flags and 8-thread CPU baseline of §"Method", against a CPU
+backend built without the weight repack [HW sweep 2026-07-03].
+
+On that sweep the NPU rate climbs with M as the per-micro-batch dequantization amortizes (the
+`-b 2048 -ub 2048` mechanism, [quant-prefill-microbatch.md](quant-prefill-microbatch.md)). The
+unrepacked CPU baseline is ~1.8 t/s, a 27 B model streamed through 8 CPU cores.
 
 The Gated-DeltaNet and SSM-scan layers have no NPU handler, and run on the CPU. They are a small
 share of the prefill FLOPs. The FFN and attention projections dominate and offload as ordinary
 `MUL_MAT`, so the hybrid layers do not reduce the prefill speedup. A mixture-of-experts model
 differs: its expert FFNs go through `MUL_MAT_ID`, whose NPU path holds each quantized expert
-resident as native int8. The path is on by default, and places an expert op only where a residency
-pre-flight and a per-dispatch work threshold both admit it (§"gpt-oss-20b (MXFP4, MoE)").
+resident as native int8. The path is on by default, and places an expert op only where the
+conditions listed in §"LLM and multimodal (llama.cpp via ggml-rocket)" all hold.
 
-**Decode (generation), t/s (CPU-bound on both, LPDDR-bandwidth-limited).**
+**Decode (generation), t/s (CPU-bound, LPDDR-bandwidth-limited).**
 
 | | Q4_K_M |
 |---|---|
-| tg64 CPU | 1.10 |
-| tg64 NPU | 1.11 |
+| tg64, CPU backend | 1.30 |
 
-Decode with the NPU backend loaded matches the CPU, and runs on the CPU
-([decode-gemv.md](decode-gemv.md)). At 27 B it runs at 1.1 t/s, because every token streams the
-16 GiB of Q4_K_M weights from LPDDR. There is no smaller quant here to raise the stream rate, so
-this model suits prefill and batch work rather than chat.
+**Conditions:** `taskset 0xf0 -t 4`, llama.cpp b11539 [HW sweep 2026-11-01].
 
-**Interactive.** TTFT and stream rate are derived from the measured pp and tg rates
-[host-computed].
+Decode runs on the CPU in both configurations ([decode-gemv.md](decode-gemv.md)). At 27 B it runs
+at 1.3 t/s, because every token streams the 16 GiB of Q4_K_M weights from LPDDR. There is no
+smaller quant here to raise the stream rate, so this model suits prefill and batch work rather
+than chat.
+
+**Interactive.** TTFT and stream rate are derived from the 2026-07-03 pp2048 and 8-thread tg64
+rates at ~816 MHz [host-computed].
 
 | scenario | config | TTFT | stream | total turn |
 |---|---|---|---|---|
@@ -1247,15 +901,16 @@ record, whose raw-wikitext PPL is inflated and not meaningful. The NPU−CPU del
 NPU's favor) is well inside the per-chunk stderr. The fp16-accumulation prefill path is therefore
 faithful on the hybrid model too.
 
-**Verdict.** On Qwen3.6-27B the NPU's prefill speedup is 4.4x at pp2048. It turns a ~19-minute CPU
-first-token wait on a 2048-token prompt into ~4.5 minutes. On a 31 GB board the model suits prefill
-and RAG work rather than interactive chat. Only Q4_K_M fits, decode is ~1.1 t/s (a 400-token reply
-takes ~6 min), and there is no smaller quant to raise the stream rate.
+**Verdict.** On Qwen3.6-27B the NPU prefills at 3.8x the repacked CPU at pp2048. At the 2026-11-01
+rates a 2048-token prompt reaches its first token in ~3 min on the NPU, against ~11 min on the CPU
+[host-computed]. On a 31 GB board the model suits prefill and RAG work rather than interactive
+chat. Only Q4_K_M fits, decode is ~1.3 t/s (a 400-token reply takes ~5 min), and there is no
+smaller quant to raise the stream rate.
 
-Use it for long-prompt, short-answer work (summarize, extract, RAG), where the 4.4x first-token
-speedup applies. Where replies must stream at conversational speed, use a smaller model (Gemma-4-12B
-or Qwen3.5-9B at Q4_K_M). Linear-attention and SSM hybrids offload their prefill. The DeltaNet layers
-stay on the CPU and do not limit the speedup.
+Use it for long-prompt, short-answer work (summarize, extract, RAG), where the first-token speedup
+applies. Where replies must stream at conversational speed, use a smaller model (Gemma-4-12B or
+Qwen3.5-9B at Q4_K_M). Linear-attention and SSM hybrids offload their prefill, and the DeltaNet
+layers stay on the CPU.
 
 ### Llama-3.2-3B-Instruct
 
@@ -1263,20 +918,25 @@ Meta's Llama-3.2-3B-Instruct (arch `llama`, dense, GQA) has 3.21 B params, and i
 standard reference point. The GGUFs come from `unsloth/Llama-3.2-3B-Instruct-GGUF`, and the F16 is
 unsloth's published F16 (derived from the BF16).
 
-**Conditions:** RK3588, NPU clock ~816 MHz, the flags and 8-thread CPU baseline of §"Method",
-measured 2026-07-03 [HW sweep].
-
-**Prefill (prompt processing), t/s (the NPU's job).**
+**Prefill (prompt processing), t/s (the NPU's job).** At pp2048 the F16 GGUF prefills at
+85.1 t/s, 5.0x the CPU [HW sweep 2026-11-01, NPU clock 928 MHz, the default `-b` and `-ub`]. Held resident under `ROCKET_QUANT_RESIDENT=auto` at the default `-ub`, the Q4_K_M
+GGUF prefills at 92.2 t/s, 3.9x the repacked CPU. `ROCKET_F16_RESIDENT=auto` lifts the F16 GGUF
+to 97.8 t/s, and at pp128 it measures 3.1-3.3x the CPU [HW sweep 2026-11-02].
+The sweep below gives the rest of the prompt-length range and the quantized GGUFs:
 
 | test | F16 CPU->NPU | Q8_0 CPU->NPU | Q4_K_M CPU->NPU |
 |---|---|---|---|
 | pp512  | 18.23 -> **61.79** (3.4x) | 17.05 -> 34.19 (2.0x) | 16.71 -> 33.60 (2.0x) |
 | pp1024 | 17.74 -> **52.91** (3.0x) | 16.48 -> 36.31 (2.2x) | 16.34 -> 36.66 (2.2x) |
-| pp2048 | 17.29 -> **45.54** (2.6x) | 15.72 -> 34.11 (2.2x) | 15.49 -> 34.46 (2.2x) |
+| pp2048 | the 2026-11-01 figure above | 15.72 -> 34.11 (2.2x) | 15.49 -> 34.46 (2.2x) |
 
-F16 NPU prefill reaches 61.79 t/s at pp512, above Phi-4-mini's 55, because this smaller model has
-fewer FLOPs per matmul. As with Phi-4-mini, the F16 speedup falls with prompt length (3.4x->2.6x, the
-NPU rate declining 62->46). On a small model the per-op readback and dispatch are a larger fixed
+**Conditions:** NPU clock ~816 MHz, the flags and 8-thread CPU baseline of §"Method" [HW sweep
+2026-07-03]. The quantized GGUFs stream at `-b 2048 -ub 2048`, against a CPU backend built
+without the weight repack.
+
+On that sweep F16 NPU prefill reaches 61.79 t/s at pp512, above Phi-4-mini's 55.44, because this
+smaller model has fewer FLOPs per matmul. As with Phi-4-mini, the F16 speedup falls with prompt
+length (3.4x->3.0x by pp1024). On a small model the per-op readback and dispatch are a larger fixed
 fraction, and they grow with M.
 
 The quants measure a lower speedup (~2.0-2.2x) than Phi-4-mini's ~2.5-2.6x because of the CPU
@@ -1286,21 +946,22 @@ rates rise from pp512 to pp1024 and are flat at pp2048, as the per-micro-batch d
 amortizes (the `-b 2048 -ub 2048` mechanism,
 [quant-prefill-microbatch.md](quant-prefill-microbatch.md)).
 
-By pp2048 the two quants (~34 t/s) trail F16 (46 t/s). At this operating point a quantized GGUF does
-not prefill faster than F16, and only reduces memory use ([not-mac-bound.md](not-mac-bound.md)).
-
-**Decode (generation), t/s (CPU-bound on both, LPDDR-bandwidth-limited).**
+**Decode (generation), t/s (CPU-bound on both, LPDDR-bandwidth-limited).** Q4_K_M decodes at
+11.09 t/s at `taskset 0xf0 -t 4` on llama.cpp b11539 [HW sweep 2026-11-01]. F16 decodes at 3.98 t/s and Q8_0 at 7.37 t/s there [HW sweep 2026-11-02]. The July build's
+8-thread pairing gives the other GGUFs:
 
 | | F16 | Q8_0 | Q4_K_M |
 |---|---|---|---|
 | tg64 CPU | 3.15 | 5.62 | 7.88 |
 | tg64 NPU | 3.27 | 5.47 | 7.93 |
 
-Decode with the NPU backend loaded matches the CPU, and runs on the CPU
-([decode-gemv.md](decode-gemv.md)). At 3.21 B it decodes at F16 3.3 -> Q8_0 5.5 -> Q4_K_M 7.9 t/s,
-an interactive stream from a 1.87 GB file.
+**Conditions:** 8 threads, unpinned [HW sweep 2026-07-03].
 
-**Interactive.** TTFT and stream rate are derived from the measured pp and tg rates
+Decode with the NPU backend loaded matches the CPU, and runs on the CPU
+([decode-gemv.md](decode-gemv.md)). At 3.21 B it decodes at F16 3.3 -> Q8_0 5.5 -> Q4_K_M 7.9 t/s
+at 8 threads, an interactive stream from a 1.87 GiB file.
+
+**Interactive.** TTFT and stream rate are derived from the 2026-07-03 pp2048 and tg64 rates
 [host-computed].
 
 | scenario | config | TTFT | stream | total turn |
@@ -1327,23 +988,21 @@ CPU).**
 | F16    | 12.6656 | 12.6682 | +0.02% |
 | Q4_K_M | 12.9554 | 12.8978 | −0.44% |
 
-Both deltas are well inside the reported ±0.65 PPL uncertainty, and the F16 NPU−CPU delta is ~300x
-smaller than the per-chunk stderr. The F16 path matches the CPU to +0.02%. The Q4_K_M delta (−0.44%,
-in the NPU's favor) reflects the NPU consuming the Q4_K weights through dequantization to fp16,
-rather than through the CPU's native Q4_K kernel. No accuracy is lost. The absolute PPL is high,
-~12.7, because Llama-3.2-3B-Instruct is instruction-tuned and models raw wikitext poorly. As with the
-other instruct models, only the NPU−CPU delta is informative, not the absolute value.
+Both deltas are well inside the reported ±0.65 PPL uncertainty, and the F16 NPU−CPU delta is ~250x
+smaller than the per-chunk stderr [host-computed]. The F16 path matches the CPU to +0.02%. The
+Q4_K_M delta (−0.44%, in the NPU's favor) reflects the NPU consuming the Q4_K weights through
+dequantization to fp16, rather than through the CPU's native Q4_K kernel. No accuracy is lost. The
+absolute PPL is high, ~12.7, because Llama-3.2-3B-Instruct is instruction-tuned and models raw
+wikitext poorly. As with the other instruct models, only the NPU−CPU delta is informative, not the
+absolute value.
 
-**Verdict.** Llama-3.2-3B's F16 NPU prefill is 61.8 t/s at pp512, 3.4x the CPU. With ~6 GB of RAM
-free, F16 + NPU gives this model's highest prefill rate. Its speedup narrows with prompt length
-(3.4x->2.6x) as this small model's per-op readback grows with M, so it is largest on
-short-to-medium prompts. Q4_K_M + NPU is the practical choice: 1.87 GB (fits a 4 GB board with
-headroom), ~2.2x NPU prefill, and a 7.9 t/s stream. It gives the shorter effective turn in both
-scenarios.
+**Verdict.** Llama-3.2-3B's F16 NPU prefill is 85.1 t/s at pp2048, 5.0x the CPU, and needs ~6 GB of
+RAM free. Q4_K_M + NPU is the practical choice: 1.87 GiB (fits a 4 GB board with headroom), ~2.2x
+NPU prefill streamed at ~816 MHz, and an 11.1 t/s stream at 4 threads. It gives the shorter
+effective turn in both scenarios.
 
-On small dense models the NPU/CPU prefill ratio is lower because their CPU baseline is
-comparatively fast, not because the NPU is weaker. The NPU's absolute prefill rate remains the
-headline figure for these models.
+On the ~816 MHz sweep the quantized NPU/CPU prefill ratio is lower because the CPU's quantized
+baseline is comparatively fast, not because the NPU is weaker.
 
 ### Ministral-3-3B-Instruct-2512
 
@@ -1351,42 +1010,48 @@ Mistral's Ministral-3-3B-Instruct-2512 (arch `mistral3`, dense, GQA) has 3.43 B 
 sibling of Ministral-3-8B (§"Ministral-3-8B-Instruct-2512"). The GGUFs come from
 `unsloth/Ministral-3-3B-Instruct-2512-GGUF`, and the F16 is derived from the published BF16.
 
-**Conditions:** RK3588, NPU clock ~816 MHz, the flags and 8-thread CPU baseline of §"Method",
-measured 2026-07-03 [HW sweep].
-
-**Prefill (prompt processing), t/s (the NPU's job).**
+**Prefill (prompt processing), t/s (the NPU's job).** At pp2048 the F16 GGUF prefills at
+75.0 t/s, 4.7x the CPU [HW sweep 2026-11-01, NPU clock 928 MHz, the default `-b` and `-ub`]. Held resident under `ROCKET_QUANT_RESIDENT=auto` at the default `-ub`, the Q4_K_M
+GGUF prefills at 81.1 t/s, 3.7-3.8x the repacked CPU. `ROCKET_F16_RESIDENT=auto` lifts the F16
+GGUF to 86.1 t/s, and at pp128 it measures 3.2x the CPU [HW sweep 2026-11-02].
+The sweep below gives the rest of the prompt-length range and the quantized GGUFs:
 
 | test | F16 CPU->NPU | Q8_0 CPU->NPU | Q4_K_M CPU->NPU |
 |---|---|---|---|
 | pp512  | 18.02 -> **57.62** (3.2x) | 16.16 -> 32.94 (2.0x) | 15.55 -> 32.96 (2.1x) |
 | pp1024 | 17.39 -> **48.57** (2.8x) | 15.54 -> 35.14 (2.3x) | 15.10 -> 34.67 (2.3x) |
-| pp2048 | 16.26 -> **39.78** (2.4x) | 14.50 -> 30.78 (2.1x) | 14.32 -> 30.54 (2.1x) |
+| pp2048 | the 2026-11-01 figure above | 14.50 -> 30.78 (2.1x) | 14.32 -> 30.54 (2.1x) |
 
-F16 NPU prefill reaches 57.6 t/s at pp512, between Llama-3.2-3B (61.8) and Phi-4-mini (55.4). The
-three ~3-4 B dense models cluster near the top of the absolute-prefill table, because they run fewer
-FLOPs per matmul than the larger models. As on the other two, the F16 speedup falls with prompt
-length (3.2x->2.4x, the NPU rate declining 58->40). A small model's per-op readback is a larger fixed
-fraction and grows with M.
+**Conditions:** NPU clock ~816 MHz, the flags and 8-thread CPU baseline of §"Method" [HW sweep
+2026-07-03]. The quantized GGUFs stream at `-b 2048 -ub 2048`, against a CPU backend built
+without the weight repack.
+
+On that sweep F16 NPU prefill reaches 57.6 t/s at pp512, between Llama-3.2-3B (61.8) and
+Phi-4-mini (55.4). The three ~3-4 B dense models run fewer FLOPs per matmul than the larger
+models. As on the other two, the F16 speedup falls with prompt length (3.2x->2.8x by pp1024). A
+small model's per-op readback is a larger fixed fraction and grows with M.
 
 The quants measure ~2.0-2.3x, at an NPU rate of ~31-35 t/s. Their rates rise and then flatten with
 M as the per-micro-batch dequantization amortizes (the `-b 2048 -ub 2048` mechanism,
 [quant-prefill-microbatch.md](quant-prefill-microbatch.md)). The lower ratio comes from the strong
-CPU quant baseline (~14-16 t/s) rather than a weaker NPU, as on Llama-3.2-3B. By pp2048 the quants
-(~31 t/s) trail F16 (40). A quantized GGUF does not prefill faster than F16 here, and only reduces
-memory use ([not-mac-bound.md](not-mac-bound.md)).
+CPU quant baseline (~14-16 t/s) rather than a weaker NPU, as on Llama-3.2-3B.
 
-**Decode (generation), t/s (CPU-bound on both, LPDDR-bandwidth-limited).**
+**Decode (generation), t/s (CPU-bound on both, LPDDR-bandwidth-limited).** Q4_K_M decodes at
+10.47 t/s at `taskset 0xf0 -t 4` on llama.cpp b11539 [HW sweep 2026-11-01]. F16 decodes at 3.70 t/s and Q8_0 at 6.86 t/s there [HW sweep 2026-11-02]. The July build's
+8-thread pairing gives the other GGUFs:
 
 | | F16 | Q8_0 | Q4_K_M |
 |---|---|---|---|
 | tg64 CPU | 3.01 | 5.39 | 7.59 |
 | tg64 NPU | 3.00 | 5.53 | 7.66 |
 
+**Conditions:** 8 threads, unpinned [HW sweep 2026-07-03].
+
 Decode with the NPU backend loaded matches the CPU, and runs on the CPU
 ([decode-gemv.md](decode-gemv.md)). At 3.43 B it decodes at F16 3.0 -> Q8_0 5.5 -> Q4_K_M 7.7 t/s
-from a 1.99 GB file, against Llama-3.2-3B's 7.9 t/s from 1.87 GB.
+at 8 threads, from a 1.99 GiB file, against Llama-3.2-3B's 7.9 t/s from 1.87 GiB.
 
-**Interactive.** TTFT and stream rate are derived from the measured pp and tg rates
+**Interactive.** TTFT and stream rate are derived from the 2026-07-03 pp2048 and tg64 rates
 [host-computed].
 
 | scenario | config | TTFT | stream | total turn |
@@ -1412,22 +1077,21 @@ CPU).**
 | F16    | 9.9014 | 9.8979 | −0.04% |
 | Q4_K_M | 10.1022 | 10.0918 | −0.10% |
 
-Both deltas are well inside the ±0.46 per-chunk stderr, and the F16 NPU−CPU delta is ~130x smaller.
+Both deltas are well inside the ±0.46 per-chunk stderr, and the F16 NPU−CPU delta is ~130x smaller
+than it.
 The NPU prefill matches the CPU to −0.04% on F16 and −0.10% on Q4_K_M, both in the NPU's favor, so
 the fp16-accumulation path is faithful. The absolute PPL (~9.9) is higher than the 8B sibling's
 ~6.9, which is the small model's quality cost rather than an NPU effect. Because Ministral-3-3B is an
 instruct model, only the NPU−CPU delta is informative.
 
-**Verdict.** Ministral-3-3B suits a small or edge board, with an F16 NPU prefill of 57.6 t/s at
-pp512 (3.2x). With ~7 GB of RAM free, F16 + NPU gives this model's highest prefill rate, with the
-speedup largest on short-to-medium prompts (3.2x->2.4x as M grows). Q4_K_M + NPU is the practical
-choice: 1.99 GB (fits a 4 GB board), ~2.1x NPU prefill, and a 7.7 t/s stream. It gives the shorter
-effective turn in both scenarios.
+**Verdict.** Ministral-3-3B suits a small or edge board, with an F16 NPU prefill of 75.0 t/s at
+pp2048 (4.7x), which needs ~7 GB of RAM free. Q4_K_M + NPU is the practical choice: 1.99 GiB (fits
+a 4 GB board), ~2.1x NPU prefill streamed at ~816 MHz, and a 10.5 t/s stream at 4 threads. It
+gives the shorter effective turn in both scenarios.
 
-Among the small dense models, Ministral-3-3B sits between Llama-3.2-3B (61.8 against 57.6 t/s
-prefill, 7.9 against 7.7 t/s stream) and Phi-4-mini. The three show the same pattern. On small dense
-models the NPU/CPU ratio is modest because the CPU baseline is fast, while the NPU's absolute F16
-prefill rate is 55-62 t/s.
+Among the small dense models at pp2048, Ministral-3-3B's F16 prefill (75.0 t/s) sits below
+Llama-3.2-3B's (85.1) and level with Phi-4-mini's (76.1). Its 4-thread Q4_K_M stream (10.5 t/s)
+sits between Llama-3.2-3B's (11.1) and Phi-4-mini's (8.8).
 
 ### DeepSeek-V2-Lite (MLA + MoE, Q4_K_M)
 
@@ -1439,19 +1103,24 @@ nope + 64 rope), value_length 128. The GGUF comes from `mradermacher/DeepSeek-V2
 base model `deepseek-ai/DeepSeek-V2-Lite`, 9.65 GiB). Only Q4_K_M is measured, because at 15.71 B
 the F16 GGUF (~31 GB) does not fit the 31 GB board.
 
+With the default placement and every routed expert resident, DeepSeek-V2-Lite prefills at 43.4 t/s
+at pp2048 [HW sweep 2026-11-01, NPU clock 928 MHz, `-b 2048 -ub 2048`]. Against the CPU backend with
+llama.cpp's weight repack on, in the series of §"At a glance", it measures 1.83x. The tables below
+are earlier builds and state their own conditions.
+
 **Conditions:** RK3588, NPU clock ~816 MHz, Q4_K_M, the flags and 8-thread CPU baseline of
 §"Method", measured 2026-07-03, with the MoE offload re-measured 2026-07-04 [HW sweep]. A table
 measured under other conditions states them.
 
 MLA attention and the routed experts each have an op-level handler. The FLASH_ATTN handler accepts
 MLA's asymmetric key and value dims (DK=192 ≠ DV=128) rather than requiring `DK==DV`. The MLA FA
-primitive is therefore ready, and bit-faithful (cos=1.000000). The DeepSeek FA path in the
-dynamically loaded backend is not wired on the device. The path is dispatch-bound (large DK, few KV
-heads) and gains only at long context, so attention stays on the CPU here, with no effect on
-prefill.
+primitive is therefore ready, and bit-faithful (cos=1.000000). In the 2026-07-03 runs the backend's
+FA path did not engage on this model under `-fa auto` or `-fa 1`, so attention ran on the CPU. The
+path is dispatch-bound (large DK, few KV heads) and gains only at long context.
 
-The routed experts go through `GGML_OP_MUL_MAT_ID`, which has a handler (`ROCKET_MOE=1`). Where the
-experts run depends on the expert path and the prefill length (below).
+The routed experts go through `GGML_OP_MUL_MAT_ID`. The backend places them on the NPU by default
+where the conditions of §"LLM and multimodal (llama.cpp via ggml-rocket)" hold. Where they run
+therefore depends on the expert path and the prefill length (below).
 
 With the routed experts on the CPU, the NPU runs the large MLA projections (q and kv down/up), the 2
 always-on shared experts' gate/up/down, and `lm_head`. All are ordinary static-weight `MUL_MAT`.
@@ -1477,9 +1146,9 @@ llama.cpp b10558 and `-ub 2048` on 2026-08-27. DeepSeek's speedup there is 1.33x
 The difference is the MLA projections and the two shared experts, substantial dense GEMMs that
 offload.
 
-It is far below the dense models' 3x+. Attention (MLA, on the CPU here) and the routed experts are
-the bulk of the graph, and they stay on the CPU. CPU prefill is ~19-20 t/s for a 16 B model,
-because only ~2.4 B params are active per token.
+It is far below the dense models' 3x+ on the same builds. Attention (MLA, on the CPU here) and the
+routed experts are the bulk of the graph, and in this configuration they stay on the CPU. CPU
+prefill is ~19-20 t/s for a 16 B model, because only ~2.4 B params are active per token.
 
 On the fp16 streaming path, `ROCKET_MOE=1 ROCKET_MOE_NATIVE=0`, the `MUL_MAT_ID` handler lowers
 prefill below the CPU rate. The loss is larger than gpt-oss's. DeepSeek's CPU is faster and its
@@ -1507,9 +1176,13 @@ On the native-quant path, the default, the expert offload's effect depends on pr
 | pp2048 | 18.50 | 21.63 | **27.9 (1.29x)** |
 
 **Conditions:** RK3588, NPU clock ~816 MHz, governor `performance`, llama.cpp b10558, 2026-08-27.
+The CPU column is unrepacked.
 
 **Not characterized:** what moves the experts-on-CPU configuration between the 2026-07-03 table and
 this one: 24.04 to 26.04 t/s at pp512, and 23.87 to 21.63 at pp2048.
+
+Across the session's runs the pp2048 ratio measured 1.28-1.31x, the accept-boundary map's 1.31x
+among them.
 
 At pp512 the expert offload is a 27% regression at 100% residency, with 0 experts streamed. Each
 expert receives `n_tokens · n_used / n_expert` rows, and the row count is an architecture property
@@ -1521,10 +1194,12 @@ The gpt-oss-20b model selects 4 of its 32 experts per token, so the same token c
 expert 64 rows, at the granule. Its offload gains. At pp2048 each DeepSeek expert receives
 `M_e` ~192 rows, above the granule, and the offload gains 1.29x (the table above).
 
-The backend's default placement therefore requires two thresholds: `M_e >= ROCKET_MOE_M_BUCKET`,
-the 64-row granule, and a work per dispatch `M_e · K · N` of at least `ROCKET_MOE_MIN_WORK`,
-340 mega-MACs (§"The accept boundary, and why the per-expert row count is the wrong handle"). On
-DeepSeek the work threshold admits the experts from `M_e` = 118, past ~1250 tokens in a
+The backend's default placement therefore requires two size thresholds, beside the residency
+pre-flight and the 512-token minimum micro-batch. One is `M_e >= ROCKET_MOE_M_BUCKET`, the 64-row
+granule. The other is a work per dispatch `M_e · K · N` of at least `ROCKET_MOE_MIN_WORK`,
+340 mega-MACs ([moe-placement.md](moe-placement.md) §"The accept boundary").
+
+On DeepSeek the work threshold admits the experts from `M_e` = 118, past ~1250 tokens in a
 micro-batch. The default keeps DeepSeek's experts on the CPU at short prefill and places them on
 the NPU at long prefill. One model is therefore placed differently by prompt length. At pp512
 (`M_e` = 48) the row threshold declines the experts, and DeepSeek measures 25.9 on the device, the
@@ -1535,19 +1210,20 @@ experts-on-CPU rate.
 > failure modes, and a residency check sees only one of them. A residency check therefore does not
 > show that the gpt-oss-20b result transfers to another MoE model.
 
-**Decode (generation), t/s (CPU-bound on both, LPDDR-bandwidth-limited).**
+**Decode (generation), t/s (CPU-bound, LPDDR-bandwidth-limited).**
 
 | | Q4_K_M |
 |---|---|
-| tg64 CPU | 7.73 |
-| tg64 NPU | 7.77 |
+| tg64, CPU backend | 13.52 |
 
-Decode with the NPU backend loaded matches the CPU, and runs on the CPU
-([decode-gemv.md](decode-gemv.md)). The MoE's small active-param count keeps decode at ~7.7 t/s
-from a 9.65 GB file, roughly a dense 3 B model's rate.
+**Conditions:** `taskset 0xf0 -t 4`, llama.cpp b11539 [HW sweep 2026-11-01].
 
-**Interactive.** TTFT and stream rate are derived from the measured pp and tg rates
-[host-computed].
+Decode runs on the CPU in both configurations ([decode-gemv.md](decode-gemv.md)). The MoE's small
+active-param count keeps decode at 13.5 t/s from a 9.65 GiB file, above every dense model here
+but SmolVLM2's 1.8 B.
+
+**Interactive.** TTFT and stream rate are derived from the 2026-07-03 experts-on-CPU pp2048 rate
+and the 8-thread tg64 rate of that build, 7.7 t/s [host-computed].
 
 | scenario | config | TTFT | stream | total turn |
 |---|---|---|---|---|
@@ -1584,17 +1260,17 @@ The 2026-08-27 default was also measured at `-c 2048`, where `M_e` = 192 and the
 expert path is active. Its paired differential perplexity over 8 chunks is −0.42% against the CPU
 (4.01 se) [HW sweep 2026-08-27]. The table in §"At a glance" quotes that figure. Against the
 experts-on-CPU configuration the same run is −0.12%, indistinguishable from zero (the faithfulness
-table of §"gpt-oss-20b (MXFP4, MoE)").
+table of §"gpt-oss-20b native-quant expert path and results").
 
 **Verdict.** DeepSeek-V2-Lite combines MLA attention and MoE in one model. Both have op-level
-handlers, and the MoE expert offload is a default gain **at long prefill only**. Attention stays on
-the CPU: the FLASH_ATTN handler is bit-faithful for MLA's head dims, and the DeepSeek FA path is not
-exercised on the device. It is also dispatch-bound with no effect on prefill at these lengths.
+handlers, and the MoE expert offload is a default gain **at long prefill only**. The FLASH_ATTN
+handler is bit-faithful for MLA's head dims. Its DeepSeek case has not been validated end to end
+on the device.
 
-The routed experts take the native-quant path by default at pp2048 (1.29x over the experts-on-CPU
-configuration in the native-quant table). Below the per-dispatch work threshold they stay on the
-CPU. The fp16 expert path loses more here than on gpt-oss (0.25x->0.59x the CPU) and is never taken
-by default.
+The routed experts take the native-quant path by default at pp2048: 43.4 t/s, 1.83x the repacked CPU
+(2026-11-01). On the 2026-08-27 build they measured 1.29x the experts-on-CPU configuration. Below
+the per-dispatch work threshold they stay on the CPU. The fp16 expert path loses more here than on
+gpt-oss (0.25x->0.59x the CPU) and is never taken by default.
 
 Below the threshold, the MLA projections, the 2 shared experts and `lm_head` offload for a modest,
 faithful 1.18-1.26x prefill (b9568, 2026-07-03). Measured on one build with gpt-oss, the speedup
@@ -1613,40 +1289,49 @@ and Qwen3.6-27B [HW sweep 2026-07-04].
 §"Method", 2026-07-04. Q8_0 and Q4_K_M GGUFs from `unsloth/phi-4-GGUF` (base model
 `microsoft/phi-4`, arch `llama`).
 
-**Prefill (prompt processing), t/s (the NPU's job).**
+**Prefill (prompt processing), t/s (the NPU's job).** At pp2048, Q4_K_M at `-b 2048 -ub 2048`
+prefills at 21.9 t/s [HW sweep 2026-11-01, NPU clock 928 MHz]. A CPU backend with llama.cpp's weight
+repack on runs at 5.47 t/s, and the NPU measures 4.0x it. The sweep below gives Q8_0 and the shorter
+prompts:
 
 | test | Q8_0 CPU->NPU | Q4_K_M CPU->NPU |
 |---|---|---|
 | pp512  | 3.83 -> 10.61 (2.8x) | 3.53 -> 10.31 (2.9x) |
 | pp1024 | 3.70 -> 12.13 (3.3x) | 3.49 -> 11.93 (3.4x) |
-| pp2048 | 3.60 -> **12.20 (3.4x)** | 3.40 -> **11.79 (3.5x)** |
+| pp2048 | 3.60 -> **12.20 (3.4x)** | the 2026-11-01 figure above |
 
-NPU prefill runs at up to 3.5x the CPU rate, against a slow (~3.5 t/s) 14 B CPU baseline. With no
-F16 that fits, both GGUFs are quantized, and both show the quantized-GGUF pattern. The speedup rises
-with prompt length (2.8x->3.4x Q8_0, 2.9x->3.5x Q4_K_M) as the per-micro-batch dequantization
-amortizes across the `-b 2048 -ub 2048` window
-([quant-prefill-microbatch.md](quant-prefill-microbatch.md)). At pp2048 both measure ~12 t/s, so
-neither quantized GGUF prefills faster than the other ([not-mac-bound.md](not-mac-bound.md)).
-Q4_K_M's slightly higher ratio (3.5x against 3.4x) comes from its slightly slower CPU baseline, and
-its NPU rate is the lower of the two. The ~12 t/s lies between Gemma-4-12B's Q4_K_M (13.3) and
-Qwen3.6-27B's Q4_K_M (7.8), in order of model size.
+**Conditions:** NPU clock ~816 MHz, `-b 2048 -ub 2048`, against a CPU backend built without the
+weight repack [HW sweep 2026-07-04].
 
-Because its F16 GGUF does not fit, this model cannot reach the higher prefill of an F16 GGUF
-(Gemma-4-12B's F16 measures ~15-17 t/s). On this board a quantized GGUF is the only option.
+On that sweep NPU prefill runs at up to 3.4x the CPU rate, against a slow (~3.5 t/s) 14 B CPU
+baseline. With no F16 that fits, both GGUFs are quantized, and both show the quantized-GGUF
+pattern. The speedup rises with prompt length (Q8_0 2.8x->3.4x by pp2048, Q4_K_M 2.9x->3.4x by
+pp1024) as
+the per-micro-batch dequantization amortizes across the `-b 2048 -ub 2048` window
+([quant-prefill-microbatch.md](quant-prefill-microbatch.md)). At pp1024 the two measure ~12 t/s,
+so neither quantized GGUF prefills faster than the other ([not-mac-bound.md](not-mac-bound.md)).
 
-**Decode (generation), t/s (CPU-bound on both, LPDDR-bandwidth-limited).**
+Because its F16 GGUF does not fit, this model cannot run the F16 configuration that gives the dense
+rows of §"At a glance" their 4.2-5.8x. On this board a quantized GGUF is the only option.
+
+**Decode (generation), t/s (CPU-bound on both, LPDDR-bandwidth-limited).** Q4_K_M decodes at
+2.74 t/s at `taskset 0xf0 -t 4` on llama.cpp b11539 [HW sweep 2026-11-01]. Q8_0 decodes at 1.70 t/s there [HW sweep 2026-11-02]. The July build's
+8-thread pairing gives Q8_0:
 
 | | Q8_0 | Q4_K_M |
 |---|---|---|
 | tg64 CPU | 1.43 | 2.17 |
 | tg64 NPU | 1.42 | 2.19 |
 
-Decode runs on the CPU in both configurations ([decode-gemv.md](decode-gemv.md)), so the two rates
-match. At 14.66 B and Q8_0 it is slow (1.4 t/s), with 14.5 GiB streamed from LPDDR per token.
-Quantization is the only setting that raises it: Q4_K_M nearly doubles it to 2.2 t/s
-(8.28 GiB/token). Interactive use of this model needs a quantized GGUF in practice.
+**Conditions:** 8 threads, unpinned [HW sweep 2026-07-04].
 
-**Interactive.** TTFT and streaming are derived from the measured pp and tg rates.
+Decode runs on the CPU in both configurations ([decode-gemv.md](decode-gemv.md)), so the two rates
+match. At 14.66 B and Q8_0 it is slow (1.4 t/s at 8 threads), with 14.5 GiB streamed from LPDDR
+per token. Q4_K_M nearly doubles it at 8.28 GiB a token. Interactive use of this model needs a
+quantized GGUF in practice.
+
+**Interactive.** TTFT and streaming are derived from the 2026-07-04 pp2048 and tg64 rates
+[host-computed].
 
 | scenario | config | TTFT | stream | total turn |
 |---|---|---|---|---|
@@ -1681,11 +1366,10 @@ as well as the delta. The instruct and reasoning models in this record score it 
 
 **Verdict.** Phi-4 (14B) is a mid-large model for an edge board with ~9 GB of RAM free, and a
 quality step up from Phi-4-mini. F16 does not fit a 31 GB board, so use Q4_K_M + NPU. At 8.28 GiB
-it gives ~3.5x NPU prefill at length (~12 t/s) and a 2.2 t/s stream, the fastest effective turn in
-both scenarios. Where accuracy matters more than stream speed (1.4 against 2.2 t/s), Q8_0 + NPU
-(14.51 GiB) is the near-lossless option, at essentially the same prefill. On this model the NPU's
-gain is in prefill: it shortens a ~9.5-minute first-token wait on a 2048-token RAG prompt (Q8_0
-CPU) to ~2.8 minutes.
+it prefills at 21.9 t/s at pp2048 (4.0x the repacked CPU) and streams at 2.7 t/s at 4 threads.
+Where accuracy matters more than stream speed (1.4 against 2.2 t/s at 8 threads on the July
+build), Q8_0 + NPU (14.51 GiB) is the near-lossless option, at essentially the same prefill on the
+~816 MHz sweep. On this model the NPU's gain is in prefill.
 
 ### SmolVLM2-2.2B-Instruct (vision-language, mtmd)
 
@@ -1729,39 +1413,50 @@ The handoffs are the cost of the generic ggml drop-in, which offloads op by op t
 clip graph. The `rocket_siglip_encoder` native driver instead runs the whole SigLIP-B/16 encoder
 resident on the NPU, at far higher efficiency.
 
-**Prefill (prompt processing), t/s (the LLM half, the NPU's job).**
+**Prefill (prompt processing), t/s (the LLM half, the NPU's job).** At pp2048 the F16 language
+model prefills at 117.8 t/s, 4.2x the CPU [HW sweep 2026-11-01, NPU clock 928 MHz, the default
+`-b` and `-ub`]. The default F16 residency holds 130 of its 142 weights resident. Held resident
+under `ROCKET_QUANT_RESIDENT=auto` at the default `-ub`, the Q4_K_M GGUF prefills at 125.1 t/s,
+3.2x the repacked CPU. At pp128 the F16 GGUF measures 2.7x the CPU [HW sweep 2026-11-02]. The
+sweep below gives the rest of the prompt-length range and the quantized GGUFs:
 
 | test | F16 CPU->NPU | Q8_0 CPU->NPU | Q4_K_M CPU->NPU |
 |---|---|---|---|
 | pp512  | 27.97 -> **98.98** (3.5x) | 26.78 -> 47.93 (1.8x) | 27.01 -> 48.57 (1.8x) |
 | pp1024 | 29.46 -> **71.99** (2.4x) | 27.29 -> 47.11 (1.7x) | 26.25 -> 47.43 (1.8x) |
-| pp2048 | 27.45 -> **52.59** (1.9x) | 23.81 -> 39.90 (1.7x) | 24.61 -> 40.56 (1.6x) |
+| pp2048 | the 2026-11-01 figure above | 23.81 -> 39.90 (1.7x) | 24.61 -> 40.56 (1.6x) |
 
-F16 measures 98.98 t/s at pp512, against Llama-3.2-3B's 61.8. At 1.81 B this is the smallest LLM
-here, with the fewest FLOPs per matmul. The F16 speedup falls steeply with prompt length
-(3.5x->1.9x, the NPU rate 99->53). The small models show this pattern (Llama-3.2-3B, Phi-4-mini),
-and this one most strongly: per-op readback and dispatch are a large fixed fraction, and grow with
-M.
+**Conditions:** NPU clock ~816 MHz, the quantized GGUFs streamed at `-b 2048 -ub 2048` against a CPU
+backend built without the weight repack [HW sweep 2026-07-04].
+
+On that sweep F16 measures 98.98 t/s at pp512, against Llama-3.2-3B's 61.79. At 1.81 B this is the
+smallest LLM here, with the fewest FLOPs per matmul. The F16 speedup falls steeply with prompt
+length (3.5x->2.4x by pp1024). The small models show this pattern (Llama-3.2-3B, Phi-4-mini), and
+this one most strongly: per-op readback and dispatch are a large fixed fraction, and grow with M.
 
 The quantized GGUFs measure a lower multiple (~1.6-1.8x) than the ~2x of the other small dense
 models. The cause is the CPU baseline rather than a slower NPU. This model's CPU quantized prefill
 is fast (~24-27 t/s, near its F16 CPU rate), while the NPU's quantized rate (~40-48 t/s) is in line
-with the others. At pp2048 F16 (53) still leads the quantized GGUFs (~40). A quantized GGUF does not
-prefill faster than F16, and only fits in less memory ([not-mac-bound.md](not-mac-bound.md)).
+with the others.
 
-**Decode (generation), t/s (CPU-bound on both, LPDDR-bandwidth-limited).**
+**Decode (generation), t/s (CPU-bound on both, LPDDR-bandwidth-limited).** Q4_K_M decodes at
+20.70 t/s at `taskset 0xf0 -t 4` on llama.cpp b11539 [HW sweep 2026-11-01]. F16 decodes at 7.32 t/s and Q8_0 at 13.44 t/s there [HW sweep 2026-11-02]. The July build's
+8-thread pairing gives the other GGUFs:
 
 | | F16 | Q8_0 | Q4_K_M |
 |---|---|---|---|
 | tg64 CPU | 5.11 | 9.60 | 14.66 |
 | tg64 NPU | 5.19 | 9.83 | 14.54 |
 
-Decode runs on the CPU in both configurations ([decode-gemv.md](decode-gemv.md)), so the two rates
-match. At 1.81 B it measures F16 5.1 -> Q8_0 9.7 -> Q4_K_M 14.5 t/s, the last from a 1.03 GB file.
-The Q4_K_M tg64 spread is ±3.3 t/s, run-to-run variation at this decode rate on a small model, and
-NPU 14.54 against CPU 14.66 is inside it.
+**Conditions:** 8 threads, unpinned [HW sweep 2026-07-04].
 
-**Interactive.** TTFT and streaming are derived from the measured pp and tg rates.
+Decode runs on the CPU in both configurations ([decode-gemv.md](decode-gemv.md)), so the two rates
+match. At 1.81 B it measures F16 5.1 -> Q8_0 9.7 -> Q4_K_M 14.5 t/s at 8 threads, the last from a
+1.03 GiB file. The Q4_K_M tg64 spread is ±3.3 t/s, run-to-run variation at this decode rate on a
+small model, and NPU 14.54 against CPU 14.66 is inside it.
+
+**Interactive.** TTFT and streaming are derived from the 2026-07-04 pp2048 and tg64 rates
+[host-computed].
 
 | scenario | config | TTFT | stream | total turn |
 |---|---|---|---|---|
@@ -1796,16 +1491,15 @@ Autoregressive decode amplifies the ~0.5% embedding perturbation into a differen
 token path. As with Whisper, the encoder's metric is the cosine, not token identity.
 
 **Verdict.** SmolVLM2-2.2B runs end to end on the FOSS NPU stack, vision encoder and language model
-both. As the smallest model here it measures 99 t/s F16 prefill at pp512 (3.5x) and a 14.5 t/s
-Q4_K_M stream. Use Q4_K_M: a 1.03 GB language model plus a ~0.8 GB fp16 mmproj fits any board, with
-~1.7x NPU prefill and 14.5 t/s decode.
+both. As the smallest model here it measures 117.8 t/s F16 prefill at pp2048 (4.2x) and a
+20.7 t/s Q4_K_M stream at 4 threads. Use Q4_K_M: a 1.03 GiB language model plus a ~0.8 GB fp16
+mmproj fits any board, with ~1.7x NPU prefill streamed at ~816 MHz and 20.7 t/s decode.
 
 On the vision half the SigLIP encoder offload works and is faithful (cosine 0.99998), at ~1.19x.
 The SO400M dimensions (fc2 K=4304, off the %32 grid) and the static-weight-only offload rule leave
 the attention core, fc2 and every norm and activation op on the CPU. The graph takes 272
-handoffs. The remaining optimization is a resident vision-encoder path (the `rocket_siglip_encoder`
-pattern) wired into the mtmd frontend, rather than a new datatype, and it is not implemented. As it
-stands, the drop-in clip path is faithful and modestly faster than the CPU.
+handoffs. The mtmd frontend has no resident vision-encoder path of the `rocket_siglip_encoder`
+kind. The drop-in clip path is faithful and modestly faster than the CPU.
 
 ## ASR (whisper.cpp via ggml-rocket)
 
@@ -1869,7 +1563,8 @@ In ggml-rocket, `rocket_weight_key` rejects the ggml-default `leaf_`/`node_` nam
 stream per call instead of being cached. For a single-pass encoder that is correct and
 timing-neutral: the figures above are the same with or without the check. The weights in llama.cpp
 have real names (`blk.N.*`) and never match, so LLM resident caching and prefill speed are
-unchanged. Llama-3.2-3B F16 pp512 stays at ~61 t/s, within run-to-run noise of the 61.79 headline.
+unchanged. Llama-3.2-3B F16 pp512 stays at ~61 t/s, within run-to-run noise of its section's
+61.79 at ~816 MHz.
 
 **Verdict.** Whisper encoder offload is faithful to the CPU, and its speedup grows with model size:
 ~1.2x at tiny/base and ~2.1x at large-v3 and large-v3-turbo. Its transcripts are byte-identical to
@@ -1889,14 +1584,17 @@ matches this backend, and the NPU registers as an ACCEL device. Each model's run
 **Conditions:** the process on the A76 cores (`taskset -c 4-7 --threads 4`), Q8_0, `ROCKET_KACC=1`,
 warm, a fresh single process per run (no session reuse), 2026-07-21.
 
+**Not characterized:** the NPU clock of these runs.
+
 ### The offload taxonomy
 
 Encoders offload, and autoregressive decode mostly does not. Two rules set every ASR model's NPU
 speedup:
 
-- **Encode always offloads**, at 1.2x-2.7x, scaling with encoder size × audio length. A large
-  encoder (Voxtral's Whisper-large-v3, MOSS's Whisper-Medium) gains more than the small SAN-M
-  encoder (SenseVoice/FunASR).
+- **Encode always offloads**, and its speedup scales with encoder size × audio length: 1.25-1.82x
+  on the 120 s clip, and 1.00-1.80x on jfk. A large encoder (Voxtral's Whisper-large-v3, MOSS's
+  Whisper-Medium) gains more than the small SAN-M encoder (SenseVoice/FunASR), which gains
+  nothing on jfk.
 - **Autoregressive decode is M=1 GEMV and mostly stays on the CPU** ([decode-gemv.md](decode-gemv.md)).
   The exception is the batched decode-prefill over the injected audio context on long audio, a
   matmul that offloads once it is large enough.
@@ -1996,7 +1694,8 @@ cores. MOSS has no low-cost NPU optimization, because the M=1 autoregressive dec
 reduced on the NPU.
 
 The NPU's remaining headroom on MOSS is the prefill's dequantization. Raising the prefill from
-~1.25x to ~2x on 9% of decode caps the gain at ~1.10x [expected]. The fixes that remain are
+~1.25x to ~2x would save ~7 s of the NPU's 284 s [expected]. That takes the pipeline from 1.08x
+to ~1.10x the CPU, ~1.03x the current NPU configuration. The fixes that remain are
 algorithmic (speculative decode, a smaller decoder, fewer emitted tokens). Against an A76-pinned
 CPU baseline (306 s), MOSS on the NPU is 1.08x, and an untuned CPU baseline overstates that ratio.
 
@@ -2041,12 +1740,13 @@ autoregressive decode that dominates the audio LLMs stays on the CPU, as LLM dec
 
 ## Detection (tflite-rocket)
 
-Detection runs SSD-MobileDet (uint8) through the tflite-rocket external delegate on
-`librocketnpu`. A single inference is bound by the host's cube scatter and gather rather than by
-compute or submits, so its latency follows the host path. The NPU's larger gain is throughput in a
-multi-camera pool, the configuration Frigate runs. Accuracy is COCO mAP rather than perplexity.
+Detection runs quantized TFLite detectors (SSD-MobileDet, SSD MobileNet v2, EfficientDet-Lite0)
+through the tflite-rocket external delegate on `librocketnpu`. A single inference is bound by the
+host's cube scatter and gather rather than by compute or submits, so its latency follows the host
+path. The NPU's larger gain is throughput in a multi-camera pool, the configuration Frigate runs.
+Accuracy is COCO mAP rather than perplexity.
 
-**Conditions:** RK3588, `native_int8=1`. Each table states its NPU clock.
+**Conditions:** RK3588, `native_int8=1`, batch 1. Each table states its NPU clock.
 
 ### Single-stream latency
 
@@ -2060,16 +1760,16 @@ COCO mAP at parity with the CPU [HW sweep 2026-10-29]:
 | EfficientDet-Lite0 | 94.5 ms | 0.2810 | 0.2823 |
 
 **Conditions:** RK1, NPU clock 928 MHz (the 900 MHz request), governor `performance`, the process
-on the A76 cores, memory reset before every process, four rotated passes, 2026-10-29. Each latency
-is the median of 30 warm invokes on one image. mAP is over 500 COCO val2017 images. The change
-table in §"Evidence: Detection (tflite-rocket)" records how the host path came down.
+on the A76 cores, 2026-10-29. Each latency is the median of 30 warm invokes on one image. mAP is
+over 500 COCO val2017 images. The change table in the Evidence section's
+[Detection (tflite-rocket)](#detection-tflite-rocket-1) records how the host path came down.
 
 On `ondemand` with a 1.2 GHz minimum frequency and no `taskset`, the same build measures 73.5, 64.3
 and 127.8 ms. The governor lowers the clock of the cores that an offloading process leaves idle
 ([cpu-governor-and-offload.md](cpu-governor-and-offload.md)).
 
 Three host costs account for most of the difference between a per-element host path (205 ms on
-MobileDet) and the measured one:
+MobileDet at ~816 MHz) and the measured one:
 
 - Per-element cube packs. Where the conv entries pack their cubes one element at a time, that loop
   is 83% of the int8 depthwise call ([../depthwise-conv.md](../depthwise-conv.md)).
@@ -2081,28 +1781,16 @@ MobileDet) and the measured one:
 
 **Faithfulness: COCO-val mAP, the detection correctness check.** On the host path of §"Single-stream
 latency", COCO mAP over 500 val images is at CPU parity for all three detectors [HW sweep
-2026-10-29]. The table there gives them. Over 500 val images, an earlier delegate build also
-measures parity:
-
-| | mAP@[.5:.95] |
-|---|---|
-| CPU (int8 reference) | 0.3318 |
-| FOSS-NPU delegate | **0.3321** |
-
-**Conditions:** SSD-MobileDet, 500 COCO val images, the delegate build of 2026-06-21, with
-fp16-approximated depthwise, per-tensor depthwise int8 and the host requant on every conv.
-
-The Δ is +0.0002, CPU parity. On that build the two depthwise approximations cost ~0 mAP, so the
-accelerated detector is numerically as good as the CPU int8 reference.
+2026-10-29]. The table there gives them.
 
 **Throughput: multi-camera pool, aggregate detection_fps.** The pool runs one detector process per
 camera (`num_threads: 1`), live on the RK1 through Frigate's `rocket.py` detector, with four
-SSD-MobileDet cameras [HW sweep]. The `ROCKET_CPU_AFFINITY` variable pins each process to a
-distinct A76 core. The P contexts then spread across the four big cores instead of colliding on
-one.
+SSD-MobileDet cameras [HW sweep 2026-07-01]. The `ROCKET_CPU_AFFINITY` variable pins each process
+to a distinct A76 core. The P contexts then spread across the four big cores instead of colliding
+on one.
 
-**Conditions:** RK1, the NPU IRQs pinned to the big cores (`npu_set_irq_affinity.sh throughput`),
-an earlier host path on which a single inference took ~336 ms.
+**Conditions:** RK1, NPU clock ~816 MHz, the NPU IRQs pinned to the big cores
+(`npu_set_irq_affinity.sh throughput`), the 2026-07-01 delegate build.
 
 **Not characterized:** the live pool on the host path of §"Single-stream latency".
 
@@ -2115,9 +1803,10 @@ an earlier host path on which a single inference took ~336 ms.
 
 Aggregate throughput scales ~3x at P=4, with each of the four A76 cores running one detector (~73%
 busy) while the A55 cores handle video decode. Scaling is below linear (2.98x, not 4x) because a
-MobileDet inference is DRAM-bandwidth-bound in its host scatter/gather phase. Per-inference latency
-rises 338->424 ms as the four contexts contend for bandwidth. The live pool therefore stays below
-the submit-bound limit of the delegate alone, which scales 1.00, 2.17, 3.11 and 3.56x at P=1 to 4.
+MobileDet inference on that build is DRAM-bandwidth-bound in its host scatter/gather phase.
+Per-inference latency rises 338->424 ms as the four contexts contend for bandwidth. The live pool
+therefore stays below the submit-bound limit of the delegate alone, which scales 1.00, 2.17, 3.11
+and 3.56x at P=1 to 4 (~816 MHz, 2026-06-28).
 The pool needs no delegate or driver change, and it is how Frigate runs cameras (one process each).
 
 On the host path of §"Single-stream latency", the delegate's own pool test scales 3.33-3.51x at P=4,
@@ -2136,26 +1825,30 @@ path.
 
 `ort-rocket` is an ONNX Runtime execution provider (EP) on `librocketnpu`. It claims whole encoders,
 and single ConvTranspose and Conv nodes (Conv behind a cost rule), and leaves the rest of a graph on
-the CPU EP. The ort-rocket README has the full per-model table. The table below gives each model's
-single-stream speedup and faithfulness against the CPU EP [HW sweep 2026-10-27, rocket-userspace
-`88cae6d` without its Conv estimate refit, ort-rocket `fa7810f`]. The COCO mAP and mask IoU figures are from July 2026 builds.
+the CPU EP. A vision family's encoder runs one image per run, and RF-DETR runs at its nano and base
+geometries only. The ort-rocket README has the full per-model table. The table below gives each
+model's single-stream speedup and faithfulness against the CPU EP [HW sweep 2026-10-27, rocket-userspace
+`88cae6d` without its Conv estimate refit, ort-rocket `fa7810f`]. The COCO mAP and mask IoU figures are from July
+2026 builds.
 
 **Conditions:** for the vision rows, RK1, NPU clock 928 MHz (the 900 MHz request), governor
-`performance`, warm medians over four passes with the configuration order rotated. The EP and the
-CPU EP both run under `taskset -c 4-7` at 4 intra-op threads. The CPU EP runs at `ORT_ENABLE_ALL`,
-and the EP session with spinning off. The pix2pix row also has spinning off, over five passes. The
-Laya rows use ONNX Runtime's default thread pool and the default session (§"ONNX Runtime thread
-spinning").
+`performance`, one image per run, warm medians. The EP and the CPU EP both run under
+`taskset -c 4-7` at 4 intra-op threads. The CPU EP runs at `ORT_ENABLE_ALL`, and the EP session at
+`ORT_DISABLE_ALL`, which a family claim needs, with spinning off. The pix2pix row runs both sessions
+at `ORT_ENABLE_ALL` with spinning off. The Laya rows use ONNX Runtime's default thread pool and the
+default session (§"ONNX Runtime thread spinning").
+
+**Not characterized:** the Depth Anything rows under the `Conv` cost rule's current estimate.
 
 | Model | Offloaded | Single stream, x the CPU EP | Faithfulness against the CPU EP |
 |---|---|---:|---|
 | SigLIP-B/16 | plain ViT, d=768, 196 tokens | 3.05-3.09x | hidden-state cosine 0.9999868 |
 | CLIP ViT-B/16 | plain ViT, d=768, 197 tokens | 3.01-3.04x | hidden-state cosine 0.9999890 |
 | Depth Anything v2 Base | DINOv2 ViT-B, global attention over 1370 tokens | 2.25-2.28x | depth cosine 0.9999999 |
-| RF-DETR base | windowed DINOv2 ViT-S, d=384 | 1.83-1.88x | COCO mAP 0.564 against 0.564 |
-| RF-DETR nano | windowed DINOv2 ViT-S, d=384 | 1.70-1.73x | COCO mAP 0.5049 against 0.5051 |
+| RF-DETR base | windowed DINOv2 ViT-S, d=384 | 1.83-1.88x | COCO mAP 0.564 against 0.564, 200 images |
+| RF-DETR nano | windowed DINOv2 ViT-S, d=384 | 1.70-1.73x | COCO mAP 0.5049 against 0.5051, 500 images |
 | Depth Anything v2 Small | DINOv2 ViT-S, global attention over 1370 tokens | 1.63-1.65x | depth cosine 0.9999998 |
-| SAM ViT-B | ViT-Det, d=768, 4096 tokens | 1.08-1.10x | mask IoU 0.9998 |
+| SAM ViT-B | ViT-Det, d=768, 4096 tokens | 1.08-1.10x | encoder cosine 0.9999996, mask IoU 0.9998 |
 | Laya English | ModernBERT-large, d=1024, 48-512 tokens | 2.34-5.05x | 4 of 4 answers agree |
 | pix2pix generator | ConvTranspose and Conv nodes | 3.09x at 4 threads, 1.92x with the ConvTranspose claim alone | PSNR 77.3 dB |
 
@@ -2260,17 +1953,25 @@ the offloading configuration and leave the CPU-only configuration unchanged.
 #### Method
 
 - **Board and operating point.** The NPU clock boots at 200 MHz and rises under load. The clock
-  patch's 600 MHz request, set at module load with `rocket_npu_clk_hz=600000000`, runs at
-  ~816 MHz at the 0.80 V rail ([clock.md](clock.md)). The request is confirmed during the run,
-  because a sample taken while idle between repetitions measures 200. The CPU baseline runs
-  unpinned. F16 decode is LPDDR-bandwidth-bound, so the A55 cores add bandwidth, and confining the
-  process to the A76 cluster starves it ([decode-gemv.md](decode-gemv.md)).
-- **Warm discipline.** Figures are warm medians (`llama-bench -r 2` plus a discarded warmup).
-- **Flags.** Quantized GGUFs run at `-b 2048 -ub 2048`, because a quantized GGUF re-dequantizes to
-  fp16 per micro-batch. On the 2026-06-28 builds that preceded the per-model tables, `-ub 2048`
-  measured 2.1-2.25x the default `-ub 512` on Qwen3.5-9B and Qwen3.6-27B. On the 2026-08-29/30
-  builds it measures 0.91-1.53x over eleven models, model-dependent and negative on two
-  ([quant-prefill-microbatch.md](quant-prefill-microbatch.md)).
+  patch's request is set at module load with `rocket_npu_clk_hz`. The 900 MHz request runs at
+  928 MHz and the 600 MHz request at ~816 MHz at the 0.80 V rail ([clock.md](clock.md)). The
+  2026-11-01 series ran at the 900 MHz request, and the per-model sweeps of 2026-07 and 2026-08 at
+  the 600 MHz request. On the per-model sweeps the request is confirmed during the run, because a
+  sample taken while idle between repetitions measures 200.
+- **CPU threads.** The CPU prefill baseline runs at 8 threads, unpinned. On b11539 that prefills
+  4-10% faster than 4 threads on the A76 cores, on the two models compared. The 2026-11-01 decode
+  rates run at `taskset 0xf0 -t 4`. That decodes 1.32-4.22x faster than unpinned `-t 8` on every
+  one of the fifteen GGUFs measured, F16 included [HW sweep 2026-11-01]. The per-model sweeps of
+  2026-07 ran decode at 8 threads, unpinned.
+- **Warm discipline.** The per-model sweeps' figures are warm medians (`llama-bench -r 2` plus a
+  discarded warmup).
+- **Flags.** On the per-model sweeps, quantized GGUFs run at `-b 2048 -ub 2048`, because a
+  quantized GGUF re-dequantizes to fp16 per micro-batch. On the 2026-06-28 builds that preceded the
+  per-model tables, `-ub 2048` measured 2.1-2.25x the default `-ub 512` on Qwen3.5-9B and
+  Qwen3.6-27B. On the 2026-08-29/30 builds it measures 0.91-1.53x over eleven models,
+  model-dependent and negative on two ([quant-prefill-microbatch.md](quant-prefill-microbatch.md)).
+  Where the fp16 form fits RAM, `ROCKET_QUANT_RESIDENT=auto` at the default `-ub` is faster than
+  either on seven of seven models (§"Tuning gain per model").
 - **Three tables.** One tokens/s figure misleads, because decode (M=1 GEMV) stays on the CPU on
   both backends ([decode-gemv.md](decode-gemv.md)). Every model therefore reports prefill (the
   NPU's job), decode (the CPU-bound equalizer), and the interactive decomposition.
@@ -2284,16 +1985,90 @@ the offloading configuration and leave the CPU-only configuration unchanged.
 
 #### LLM and multimodal
 
-gpt-oss's faithfulness also rests on `test-rocket-moe`, not on a greedy match. The section "The
-accept boundary" and its MoE threshold table show why the greedy comparison has no resolution
-here.
+gpt-oss's faithfulness also rests on `test-rocket-moe`, not on a greedy match. The faithfulness
+table of §"gpt-oss-20b native-quant expert path and results" shows why the greedy comparison has no
+resolution here.
+
+The table is one measurement series on the RK1 [HW sweep 2026-11-01]. It ran llama.cpp b11539,
+the backend built from its 2026-10-29 state, NPU clock 928 MHz and CPU governor `performance`. Each
+configuration of a GGUF ran in its own process from a memory reset, and an NPU configuration first
+ran a discarded warm-up process. `llama-bench` ran three repetitions on the NPU and one on the CPU.
+The series made two passes, and the second reversed both the GGUF order and the configuration
+order.
+
+Each speedup is the mean of the two per-pass ratios. The two ratios of an entry agree within 2% on
+24 of 27 entries, and within 5.6% on all of them. On the MoE rows the mean of the three
+repetitions agrees with the last repetition within 0.3%. The one-time expert ingest therefore does
+not reach the timed repetitions.
+
+The 3-12 B F16 configurations stream their weights, because the default F16 residency admits only
+a weight with `K` <= 2048. SmolVLM2's F16 configuration holds 130 of its 142 weights resident under
+the default 2048 MB budget. The series does not decompose the NPU's rise over the earlier figures
+among the clock, CBUF weight streaming, the host-cost cuts and the governor. The CPU rates the
+earlier ratios imply are within about 4% of the series'.
+
+On b11539 the 8-thread CPU backend decodes the table's GGUFs at:
+
+| GGUF | 8 threads, t/s | 4 threads on the A76 cores, t/s | Ratio |
+|---|---:|---:|---:|
+| SmolVLM2-2.2B Q4_K_M | 5.90 | 20.70 | 3.51x |
+| Llama-3.2-3B Q4_K_M | 4.51 | 11.09 | 2.46x |
+| Ministral-3-3B Q4_K_M | 5.02 | 10.47 | 2.08x |
+| Phi-4-mini Q4_K_M | 4.15 | 8.77 | 2.11x |
+| Ministral-3-8B F16 | 1.21 | 1.60 | 1.32x |
+| Ministral-3-8B Q8_0 | 1.97 | 3.01 | 1.53x |
+| Ministral-3-8B Q4_K_M | 2.39 | 4.72 | 1.98x |
+| Qwen3.5-9B Q4_K_M | 1.90 | 4.00 | 2.11x |
+| Gemma-4-12B F16 | 0.80 | 1.07 | 1.33x |
+| Gemma-4-12B Q8_0 | 1.27 | 1.97 | 1.55x |
+| Gemma-4-12B Q4_K_M | 1.50 | 3.05 | 2.03x |
+| Phi-4 Q4_K_M | 1.70 | 2.74 | 1.62x |
+| DeepSeek-V2-Lite Q4_K_M | 3.20 | 13.52 | 4.22x |
+| gpt-oss-20b MXFP4 | 3.14 | 9.11 | 2.90x |
+| Qwen3.6-27B Q4_K_M | 0.79 | 1.30 | 1.65x |
+
+**Conditions:** `tg64`, three repetitions, the series' first pass, each configuration from a
+memory reset [HW sweep 2026-11-01].
+
+Why eight threads lose 1.32-4.22x is not established. The likely cause is that each decode step
+waits on its A55 threads [hypothesis].
+
+##### Revision history
+
+The table before the 2026-11-01 series:
+
+| Model | Prefill NPU t/s, pp512->2048 | x CPU, pp512->2048 | Decode Q4 t/s, 8 threads |
+|---|---:|---:|---:|
+| SmolVLM2-2.2B | 99.0 -> 52.6 | 3.5x -> 1.9x | 14.5 |
+| Llama-3.2-3B | 61.8 -> 45.5 | 3.4x -> 2.6x | 7.9 |
+| Ministral-3-3B | 57.6 -> 39.8 | 3.2x -> 2.4x | 7.7 |
+| Phi-4-mini | 55.4 -> 39.8 | 3.4x -> 2.6x | 7.0 |
+| Ministral-3-8B | 27.4 -> 21.4 | 3.8x -> 3.1x | 3.8 |
+| Qwen3.5-9B | 25.9 -> 24.9 | 3.6x -> 3.5x | 3.6 |
+| Gemma-4-12B | 17.4 -> 15.0 | 3.6x -> 3.2x | 2.5 |
+| Phi-4 (14B), Q4_K_M | 10.3 -> 11.8 | 2.9x -> 3.5x | 2.2 |
+| DeepSeek-V2-Lite, Q4_K_M | 26.0 -> 28.4 | 1.33x -> 1.53x | 7.8 |
+| gpt-oss-20b, MXFP4 | 22.0 -> 28.1 | 1.81x -> 2.38x | 7.2 |
+| Qwen3.6-27B, Q4_K_M | 5.4 -> 7.8 | 3.0x -> 4.4x | 1.1 |
+
+**Conditions:** NPU clock ~816 MHz (the 600 MHz request). Every row but the two MoE rows is a
+per-model sweep of 2026-07-01 to 2026-07-04, F16 at `-ub 512`. The quantized rows ran at
+`-b 2048 -ub 2048` against a CPU built without the weight repack. The two MoE rows are 2026-08-27
+builds on llama.cpp b10558. Decode is the CPU at 8 threads, unpinned.
 
 The gpt-oss-20b row's 22.0 and 28.1 are six-run means of the default. The DeepSeek-V2-Lite row's
-26.0 and 28.4 are the default configuration of the accept-boundary map at `M_e` 48 and 192
-(§"The accept boundary, and why the per-expert row count is the wrong handle"). The DeepSeek default
-measures 27.62-28.37 t/s at pp2048 across the 2026-08-27 runs on llama.cpp b10558, 1.28-1.31x the
-experts-on-CPU configuration of each run's session. The native-quant table of
-§"DeepSeek-V2-Lite (MLA + MoE, Q4_K_M)" gives 27.9 [HW sweep 2026-08-27].
+26.0 and 28.4 are the default configuration of the accept-boundary map at `M_e` 48 and 192.
+
+Against a CPU built with the weight repack, at pp2048, the quantized rows measured Phi-4 3.06x
+and DeepSeek-V2-Lite 1.44x. They measured gpt-oss-20b 1.90x and Qwen3.6-27B 3.21x [HW sweep
+2026-09-29, ~816 MHz, llama.cpp b11242, governor pinned,
+[cpu-repack-baseline.md](cpu-repack-baseline.md)]. A
+2026-10-09 `librocketnpu` build measured gpt-oss pp512 at 24.90-25.23 t/s and DeepSeek-V2-Lite
+pp2048 at 32.69-32.83 t/s under governor `ondemand`, NPU only.
+
+The DeepSeek default measured 27.62-28.37 t/s at pp2048 across the 2026-08-27 runs on llama.cpp
+b10558, 1.28-1.31x the experts-on-CPU configuration of each run's session. The native-quant table
+of §"DeepSeek-V2-Lite (MLA + MoE, Q4_K_M)" gives 27.9 [HW sweep 2026-08-27].
 
 #### Tuning per model
 
@@ -2318,7 +2093,18 @@ Each figure is a single fresh-process A/B run.
 #### Ministral-3-8B
 
 The combined `pp2048+tg128` llama-bench point (F16 NPU 10.3 t/s, Q4_K_M NPU 12.3 t/s) validates
-the TTFT and streaming decomposition to ~10%.
+the TTFT and streaming decomposition to ~10% [HW sweep 2026-07-01, ~816 MHz].
+
+The 2026-11-01 Q8_0 and Q4_K_M configurations hold all 235 weights resident.
+
+##### Revision history
+
+| Quantity | Earlier figure | Its conditions | Current figure |
+|---|---|---|---|
+| F16 prefill, CPU -> NPU | pp512 7.2 -> 27.4 (3.8x), pp1024 7.0 -> 24.4 (3.5x), pp2048 6.8 -> 21.4 (3.1x) | ~816 MHz, `-ub 512`, 2026-07-01 | 44.0, 41.5 and 39.6 t/s (6.1x, 5.8x, 5.8x), 2026-11-01 |
+| Decode, tg64 | CPU F16 1.37, Q8_0 2.46, Q4_K_M 3.76; NPU-loaded 1.43, 2.47, 3.83 t/s | 8 threads, unpinned, 2026-07-01 | 1.60, 3.01 and 4.72 t/s at `taskset 0xf0 -t 4`, 2026-11-01 |
+| RAG turn, 2048-token prompt -> 200 tokens | TTFT F16 CPU 299 s, F16 + NPU 96 s, Q4_K_M + NPU 118 s; totals 445, 236 and 170 s | The 2026-07-01 rates, Q4_K_M streamed | 301, 52 and 45 s; totals 426, 177 and 88 s |
+| Chat turn, 128-token prompt -> 400 tokens | F16 + NPU 285 s, Q4_K_M + NPU 112 s (TTFT 5 and 8 s) | The 2026-07-01 rates | 400 decoded tokens take 250 s at F16 and 85 s at Q4_K_M. No pp128 rate in the 2026-11-01 series |
 
 #### gpt-oss-20b
 
@@ -2327,9 +2113,9 @@ re-measured alongside the configuration under test [HW sweep, ~816 MHz, 2026-07-
 
 The 2026-08-27 prefill table comes from one board and one `.so`. Its default column is a mean of
 six runs. One run directly after a rebuild fell at the bottom of that spread, and looked like a 10%
-regression. The `ROCKET_MOE=0` control returned 13.63 at pp2048 on every binary and every
-repetition. The board had therefore not drifted, and the spread belongs to the default
-configuration.
+regression. The `ROCKET_MOE=0` control returned 13.61-13.63 at pp2048 on every binary, 13.62 in
+the run the prefill table quotes ([data/gpt-oss-20b.md](data/gpt-oss-20b.md)). The board had
+therefore not drifted, and the spread belongs to the default configuration.
 
 The July 2026 builds' default kept the routed experts on the CPU. On them, a `-ub 512` default
 figure of 13.11 t/s at pp2048 looks like a regression against the like-for-like `-ub 2048` figure
@@ -2357,74 +2143,19 @@ same day, behind a `drop_caches`, it is 6.3% and 18.0% (21.96 -> 23.34, 26.51 ->
 |---|---|---|---|
 | The default's deficit against `ROCKET_MOE=1` | 8% at pp512, 16% at pp2048 | One default run (22.82, 28.66) against `ROCKET_MOE=1` (24.81, 34.01), 2026-08-27 | `ROCKET_MOE=1` 6-13% and 18-21% faster, two sessions |
 | Experts-on-CPU speedup over the CPU | ~1.04x at pp2048 (12.62 -> 13.11 t/s) | 2026-07-02, the NPU at the default `-ub 512`, a default that kept the routed experts on the CPU | 1.15x at pp2048, `-ub 2048`, 2026-08-27 |
-| Time to first token, 2048-token prompt | CPU 162 s, NPU 156 s (~4%), and a combined `pp2048+tg128` point of CPU 11.61, NPU 12.03 t/s | 2026-07-02, the same default | ~174 s against ~73 s from the 2026-08-27 pp2048 rates. The combined point is not re-measured on the expert path |
-
-#### MoE placement threshold
-
-The map's test points are `-r 3` each, on one board and one `.so` [HW sweep 2026-08-27, RK1].
-
-Each test point's pair count follows from its distance from 1.00. The offloaded configuration
-varies ~15% run to run on DeepSeek. A test point a few percent from parity therefore needs
-repeats, and one at 1.6-2.1x does not. The pair counts:
-
-- `M_e` = 72 and 144 are means of four adjacent pairs.
-- `M_e` = 96 is a mean of eight, because it is the test point that decides where the threshold
-  goes.
-- `M_e` = 192 is a mean of two, taken either side of the rebuild.
-- Every gpt-oss test point is a single pair. Its margin from parity, 0.6-1.1, is 4-7x the same
-  spread [host-computed].
-
-At `M_e` = 96, one of the eight pairs measures 0.936 and the other seven measure 1.019-1.076. All
-eight are placement-identical (4767 resident, 0 streamed, the same ingest profile). Nothing but
-variance separates them, and there is no mechanistic ground to drop the low one. Pooled, the test
-point is 1.049, and over the seven repeats alone it is 1.065. Either way it is marginal.
-
-The `M_e` = 48 row is the null test point. The default threshold declines it, so both
-configurations are the same placement, and they agree to 0.3%. The agreement shows that the map
-measures the threshold and not run-to-run drift.
-
-The DeepSeek `M_e` = 72 test point has four pairs, every one under 1.00 and none above 0.970.
-
-### The third architecture, and the threshold declines it correctly
-
-The decline-side test points are [HW sweep 2026-08-27, RK1, ~816 MHz pinned, governor
-`performance`]. Each is `-r 3`, over three process-pairs with the configurations alternated. The
-warm-up process is discarded and the page cache dropped first.
-
-The default's 1.000x is the null test point, and shows that the threshold is what is being
-measured. The `ROCKET_MOE=0` control's spread across three processes is 0.5%, and `ROCKET_MOE=1`'s
-is 3.0%. The 17% deficit is far outside both, and the per-pair ratios barely move: 0.845 / 0.824 /
-0.832.
-
-Residency confounds the decline-side result. A partially resident configuration is strictly worse
-than a resident one. A `ROCKET_MOE=1` result above 1.05 would therefore have falsified the
-threshold outright. One result below 1.05 cannot by itself separate "the work per dispatch is too
-small" from "it cannot be held". The residency-matched pair and the residency axis separate them.
-
-The residency axis in full: `ROCKET_MOE_CACHE_MB` raises residency 62.4% -> 65.7% -> 70.8%, and the
-ratio moves 0.834 -> 0.856 -> 0.863. The 8.3 points of residency give 0.029 of ratio. Extrapolated
-linearly, full residency would measure 0.965x. Reaching parity would need 110% residency
-[extrapolated from two points, 29 points beyond the data, indicative, not measured]. On that trend
-`ROCKET_MOE=1` loses at every residency at all.
-
-The ingest ratio in the break-even table compares the earlier pack with the current one in one
-session. At the 2026-08 ingest (~32 s on DeepSeek and ~36 s on gpt-oss, a pack of ~505-545 MB/s)
-the four test points break even after ~16 300, ~4 800, ~3 800 and ~2 100 tokens. The table scales
-those counts by 0.47x and 0.51x.
-
-#### Excluded causes
-
-Bucket padding is the alternative explanation that the map sets aside. The bucket ladder rounds
-`M_e` up (64, 96, 128, 192, 256…). DeepSeek's points therefore alternate 33% padding (72 -> 96,
-144 -> 192) with none (96 -> 96, 192 -> 192). Padding predicts a sawtooth, in which each step onto
-an unpadded bucket is steeper than the step off one.
-
-The measured curve is monotone and saturating instead. Its per-row slopes across `M_e` 72 -> 96 ->
-144 -> 192 are 0.0042, 0.0037 and 0.0018. One step agrees with the sawtooth and the next
-contradicts it, while a falling slope is exactly what amortizing a fixed per-dispatch cost looks
-like. Padding is capped at ~33% by construction and is not the term that flips the sign.
+| Time to first token, 2048-token prompt | CPU 162 s, NPU 156 s (~4%), and a combined `pp2048+tg128` point of CPU 11.61, NPU 12.03 t/s | 2026-07-02, the same default | ~54 s on the NPU, 2.29x the repacked CPU, 2026-11-01. The combined point is not re-measured on the expert path |
+| Time to first token, 2048-token prompt | ~73 s on the NPU against ~174 s on the CPU | The 2026-08-27 pp2048 rates, 28.1 and 11.80 t/s, ~816 MHz, unrepacked CPU | ~54 s on the NPU, 2.29x the repacked CPU, 2026-11-01 |
+| Decode, tg64 | CPU 7.15, NPU-loaded 7.16 t/s | 8 threads, unpinned, July 2026 build | 9.11 t/s at `taskset 0xf0 -t 4`, 2026-11-01 |
+| Default prefill, pp2048 | 28.1 t/s, 2.38x the CPU | ~816 MHz, unrepacked CPU, 2026-08-27, six-run mean | 37.8 t/s, 2.29x the repacked CPU, 62 of 72 stacks placed, 2026-11-01. The 2026-08-27 table stays in the reading path as the one-build comparison of the four configurations |
 
 ### gpt-oss-20b native-quant expert path and results
+
+The 2026-10-09 `librocketnpu` build introduced the NEON group-wise int8 readback. The int8
+activation pack's group copy also stopped compiling to a byte loop. End to end, on llama.cpp
+a7fb71f with `--repack 0` and `-p 512 -n 0 -b 2048 -ub 2048`, gpt-oss measured pp512 24.90-25.23
+t/s [HW sweep 2026-10-09, ~816 MHz, governor `ondemand`]. The gain over the build before it is
+1.093-1.098x, with the ingest unchanged at 20.7-21.1 s. DeepSeek-V2-Lite at `-p 2048 -ub 2048`
+measured pp2048 32.69-32.83 t/s, with an ingest of 18.2-18.4 s.
 
 The `llama-bench` warm-up: three timed pp512 repetitions take 22.60, 22.51 and 21.27 s each, in
 order [HW sweep 2026-10-09, one run]. The run exercised 1629 experts, where a one-repetition run
@@ -2448,72 +2179,6 @@ no worse than the experts-on-CPU path, which diverges identically. That equality
 that the expert path adds nothing. On the default placement the two configurations diverge at word
 16 and word 10. They do not track each other, and one prompt cannot show that they do.
 
-### The accept side of the same floor, and the budget above it
-
-The accept-side test point is [HW sweep 2026-08-28, RK1, ~816 MHz pinned, governor `performance`].
-It is `-r 2`, over three process-triples (configuration order a balanced Latin square). The warm-up
-process is discarded and the page cache dropped before every test point. A single-test-point run
-first showed the configuration is reachable. The default's placement line is identical in all three processes,
-which dropping the page cache before every test point gives.
-
-The cost model's `P` term is required: `-ub` 4096 needs `-p` >= 4096, so the prefill work doubles
-while the per-prefill constants do not. A `P`-fixed extrapolation of the same two points gives
-~1.007, wrong by 5%.
-
-#### The auto budget and `ROCKET_MOE_CACHE_MB`
-
-The pooled `ROCKET_MOE=0` control measures 10.29 / 10.32 / 10.31 / 10.35 / 10.39 / 10.27 across six
-processes spanning seven hours. Its 1.2% spread is non-monotone, so it is the configuration's own
-spread rather than drift.
-
-The two middle budgets are not separable: 10.76 against 10.83 is 0.65% apart, against
-configurations whose own spreads are 1.1% and 1.6%. The plateau is seven processes over two
-budgets and the automatic budget is three, but 12000 and 28000 are n=1.
-
-The fall's existence rests on the plateau-to-automatic step, which has the depth. Its depth past 79
-stacks does not. Per-repetition spread grows monotonically with placement across the whole ladder
-(±0.00 -> ±1.02), a memory-pressure signature rather than anything about the offload. The two
-single-process budgets are the least trustworthy for the same reason: they were taken where the
-spread is widest.
-
-#### RAM and IOVA budgets
-
-Three runs show the RAM budget binding on gpt-oss-20b, two at the default 5 workers and one at 8.
-The window grows 1.6x between them, from 19200 to 30720 MB. The admitted set is byte-identical
-across all three, at 62 stacks, 24140 MB RAM and 15693 MB IOVA. All three announce `Bound by RAM`
-[HW sweep 2026-09-02, RK1, `-b 2048 -ub 2048 -p 2048`, raw in
-[data/ro-session/trackd17-moe-preflight.md](data/ro-session/trackd17-moe-preflight.md)].
-
-Every pre-flight decline recorded for this model says the same. That is 14 occurrences over five
-distinct budget and placement points, from an induced 11.7 GB budget to a pinned 25.7 GB one. None
-names the window.
-
-One archived gpt-oss line measures 1.3926 at 10.70 MB/expert against the others' 8.07. That is a
-different expert geometry, not a disagreement.
-
-#### Over-placement mechanism
-
-The curve is itself the evidence that the placed experts' source pages stay resident. Suppose they
-were promptly reclaimable after ingest, since they are read once and this is a prefill-only run.
-The hot set would then be `anonymous + unplaced GGUF only`, which computes to 20.6 / 21.7 / 22.4 /
-22.2 / 22.4 GB across the five budgets. That curve is flat, crosses nothing and explains nothing. A
-curve exists, so those pages are not promptly reclaimed.
-
-### The induced-scarcity ladder: the budget mechanism does not produce an inverted U
-
-The ladder tests the MoE budget hypothesis: that the per-expert admission charge covers only the
-placed experts' GGUF source bytes. The rest of a still-mapped expert GGUF is then charged to nobody,
-so the pre-flight over-places once the true hot set approaches RAM. The hypothesis has an arithmetic
-fit to five budgets on one model, and no second model on this board reaches the regime unaided.
-
-The ladder induces the scarcity on a second model. It holds `B` GiB of touched anonymous memory
-beside the run and walks `B` up. The account predicts the turn once `25.3 + B` exceeds ~31.7, which
-is at `B` ~ 6-7 GB and not at `B` = 4. The predicted collapse into the 0.42-0.97x partial-residency
-regime does not happen. Neither does the earlier turn that the "any memory pressure at all"
-alternative predicts.
-
-The ladder ran one process per step (`perf/data/moe-ballast-ladder.sh`).
-
 ### Qwen3.5-9B
 
 IQ4_XS was measured as a gap-finder for the quantized-prefill path: it tests whether the path covers
@@ -2525,6 +2190,12 @@ t/s) validates the TTFT-plus-stream decomposition to ~5%.
 
 The raw `llama-bench` and `llama-perplexity` output is in [data/qwen35-9b.md](data/qwen35-9b.md).
 
+#### Revision history
+
+| Quantity | Earlier figure | Its conditions | Current figure |
+|---|---|---|---|
+| F16 prefill, pp2048, CPU -> NPU | 7.08 -> 24.85 t/s (3.5x) | ~816 MHz, `-ub 512`, 2026-07-02 | 36.1 t/s, 4.9x, 2026-11-01 |
+
 ### Phi-4-mini-instruct
 
 The combined `pp2048+tg128` llama-bench point (F16 NPU 18.35, Q8_0 20.89, Q4_K_M 21.43 t/s) runs
@@ -2532,6 +2203,12 @@ The combined `pp2048+tg128` llama-bench point (F16 NPU 18.35, Q8_0 20.89, Q4_K_M
 optimistic.
 
 The raw output is in [data/phi4-mini.md](data/phi4-mini.md).
+
+#### Revision history
+
+| Quantity | Earlier figure | Its conditions | Current figure |
+|---|---|---|---|
+| F16 prefill, pp2048, CPU -> NPU | 15.07 -> 39.79 t/s (2.6x) | ~816 MHz, `-ub 512`, 2026-07-02 | 76.1 t/s, 5.0x, 2026-11-01 |
 
 ### Gemma-4-12B-it
 
@@ -2542,6 +2219,17 @@ the TTFT-plus-stream decomposition.
 
 The raw output is in [data/gemma4-12b.md](data/gemma4-12b.md).
 
+The 2026-11-01 Q8_0 and Q4_K_M configurations hold 298-310 of 325 weights resident.
+
+#### Revision history
+
+| Quantity | Earlier figure | Its conditions | Current figure |
+|---|---|---|---|
+| F16 prefill, CPU -> NPU | pp512 4.82 -> 17.42 (3.6x), pp1024 4.78 -> 16.09 (3.4x), pp2048 4.63 -> 14.98 (3.2x) | ~816 MHz, `-ub 512`, 2026-07-02 | 25.62, 25.31 and 24.64 t/s (5.1x, 5.2x, 5.2x), 2026-11-01 |
+| Decode, tg64 | CPU F16 0.94, Q8_0 1.75, Q4_K_M 2.44; NPU-loaded 0.94, 1.59, 2.50 t/s | 8 threads, unpinned, 2026-07-02 | 1.07, 1.97 and 3.05 t/s at `taskset 0xf0 -t 4`, 2026-11-01 |
+| RAG turn, 2048-token prompt -> 200 tokens | TTFT F16 CPU 442 s, F16 + NPU 137 s, Q8_0 + NPU 152 s, Q4_K_M + NPU 154 s; totals 655, 350, 278 and 234 s | The 2026-07-02 rates, the quantized GGUFs streamed | 434, 83 and 84 s; totals 621, 270 and 149 s |
+| Chat turn, 128-token prompt -> 400 tokens | F16 + NPU 433 s, Q4_K_M + NPU 171 s (TTFT 7 and 11 s) | The 2026-07-02 rates | 400 decoded tokens take 374 s at F16 and 131 s at Q4_K_M. No pp128 rate in the 2026-11-01 series |
+
 ### Qwen3.6-27B (hybrid Gated-DeltaNet, Q4_K_M)
 
 The combined `pp2048+tg128` point (CPU 1.70, NPU 5.57 t/s) validates the TTFT-plus-stream
@@ -2549,12 +2237,26 @@ decomposition.
 
 The raw output is in [data/qwen36-27b.md](data/qwen36-27b.md).
 
+#### Revision history
+
+| Quantity | Earlier figure | Its conditions | Current figure |
+|---|---|---|---|
+| Q4_K_M prefill, pp2048, CPU -> NPU | 1.78 -> 7.78 t/s (4.4x) | ~816 MHz, `-b 2048 -ub 2048`, CPU without the weight repack, 2026-07-03 | 11.5 t/s, 3.8x the repacked CPU at 3.0 t/s, 2026-11-01 |
+| Decode, tg64 | CPU 1.10, NPU-loaded 1.11 t/s | 8 threads, unpinned, 2026-07-03 | 1.30 t/s at `taskset 0xf0 -t 4`, 2026-11-01 |
+| First-token wait, 2048-token prompt | ~19 min on the CPU, ~4.5 min on the NPU (4.4x) | The 2026-07-03 rates | ~11 min and ~3 min, from the 2026-11-01 rates |
+
 ### Llama-3.2-3B-Instruct
 
 The combined `pp2048+tg128` llama-bench point (F16 NPU 21.06, Q8_0 21.89, Q4_K_M 22.34 t/s) runs
 below the TTFT+stream sum, which sets the margin by which the `total turn` figures are optimistic.
 
 The raw output is in [data/llama32-3b.md](data/llama32-3b.md).
+
+#### Revision history
+
+| Quantity | Earlier figure | Its conditions | Current figure |
+|---|---|---|---|
+| F16 prefill, pp2048, CPU -> NPU | 17.29 -> 45.54 t/s (2.6x) | ~816 MHz, `-ub 512`, 2026-07-03 | 85.1 t/s, 5.0x, 2026-11-01 |
 
 ### Ministral-3-3B-Instruct-2512
 
@@ -2564,6 +2266,12 @@ The combined `pp2048+tg128` llama-bench point (F16 NPU 19.10, Q8_0 20.06, Q4_K_M
 below the TTFT+stream sum, which sets the margin by which the `total turn` figures are optimistic.
 
 The raw output is in [data/ministral3-3b.md](data/ministral3-3b.md).
+
+#### Revision history
+
+| Quantity | Earlier figure | Its conditions | Current figure |
+|---|---|---|---|
+| F16 prefill, pp2048, CPU -> NPU | 16.26 -> 39.78 t/s (2.4x) | ~816 MHz, `-ub 512`, 2026-07-03 | 75.0 t/s, 4.7x, 2026-11-01 |
 
 ### DeepSeek-V2-Lite (MLA + MoE, Q4_K_M)
 
@@ -2589,16 +2297,34 @@ The raw output is in [data/deepseek-v2-lite.md](data/deepseek-v2-lite.md).
 The pp512 regression with the experts on the NPU is not the partial-residency mechanism. It occurs
 at 100% residency, with 0 experts streamed.
 
+#### Revision history
+
+| Quantity | Earlier figure | Its conditions | Current figure |
+|---|---|---|---|
+| Decode, tg64 | CPU 7.73, NPU-loaded 7.77 t/s | 8 threads, unpinned, 2026-07-03 | 13.52 t/s at `taskset 0xf0 -t 4`, 2026-11-01 |
+
 ### Phi-4 (14B)
 
 The combined `pp2048+tg128` llama-bench point (Q8_0 NPU 7.48, Q4_K_M NPU 8.29 t/s) validates the
 TTFT and stream decomposition. It runs ~10-15% below the naive TTFT+stream sum, because the 128
 tokens that `pp2048+tg128` decodes read a full KV cache.
 
+#### Revision history
+
+| Quantity | Earlier figure | Its conditions | Current figure |
+|---|---|---|---|
+| Q4_K_M prefill, pp2048, CPU -> NPU | 3.40 -> 11.79 t/s (3.5x) | ~816 MHz, `-b 2048 -ub 2048`, CPU without the weight repack, 2026-07-04 | 21.9 t/s, 4.0x the repacked CPU at 5.47 t/s, 2026-11-01 |
+
 ### SmolVLM2-2.2B-Instruct (vision-language, mtmd)
 
 The combined `pp2048+tg128` llama-bench point (F16 NPU 27.06, Q8_0 26.11, Q4_K_M 27.68 t/s)
 validates the TTFT and stream decomposition.
+
+#### Revision history
+
+| Quantity | Earlier figure | Its conditions | Current figure |
+|---|---|---|---|
+| F16 prefill, pp2048, CPU -> NPU | 27.45 -> 52.59 t/s (1.9x) | ~816 MHz, `-ub 512`, 2026-07-04 | 117.8 t/s, 4.2x, 2026-11-01 |
 
 ### ASR (whisper.cpp via ggml-rocket)
 
@@ -2663,12 +2389,20 @@ The 500-image COCO mAP is from tflite-rocket's `tools/coco_map.py`. The submit-b
 delegate alone is from `tools/pool_throughput.py`.
 
 The 2026-10-29 latencies are medians over four passes, one process per configuration, with the
-governor order and the model order rotated. On 2026-09-28, at ~816 MHz, the single-stream table
+governor order and the model order rotated. Memory was reset before every process. On 2026-09-28, at ~816 MHz, the single-stream table
 measured 55.7, 52.1 and 101.3 ms on `performance` and 75.8, 70.5 and 135.0 ms on `ondemand`. Its mAP
 over 100 images was 0.4040 against the CPU's 0.3980 (MobileDet), 0.3229 against 0.3215 (SSD
 MobileNet v2) and 0.3023 against 0.2996 (EfficientDet-Lite0).
 
+The delegate build of 2026-06-21 ran fp16-approximated depthwise, per-tensor depthwise int8 and
+the host requant on every conv. It measured SSD-MobileDet mAP@[.5:.95] over 500 COCO val images at
+0.3321, against the CPU int8 reference's 0.3318. The Δ is +0.0002, so on that build the two
+depthwise approximations cost ~0 mAP.
+
 ### ONNX Runtime (ort-rocket)
+
+Each vision figure in the table is a warm median over four passes with the configuration order
+rotated, and the pix2pix row over five.
 
 The 2026-10-10 build shortened the head range's host passes. Against the 2026-10-09 build, SAM moved
 1.02-1.03x -> 1.03-1.05x, while the ratio of every family on the head range rose 5-17%. The

@@ -46,8 +46,10 @@ Software that drives `rocket` depends on three behaviors of the `drm_rocket_*` i
   deadline 1 ms in the past returns promptly with `-EBUSY` on an in-flight job, with no hang.
   `librocketnpu`'s `rocket_bo_prep` takes a relative timeout and converts it, so a generous
   relative wait completes the job.
-- **`FINI_BO`.** It always succeeds, and syncs caches back for the device. A failure is a real
-  error, not a routine return.
+- **`FINI_BO`.** It syncs caches back for the device and returns 0 for a valid handle with its
+  reserved field at zero. Its only failures are `-EINVAL` for a nonzero reserved field and
+  `-ENOENT` for an unknown handle [source-confirmed, `rocket_gem.c`], so a failure is a caller
+  error.
 
 ## Per-fd IOVA windows
 
@@ -160,8 +162,8 @@ On that driver, workloads that map through the kernel's generic DMA-mapping path
 window, and the driver's own allocator cannot reclaim it. The consumer is the mapping path, not
 elapsed time. One `llama.cpp` 2048-token prefill (Llama-3.2-3B F16) with
 `RKNPU_MEM_IOMMU_LIMIT_IOVA_ALIGNMENT` clear costs the shared domain 5-11 of its 31 buffers of
-128 MB in 153 s. The loss outlives the process. With that flag set, which is the
-`librocketnpu` provider's default, the identical run costs zero [HW sweep, RK3588, `rknpu` 0.9.8,
+128 MB in 153 s. The loss outlives the process. With that flag set, which `rknpu-submit` does by
+default (`RKNPU_IOVA_TIGHT=1`), the identical run costs zero [HW sweep, RK3588, `rknpu` 0.9.8,
 2026-08-25].
 
 The domain outlives every process that used it, so the loss persists until a reboot or a
@@ -183,10 +185,10 @@ while the flag reads as set [source-confirmed].
 ### The IOVA rcache mechanism
 
 The loss comes from the kernel's IOVA rcache, which the driver reaches by mixing two allocators
-on one domain. Which allocator each path uses decides where a freed range goes:
+on one domain. Each path's allocator decides where a freed range goes:
 
 - With the flag set, the driver takes the tight path. It calls `alloc_iova()` / `free_iova()`,
-  which are the rbtree directly.
+  which allocate from the IOVA rbtree directly.
 - With the flag clear, the driver takes the generic path. The mapping falls to the generic
   `dma_map_sg()`, hence `alloc_iova_fast()` / `free_iova_fast()`, which go through the per-CPU
   IOVA rcache.
@@ -250,8 +252,8 @@ fails.
 
 The generic path is the vendor default. `RKNPU_MEM_IOMMU_LIMIT_IOVA_ALIGNMENT` is an opt-in bit at
 buffer creation. A userspace that does not set it, which is the stock path, takes the generic
-path and loses address space. The `librocketnpu` provider sets the flag by default, and so
-allocates on the tight path.
+path and loses address space. The `rknpu-submit` provider sets the flag by default
+(`RKNPU_IOVA_TIGHT=1`), and so allocates on the tight path.
 
 A large allocation failure on the generic path is transient rather than structural. A retry at a
 smaller size is usually served, which is what `librocketnpu` does for the chained attention path.
@@ -309,8 +311,9 @@ The proprietary RKNN stack exposes core selection through a `core_mask` submit f
 `librocketnpu`'s matmul splits N (output channels) across worker threads, each with its own fd.
 Each worker runs the unchanged single-fd matmul on a contiguous column slice and scatters its
 dense result into the strided output. The library fans resident weights across the worker fds,
-so each fd's slice fits its own 4 GB window. The default worker count is 5 (the measured knee).
-See the `rocket-userspace` library's `rocket_matmul_mt.c` and `rocket_prepacked*.c`.
+so each fd's slice fits its own 4 GB window. The caller sets the worker count, clamped to 1-8,
+and `ggml-rocket`'s default is 5 (the measured knee). See the `rocket-userspace` library's
+`rocket_matmul_mt.c` and `rocket_prepacked*.c`.
 
 The native int8/uint8 direct conv uses the same pattern (`rocket_conv_pool` /
 `rocket_conv2d_int8_mt` in `rocket_conv.c`). A conv's tiling already decomposes it into
@@ -365,10 +368,9 @@ out. The detection path therefore needs the throughput pool (model 2), not more 
 
 For such a layer, the per-core setting with an effect is IRQ affinity. Set CPU/DDR/NPU to max
 frequency, pin the app to a CPU big core, and bind the three NPU interrupts to that big core
-(`/proc/irq/<npu-irq>/smp_affinity_list`). App `taskset` alone leaves the per-submit overhead
-unchanged. On llama.cpp prefill, whole-process `taskset 0xf0` is a host-side 1.05-1.13x
-[HW sweep, RK1, ~816 MHz] ([data/tuning-matrix.md](data/tuning-matrix.md) §"Pinning to the
-A76s"). On a path bound by submit overhead, the IRQ binding gives a large reduction
+(`/proc/irq/<npu-irq>/smp_affinity_list`). On llama.cpp prefill, whole-process
+`taskset 0xf0` is a host-side 1.05-1.13x [HW sweep, RK1, ~816 MHz]
+([data/tuning-matrix.md](data/tuning-matrix.md) §"Pinning to the A76s"). On a path bound by submit overhead, the IRQ binding gives a large reduction
 (§"IRQ affinity").
 
 ## IRQ affinity
@@ -381,13 +383,15 @@ The default IRQ affinity services the NPU completion IRQ on an A55 little core. 
 to an A76, and running the waiter on that core, reduces the per-submit overhead.
 
 On kernels 7.1.0 and 7.2.9 the NPU GIC IRQs are 69 = `fdab0000.npu`, 70 = `fdac0000.npu` and 71 =
-`fdad0000.npu`. Their GIC numbers are 142/143/144, not the 110/111/112 sometimes quoted
-elsewhere. The numbers are SoC- and kernel-specific, so read `/proc/interrupts` on the target
-kernel. The RK3588 CPU map is cpu0-3 = A55 little at 1.8 GHz and cpu4-7 = A76 big at 2.4 GHz.
+`fdad0000.npu`. Their GIC interrupt IDs are 142/143/144, the device tree's SPI 110/111/112 plus
+32 [source-confirmed, `rk3588-base.dtsi`]. The Linux IRQ numbers are SoC- and kernel-specific,
+so read `/proc/interrupts` on the target kernel. The RK3588 CPU map is cpu0-3 = A55 little at
+1.8 GHz and cpu4-7 = A76 big at 2.4 GHz.
 
-The default IRQ affinity is the all-CPUs mask `0-7`. GICv3 routes a multi-CPU level IRQ to the
-lowest CPU in the mask, which is cpu0, an A55 little core. By default, the completion handler and
-the waiter wakeup therefore both run at 1.8 GHz. The median per-submit overhead [HW sweep]:
+The default IRQ affinity is the all-CPUs mask `0-7`. The kernel's GICv3 driver routes an
+interrupt to one CPU, the first online CPU in its mask [source-confirmed, `irq-gic-v3.c`
+`gic_set_affinity()`]. At the default mask that is cpu0, an A55 little core. By default, the
+completion handler and the waiter wakeup therefore both run at 1.8 GHz. The median per-submit overhead [HW sweep]:
 
 | config | IRQ affinity | app taskset | blocking median µs/submit | busy-poll median µs/submit |
 |---|---|---|---:|---:|
@@ -398,8 +402,7 @@ the waiter wakeup therefore both run at 1.8 GHz. The median per-submit overhead 
 The table shows two results:
 
 - Co-locating the waiter with the IRQ on one A76 gives most of the reduction, 29.75 -> 14.58 µs.
-  Paired within each pass, the ratio is 0.49. Moving the IRQ alone, with the app floating, gives
-  29.75 -> 25.67 µs.
+  Moving the IRQ alone, with the app floating, gives 29.75 -> 25.67 µs.
 - Busy-polling the fence (§"Busy-polling the completion fence") reaches about the co-located
   figure from either of the other bindings, 14.9-16.0 µs.
 
@@ -426,11 +429,9 @@ one handler.
 `rocket-userspace/tools/npu_set_irq_affinity.sh` applies the recommended binding. The binding
 is a runtime system setting, with no driver or library change. It complements the IOMMU
 keep-attached patch (§"Per-job IOMMU cost"), which removes ~20 µs of kernel work per submit.
-The binding removes the little-core wakeup latency per submit. On a module that keeps the IOMMU
-domain attached, the co-located binding measures 14.6 µs per submit, against 29.8 µs at the
-default affinity (§"IRQ affinity").
-The binding reduces the overhead on every path with many small submits, and it is flat on a
-single big tiled prefill matmul (one submit per batch of up to 64 tiles).
+The binding removes the little-core wakeup latency per submit. It reduces the overhead on every
+path with many small submits, and it is flat on a single big tiled prefill matmul (one submit
+per batch of up to 64 tiles).
 
 ## Busy-polling the completion fence
 
@@ -455,7 +456,8 @@ need a kernel-side poll (a `patches/rocket` change).
 
 > [!NOTE]
 > Pin the A76 governors to `performance` before timing busy-polling. Unpinned, the idle A76
-> parks between submits and swamps the signal.
+> parks between submits and swamps the signal
+> ([cpu-governor-and-offload.md](cpu-governor-and-offload.md)).
 
 Blocking wait against busy-polling, in one process [HW sweep]:
 
@@ -487,8 +489,8 @@ core) and reduces the same term.
 
 ## Per-job IOMMU cost
 
-**Conditions:** RK3588, kernel 7.1.0-1-arm64, NPU clock ~816 MHz, stock `rocket` against
-patch-5, 2026-06-22.
+**Conditions:** RK3588, kernel 7.1.0-1-arm64, NPU clock ~816 MHz, stock `rocket` (interface
+0.0.0) against the same module with the keep-attached patch, 2026-06-22.
 
 Stock `rocket` calls `iommu_attach_group()` in `rocket_job_run()` on every `drm_sched` job. It
 calls `iommu_detach_group()` in `rocket_job_handle_irq()` on every completion, and on reset.
@@ -555,7 +557,7 @@ order is also where the upstream RFC puts the detach.
 With the patch, the stall timeouts are 0, against 60 without it, and either module logs the same
 30 `NPU job timed out` lines [HW sweep].
 
-The RK3576 reaches the same detach and logs the same stall timeouts, and it does not `WARN`.
+The RK3576 reaches the same detach and logs the same stall timeouts, but does not `WARN`.
 The two SoCs differ in the consequence, not in the trigger.
 
 ## Batched submit
@@ -568,8 +570,8 @@ one kick and one completion IRQ per tile. The submit, the job fence and the wait
 per job, and `librocketnpu`'s matmul puts up to 64 tiles in a job.
 
 The BSP `rknpu` driver fires a whole task list in one kick, through a self-chain
-[HW sweep, source-confirmed: `rocket-userspace/src/rocket_matmul.c`]. The N tasks' regcmds are
-laid contiguously in one buffer. Each task ends in an `OP_ENABLE`, and its trailer contains the
+[HW sweep, source-confirmed: `rknpu_job.c` `rknpu_job_subcore_commit_pc()` in `rknpu` 0.9.8].
+The N tasks' regcmds are laid contiguously in one buffer. Each task ends in an `OP_ENABLE`, and its trailer contains the
 next task's address (an embedded `PC_BASE_ADDRESS` op) and stream length (its
 `PC_REGISTER_AMOUNTS` op). The kernel programs only the first task's
 `PC_DATA_ADDR`/`PC_DATA_AMOUNT`, sets `PC_TASK_CON.TASK_NUMBER = N`, and kicks once. The PC
@@ -617,8 +619,8 @@ reports interface 1.1 or later honors the flag, and `rocket_batched_submit_suppo
 flagged job with a gapped layout times out, recoverably.
 
 The change removes `N−1` of every `N` per-task IRQ round-trips. They fall in the `wait` term,
-the CPU-blocked-on-fence share that dominates prefill ([not-mac-bound.md](not-mac-bound.md)),
-and the saving does not depend on the datatype. Per-task against chained [HW sweep]:
+the CPU-blocked-on-fence share that dominates prefill ([not-mac-bound.md](not-mac-bound.md)).
+The saving does not depend on the datatype. Per-task against chained [HW sweep]:
 
 | Case | `wait`, per-task -> chained | Throughput |
 |---|---|---|
@@ -633,9 +635,10 @@ The chained output has cosine 1.000000 against the per-task path, and the reside
 numerically identical to its gapped run. The gain is modest because the matmul is compute- and
 readback-bound at this operating point. It is larger on a path bound by submit overhead.
 
-Every fp16 matmul submit path chains: the one-shot path, the K-accumulation path that prefill
-takes, and the flash-attention batch. The K-accumulation path chains the tiles inside one K
-step, and its K steps still fence in order. The resident int8 and int4 matmuls submit gapped
+`ROCKET_BATCH_SUBMIT=1` chains every fp16 matmul submit path: the one-shot path, the
+K-accumulation path that prefill takes, and the flash-attention batch. The mainline provider
+leaves it off by default. The K-accumulation path chains the tiles inside one K step, and its K
+steps still fence in order. The resident int8 and int4 matmuls submit gapped
 ([../encodings/regcmd-task-model.md](../encodings/regcmd-task-model.md)).
 
 ### Scope
@@ -661,8 +664,9 @@ register banks per block). It lets the PC stage task `i+1`'s registers while tas
 
 Within a core, each pipeline block raises a completion bit in the NPU interrupt-status register.
 The bits are distinct from the three per-core GIC IRQs above. The full 14-bit bitmap is from
-phhusson's `rknpu-reverse-engineering` `hello2.c`, corroborated against the BSP `rknpu` driver
-(see [SOURCES.md](../SOURCES.md)):
+phhusson's `rknpu-reverse-engineering` `hello2.c` (see [SOURCES.md](../SOURCES.md)). The BSP
+`rknpu` driver's `rknpu_fuzz_status()` (`rknpu_job.c` in 0.9.8) corroborates it: it treats bits
+0-11 as six pairs, one per block:
 
 | bits | block |
 |---|---|
@@ -680,10 +684,12 @@ The bitmap shows two things:
 - The PPU that `npu_hw.h` defines is a real, separately completing block, with its own IRQ bits
   (10/11). [ppu-pooling-not-detile.md](ppu-pooling-not-detile.md) covers its use as a de-tile
   engine.
-- "group 0 / 1" means two register banks per block, the ping-pong that the BSP exposes as
-  `RKNPU_JOB_PINGPONG`. With two register sets per block, the next task's registers can be staged
-  in the idle bank while the current task runs. The banks are the hardware basis for any
-  register-staging or task-persistence approach to the per-submit overhead.
+- "group 0 / 1" means two register banks per block [hypothesis], the ping-pong that the BSP
+  exposes as `RKNPU_JOB_PINGPONG`. That flag sets `PC_TASK_CON.TASK_PP_EN` [source-confirmed:
+  `rknpu_job.c` `rknpu_job_subcore_commit_pc()` in `rknpu` 0.9.8]. With two register sets per
+  block, the next task's registers can be staged in the idle bank while the current task runs.
+  The banks are the hardware basis for any register-staging or task-persistence approach to the
+  per-submit overhead.
 
 On the `rocket` path the kernel controls the IRQ configuration, so this bitmap is informational.
 The `int_mask`/`int_clear` fields are in the BSP `rknpu_task`, not in the regcmd that userspace
@@ -700,9 +706,10 @@ The throughput pool is model 2 above: P independent contexts, each with its own 
 Pool depth P is the swept variable.
 
 Software must pin each pool context to a distinct A76 core. The library's auto-affinity pins
-worker `idx` to `big[idx % n_big]`, and a one-thread context (the natural pool unit) always has
-`idx == 0`. Left to the default, every independent pool context pins to the same big core
-(cpu4), and their host pack/readback serialize there [HW sweep].
+worker `idx` to `big[(base + idx) % n_big]`, where `base` is a per-thread value that is 0 unless
+the thread sets it with `rocket_affinity_set_base()`. A one-thread context (the natural pool
+unit) always has `idx == 0`. Left to the default, every independent pool context pins to the
+same big core (cpu4), and their host pack/readback serialize there [HW sweep].
 
 | workload | pool affinity | best speedup vs P=1 | where |
 |---|---|---|---|
@@ -719,16 +726,17 @@ The sweep shows three results:
 - Compute-bound ops gain less (~2.7x, approaching the 3-core NPU ceiling). There is little host
   bubble to hide, so the cores are the limit.
 - The limit is the host core and the submit path, not the IRQ core. Applying the model-2 IRQ
-  binding (3 NPU IRQs -> cpu5/6/7) raised the P=1 baseline (the −47% per-submit overhead
-  reduction) and left the aggregate plateau unchanged. The colliding pool's limit is therefore
-  the shared host core, not IRQ servicing.
+  binding (3 NPU IRQs -> cpu5/6/7) raised the P=1 baseline and left the aggregate plateau
+  unchanged. The colliding pool's limit is therefore the shared host core, not IRQ servicing.
 
 ### Delegate recipe
 
 For the throughput pool:
 
 - Use one fd/context per pool instance, with P ~4 (= the A76 count).
-- Set `ROCKET_CPU_AFFINITY=off` and pin each instance to a distinct big core.
+- Pin each instance to a distinct big core. For pools in one process, set a distinct
+  `rocket_affinity_set_base()` on each pool's thread. For one process per instance, set
+  `ROCKET_CPU_AFFINITY` to that instance's core, or set it to `off` and pin the process.
 - Apply the throughput IRQ binding (`npu_set_irq_affinity.sh throughput`).
 
 ## Evidence
@@ -796,8 +804,8 @@ The table's run is `submit_overhead_rocket 8 64 16 3000`, one discarded warm-up 
 rotated passes per configuration, under a lock that excludes other NPU users. The
 `/proc/interrupts` delta of every run confirms its routing: cpu0 at the default mask, cpu7 when
 bound. Only cores 0 and 1 took jobs. The blocking medians range 29.75-33.54 (default),
-25.67-29.46 (IRQ on cpu7) and 14.58-20.13 µs (co-located), and the co-located-to-default ratio
-0.435-0.677 over the passes [HW sweep, RK1, 2026-10-12].
+25.67-29.46 (IRQ on cpu7) and 14.58-20.13 µs (co-located). Paired within each pass, the
+co-located-to-default ratio is 0.49, over a range of 0.435-0.677 [HW sweep, RK1, 2026-10-12].
 
 Under the as-found `ondemand` governor, five or six passes give a blocking median of 36.2 µs at
 the default affinity (25.1-40.6). Co-located, they give 23.3 µs (17.5-23.6). Busy-polling gives 20.9 and

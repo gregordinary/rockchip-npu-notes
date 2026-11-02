@@ -6,18 +6,26 @@ rate comes from a PVTPLL, a ring oscillator whose frequency follows the rail vol
 requested rate is therefore not the clock frequency (§"The requested rate and the physical
 clock").
 
-At the 0.80 V rail, the 600 MHz request runs at ~816 MHz and gives ~1.43x on prefill over the
-boot clock [HW sweep]. The operating point is the 900 MHz request, which runs at 928 MHz at
-that rail (§"The operating point"). Erratum E10 (§"Raising the clock on an unpowered domain")
+These notes measure at the 900 MHz request, which runs at 928 MHz at the 0.80 V rail
+(§"The operating point"). There Gemma-4-12B F16 prefill runs 1.66x as fast as at the boot
+clock [HW sweep 2026-11-02]. Erratum E10 (§"Raising the clock on an unpowered domain")
 restricts where software can set the rate.
-
-**Conditions:** RK3588 (Turing RK1), mainline `rocket` with the clock patch, NPU clock 198 MHz
-against ~816 MHz (the 600 MHz request at a 0.80 V rail), 2026-06-15, with the matmul's
-K-accumulation on the host.
 
 **Not characterized:** a clock above 1019 MHz, which needs a rail above the vendor's maximum,
 and this chip's OTP PVTPLL ceiling. Sustained operation above 928 MHz, or with the NPU above
 49 °C, is not characterized either (§"Applicability").
+
+**Conditions:** RK3588 (Turing RK1), `rocket` 1.3.0 with the clock patch, NPU clock 198 MHz
+against 928 MHz (the 900 MHz request at a 0.80 V rail). The streamed fp16 plan with
+K-accumulation on the NPU, llama.cpp b11539 at `-t 8`, CPU governor `performance`, 2026-11-02.
+
+| Workload | 198 MHz | 928 MHz | Speedup |
+|---|---:|---:|---:|
+| Gemma-4-12B F16 `pp2048`, the clock changed alone | 14.80-14.85 t/s | 24.59 t/s | 1.66x |
+
+**Conditions:** RK3588 (Turing RK1), mainline `rocket` with the clock patch, NPU clock 198 MHz
+against ~816 MHz (the 600 MHz request at a 0.80 V rail), 2026-06-15, with the matmul's
+K-accumulation on the host.
 
 | Workload | 198 MHz | ~816 MHz | Speedup |
 |---|---:|---:|---:|
@@ -67,7 +75,7 @@ at 928 MHz, the vendor's own 900 MHz point.
 
 The clock patch requests 900 MHz, and the voltage patch holds the rail at its 0.80 V boot
 voltage (§"Voltage coupling"). The NPU therefore runs at 928 MHz under load. Ring length 12 at
-0.80 V is the vendor's 900 MHz operating point and the upstream DVFS series' one
+0.80 V is the vendor's 900 MHz OPP and the upstream DVFS series' one
 (§"The upstream DVFS series") [source-confirmed: BSP `rk3588s.dtsi`, HW sweep 2026-10-19].
 
 Over 15 minutes of continuous convolution and matmul work, the clock measures 922-928 MHz. The
@@ -89,7 +97,7 @@ patches, `RM` 4 (reset), governor `ondemand`, from ~37 °C idle, 2026-10-19.
 > [source-confirmed: TF-A v2.12 `rk3588_clk.c`]. `clk_get_rate()`, `clk_summary` and a driver's
 > read-back log all report the request, not the frequency.
 
-NPU GRF words `0x4c` and `0x50` contain the PVTPLL monitor's count, and the TRM does not list
+NPU GRF words `0x4c` and `0x50` contain the PVTPLL monitor's count, but the TRM does not list
 them. BL31 programs the count window through `NPU_GRF_PVTPLL_CON1` (`cal_cnt`) as 24 cycles of
 the 24 MHz reference, 1 µs. The count is therefore the frequency in MHz [HW sweep 2026-10-19].
 Matmul device time across the GPLL and PVTPLL paths confirms the unit (§"Evidence").
@@ -110,7 +118,7 @@ benchmark run.
 The SRAM read-margin field `RM`, bits [4:2] of `NPU_GRF_MEM_CON0`, `MEM_CON1` and `MEM_CON2`,
 resets to 4 [TRM]. `rocket` never writes it, and it reads 4 at every rate from 198 to
 1019 MHz [live 2026-10-19]. The vendor driver programs it from the rail voltage at each runtime
-resume [source-confirmed: BSP `rknpu_devfreq.c`]. Its table assigns 4 to no NPU operating point
+resume [source-confirmed: BSP `rknpu_devfreq.c`]. Its table assigns 4 to no NPU OPP
 [source-confirmed: BSP `rk3588s.dtsi`]:
 
 | Rail | `RM` |
@@ -153,7 +161,8 @@ NPU is compute-bound at full clock.
 
 ### The size of the gain
 
-Prefill gains 1.43x for a 4.1x clock step, 198 to ~816 MHz. At ~816 MHz the NPU `wait`
+Prefill gains 1.66x for a 4.7x clock step, 198 to 928 MHz, on the streamed plan. The 2026-06
+library gained 1.43x for a 4.1x step, 198 to ~816 MHz. At ~816 MHz the NPU `wait`
 collapses, and the other limits take over: host readback and per-job dispatch, both
 independent of the NPU clock. The matmul's underlying limit is DMA and dispatch rather than
 compute ([not-mac-bound.md](not-mac-bound.md)). Raising the clock speeds up only the `wait`,
@@ -209,9 +218,10 @@ change it only while every core is runtime-suspended, so that no core runs acros
 ## Operation at the raised clock
 
 The 600 MHz request at 0.80 V (~816 MHz) is safe: int8 stays bit-exact, and temperatures stay
-at 48-57 °C with no throttle [HW sweep]. With the datapath optimizations of
-[not-mac-bound.md](not-mac-bound.md) §"Datatype-independent prefill optimizations" on, Gemma
-pp2048 at ~816 MHz is ~15 t/s. The 11.40 t/s of the table above predates them.
+at 48-57 °C with no throttle [HW sweep]. At the 928 MHz operating point, Gemma-4-12B F16
+prefills at 24.6 t/s at pp2048 on llama.cpp b11539 [HW sweep 2026-11-01]. That run has the
+datapath optimizations of [not-mac-bound.md](not-mac-bound.md) §"Datatype-independent prefill
+optimizations" on, and the 11.40 t/s of the table above predates them.
 
 ### Clock duty cycle under a bursty workload
 
@@ -301,8 +311,9 @@ If a core stays `active`, reboot instead of unloading the module.
 
 ## The per-core park of a shared clock
 
-The three NPU cores share one clock, but the clock patch without its refcount
-(§"The refcounted park") parks it per core [HW sweep, source-confirmed]. The clock
+The three NPU cores share one clock. The clock patch without its refcount
+(§"The refcounted park") parks it per core [HW sweep, source-confirmed: `rocket_drv.c` of
+kernel 7.1 with that version of the patch applied]. The clock
 `scmi_clk_npu` is a single SCMI clock (id 6) with `fdab0000.npu`, `fdac0000.npu` and
 `fdad0000.npu` all as consumers: one rate row, three consumers in `clk_summary`. But
 `rocket_device_runtime_suspend()` checks only `rocket_job_is_idle(&rdev->cores[core])`, which
@@ -347,14 +358,15 @@ request (§"Rates from ~816 to 1019 MHz").
 | | idles at 198 MHz? | flaps mid-run? | parks before power-down? | safe above ~816 MHz? |
 |---|---|---|---|---|
 | `auto`, 50 ms (default) | yes | **yes, 4.8x** | yes | not validated |
-| `control=on` (the pin) | **no** | no | **no** | **no, hard-locks** |
+| `control=on` (the pin) | **no** | no | **no** | **no**: an `rmmod` at the 900 MHz request hard-locks |
 | `auto`, raised delay | yes | no | yes | yes, to 1019 MHz |
 
 **Conditions:** the last column's raised delay is the clock patch's 1000 ms
 `rocket_autosuspend_ms`, with the refcounted park, 2026-10-19.
 
 The pin still works at the 600 MHz request and remains usable as a measurement aid. It gives
-nothing the raised delay does not, and it is never safe above ~816 MHz.
+nothing the raised delay does not, and an `rmmod` under it hard-locks the board at the 900 MHz
+request.
 
 ### Cost on a CPU-bound graph
 
@@ -419,17 +431,9 @@ child-island transition is safe to 1019 MHz (§"Raising the clock on an unpowere
 ### The CPU governor
 
 The CPU governor is a second frequency setting that affects NPU measurements, independently of
-the NPU clock. The per-submit overhead is CPU-side: the submit `ioctl` plus the blocking wait
-on the completion IRQ. On an idle board an `ondemand` or `interactive` governor therefore
-under-clocks the A76 cores between submits, and inflates any submit-bound number. An external
-RKNN-path measurement shows the effect with the NPU clock fixed
-([not-mac-bound.md](not-mac-bound.md) §"Per-submit overhead reductions") [external,
-proprietary path].
-
-For a per-submit overhead measurement, pin the CPU cores to `performance` as well. A llama.cpp
-prefill needs the pin too. At pp2048 on two `Q4_K_M` models, NPU prefill measures
-1.079-1.130x faster pinned than under `ondemand` [HW sweep 2026-09-29]
-([cpu-governor-and-offload.md](cpu-governor-and-offload.md) §"LLM prefill").
+the NPU clock. The per-submit overhead and the host half of an offloaded workload run on the
+CPU. Pin the CPU cores to `performance` for a per-submit overhead measurement and for a
+llama.cpp prefill ([cpu-governor-and-offload.md](cpu-governor-and-offload.md)).
 
 ## Firmware (BL31): rate setting and the OTP ceiling
 
@@ -490,22 +494,20 @@ clock rates as a non-standard min/max/step triplet [boot log].
 
 ### Clock handling in stock `rocket`
 
-Stock upstream `rocket` has no clock handling at all. In android-mainline
+Stock upstream `rocket` has no clock handling at all. In
 `drivers/accel/rocket/rocket_drv.c`, runtime resume and suspend call only `clk_bulk_*`
 (enable/disable). There is no `clk_set_rate`, no module param, and no devfreq/OPP. The
 `rocket_npu_clk_hz` ramp comes entirely from the clock patch. An unpatched mainline kernel
-leaves the NPU at 198 MHz regardless [android-mainline source, v7.1 source].
+leaves the NPU at 198 MHz regardless [source-confirmed: `rocket_drv.c` in android-mainline and
+in Linux v7.1].
 
 ### The upstream DVFS series
 
-An upstream series adds DVFS to `rocket` for the RK3588 NPU. It is Igor Paunovic's
-"accel/rocket: DVFS for the RK3588 NPU", v2, patchwork series 1171089, 2026-09-22, 11 patches
-on drm-misc-next. Patches 6-11 add:
-
-- A binding with the `rk3588-opp.dtsi` table on all three cores under `opp-shared`
-- A boot-rate restore with a `.shutdown` hook
-- devfreq `simple_ondemand` at a 50 ms window
-- A cooling device with an 85 C passive trip
+An upstream series, "accel/rocket: DVFS for the RK3588 NPU" (v2, patchwork series 1171089),
+adds DVFS to `rocket` for the RK3588 NPU. [../SOURCES.md](../SOURCES.md) §"DVFS series" lists its
+patches. It scales the clock with devfreq `simple_ondemand` at a 50 ms window over the
+`rk3588-opp.dtsi` table, which all three cores share. A cooling device adds an 85 °C passive
+trip.
 
 The series sets the clock in the runtime-PM callbacks, so it replaces the clock and voltage
 patches rather than combining with them. Above the boot rate it holds every core
@@ -627,6 +629,12 @@ One 1000 MHz run measured 19.68 ms and is excluded from the 23.15 ms mean. With 
 Under load, 60 samples of the requested rate across a full prefill were all 200 MHz
 [source-confirmed, HW sweep].
 
+The 2026-11-02 pair set the rate through `rocket_npu_clk_hz` alone. For the 198 MHz arm the
+parameter was written to 0 after every core had suspended. The clock then stayed at the parked
+200 MHz request. The 928 MHz arm wrote 900000000 the same way. Two passes ran with the arm
+order rotated, each process after a memory reset and a discarded warm-up process,
+`llama-bench -r 2`.
+
 ### Clock duty cycle under a bursty workload
 
 The 1 Hz sampler is `rocket-userspace/tools/npu_bench_env.sh`, which reads the requested rate.
@@ -682,3 +690,4 @@ with host K-accumulation.
 | 2026-06-15 | 900 MHz gives no speedup over 600 MHz, `wait` 61 against 62 | Requested rates, 0.80 V rail | 928 against ~816 MHz, a 1.13x clock step, 1.044x on matmul device time |
 | 2026-09-23 | The blob shows no static rate table | Read from the BL31 descriptor | The blob programs TF-A v2.12's ring lengths |
 | 2026-10-19 | The operating point is the 600 MHz request, ~816 MHz | 0.80 V rail, ring length 17 | The 900 MHz request, 928 MHz, ring length 12 |
+| 2026-06 | Gemma pp2048 with the datapath optimizations is ~15 t/s | ~816 MHz, resident weights, the June 2026 library | 24.6 t/s at 928 MHz, llama.cpp b11539, 2026-11-01 |

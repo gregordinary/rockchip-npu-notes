@@ -2,8 +2,8 @@
 
 The SigLIP-B/16 vision encoder, the SmolVLM-256M image front end, runs end to end on the NPU
 through `rocket`. Its layer is the pre-norm encoder block of the
-[Whisper encoder](whisper-encoder.md) (`rocket_encoder_block_fp16`), which runs fully on the
-NPU at cos~1. SigLIP is that same block at a new shape, plus a patch embed, a position add and
+[Whisper encoder](whisper-encoder.md) (`rocket_encoder_block_fp16`), which runs on the NPU at
+cos~1. SigLIP is that same block at a new shape, plus a patch embed, a position add and
 a post-LayerNorm. It needs no hardware path beyond the block's primitives.
 
 ## Lowering
@@ -134,20 +134,30 @@ attribution are in [perf/data/siglip-encoder.md](../perf/data/siglip-encoder.md)
 ### GELU
 
 The GELU form does not limit the accuracy. The simple path uses the block's exact-erf 2-pass
-GELU (`x·Φ(x)`). The ~1e-3 erf-vs-tanh difference never drops cosine below five nines, so a
-tanh-gate LUT is unnecessary. The resident path computes the exact tanh formula on the host
-anyway (free, because the data is already de-tiled there).
+GELU (`x·Φ(x)`). The erf and tanh forms differ by at most 4.7e-4 [host-computed], which never
+drops cosine below five nines, so a tanh-gate LUT is unnecessary. The resident path computes
+the exact tanh formula on the host anyway (free, because the data is already de-tiled there).
 
 ## Performance
 
 ### Latency
 
+The resident encode takes 760.6-762.3 ms warm, 1.31 images a second, with every default on
+[HW sweep 2026-11-02]. The defaults include the head fan-out and the GELU LUT
+(§"Latency optimizations").
+
+**Conditions:** RK3588 (Turing RK1), `rocket` 1.3.0, NPU clock 928 MHz (the 900 MHz request),
+`ROCKET_KACC=1`, CPU governor `performance`, `taskset 0xf0` (A76 cluster). The test's synthetic
+image. Each figure is the warm median of 12 calls in one process, over three processes.
+Measured 2026-11-02.
+
+**Not characterized:** the current resident latency on real images.
+
+The earlier paths and builds measured as follows.
+
 **Conditions:** RK3588 (Turing RK1), mainline 7.1, NPU clock ~816 MHz, `ROCKET_KACC=1`. All CPU
 cores are pinned to the `performance` governor, under `taskset 0xf0` (A76 cluster). Each
 figure is the warm median of 12 (discard cold).
-
-**Not characterized:** the resident latency with the 2026-10-09 and 2026-10-10
-`librocketnpu` changes to this encode.
 
 | path | warm latency |
 |---|---:|
@@ -157,23 +167,23 @@ figure is the warm median of 12 (discard cold).
 The resident figure is measured without the head fan-out and the GELU LUT, both on by
 default (§"Latency optimizations") [HW sweep]. With both on, the resident warm median is
 1.394-1.412 s over four real images, 20 calls each [HW sweep 2026-10-03, `7.2.8-1-arm64`,
-`rocket` 1.3.0, ~816 MHz, `performance`, `taskset 0xf0`]. That build predates four
-`librocketnpu` changes to this encode, from 2026-10-09 and 2026-10-10. They cover the
-encoder's scratch and V transpose, its bias add and LayerNorm, the FA's QK de-tile and its
-softmax.
+`rocket` 1.3.0, ~816 MHz, `performance`, `taskset 0xf0`]. That build predates the
+`librocketnpu` changes to this encode from 2026-10-09 to 2026-10-11, which the 2026-11-02
+figure includes. They cover the encoder's scratch and V transpose, its bias add and LayerNorm,
+and the FA's QK de-tile and softmax. The last hands the scores and P between the FA's two
+matmuls as rows.
 
 On the same silicon through the vendor stack at 1000 MHz, rknn-toolkit2's fp16 whole-encoder
 build takes 1.195 s and SHARD's pack 3.600 s [HW sweep 2026-10-03, `6.1.172-vendor-rk35xx`].
 Those timings start at the embeddings and stop before the post-LayerNorm, and rocket's include
-both. The NPU clocks also differ, so the comparison is not iso-clock. One attention op, on one
+both. The NPU clocks also differ, so the comparison is not iso-clock. rocket's 2026-11-02
+resident encode, 0.76 s, is below the RKNN build's 1.195 s on that wider scope. One attention op, on one
 core, takes 60% of the RKNN build's frame
 ([perf/data/siglip-encoder.md](../perf/data/siglip-encoder.md)).
 
 Under the vendor driver, poad42/opennpu_rk3588 runs this encoder with all 48 matmuls on the NPU
-and attention, GELU and LayerNorm on the CPU. It reports 995 ms an image on one core. Across
-three cores with six or more images in flight it reports 370 ms an image, where one image alone
-takes 1181 ms. Its cosine is 0.9999 against the HuggingFace reference [external, not
-reproduced, see [../SOURCES.md](../SOURCES.md)].
+and attention, GELU and LayerNorm on the CPU. It reports 995 ms an image on one core, a figure
+not reproduced here ([../SOURCES.md](../SOURCES.md#siglip)).
 
 ### Host runtime policy and the CPU governor
 
@@ -214,7 +224,7 @@ mechanism is in [cpu-governor-and-offload.md](../perf/cpu-governor-and-offload.m
 
 **Conditions:** the resident path with the heads fanned across the worker fds (the default),
 `ROCKET_SIGLIP_PROF=1`, a 2026-06-30 profile. The profile predates the GELU LUT and the
-2026-10-09 and 2026-10-10 host-loop changes listed under §"Latency". Absolute ms scale with the
+2026-10-09 to 2026-10-11 changes listed under §"Latency". Absolute ms scale with the
 CPU governor and the board load (§"Host runtime policy and the CPU governor").
 
 **Not characterized:** the phase shares on the current library.
@@ -236,7 +246,8 @@ The 2026-10-09 and 2026-10-10 changes were measured on Depth Anything v2-small, 
 same encoder [HW sweep 2026-10-09 and 2026-10-10, RK1, ~816 MHz, `ondemand`]. They cut its
 LayerNorm, its bias adds, its head transpose, and its attention's de-tile and softmax.
 
-On a single worker (`ROCKET_SIGLIP_FA=0`) the attention block is ~63 % and ~1.9x slower.
+On a single worker (`ROCKET_SIGLIP_FA=0`) the attention block is ~63 % and takes ~1.9x its
+time with the fan-out.
 It splits into scores ~15 % + host softmax ~19 % + PV ~27 %. Scores are the most readback-bound
 matmul (output `M·N` per head, tiny K=64), so the NEON KACC de-tile (below) helps them most.
 
@@ -279,12 +290,14 @@ loaded board]. On a single worker, the attention is the resident path's largest 
 fan-out reuses the LLM flash-attention primitive rather than a new kernel, so the
 head-chaining and resident-scratch work applies to it directly.
 
-The score `L×L` cube still round-trips host-side for the host softmax. The online/tiled
-FA-2 variant that avoids that is a dispatch-bound loss here, as on the LLM path. At a ViT
-encoder's shape, the host passes over the scores take about three quarters of a worker's head
-range. The device waits the rest. The split is in
-[attention-offload-crossover.md](../perf/attention-offload-crossover.md) §"The head range's
-host passes at an encoder shape".
+The `L×L` scores still go to the host for the host softmax. By default the FA call hands them
+and P between its two matmuls as plain rows, and a 1024-key row of scores is 2 KiB. The
+online/tiled FA-2 variant, which never holds the whole score matrix, is a dispatch-bound loss
+here, as on the LLM path. At Depth Anything v2-small's 1370-token layer, the row handoff takes
+the FA call to 0.636-0.690x of the cube handoff's time [HW sweep 2026-10-11, ~816 MHz]. The
+device waits are then about a third of a worker's head range, and the host passes over the
+scores the rest. The split is in
+[attention-offload-crossover.md](../perf/attention-offload-crossover.md#the-head-ranges-host-passes-at-an-encoder-shape).
 
 #### Bit-exact fp16 GELU LUT
 
@@ -322,8 +335,7 @@ measurements are in [cross-op-chaining.md](cross-op-chaining.md) and
 
 Resident int8 and the Hadamard rotation exist in the library, and reduce memory use. On this
 readback-bound workload the int32 readback is expected to hold it near fp16 speed (the LLM
-result, [k-accumulation.md](k-accumulation.md)) [expected]. It is a fidelity and memory option,
-not a latency one.
+result, [k-accumulation.md](k-accumulation.md)) [expected]. It is a fidelity and memory option.
 
 ## Evidence
 
@@ -331,6 +343,16 @@ not a latency one.
 
 The accuracy test is `siglip_rocket` (`rocket-userspace/tests/siglip_rocket.c`). Its synthetic
 input image comes from `siglip_reference.py` (seed 1234).
+
+### Latency
+
+The 2026-11-02 figure is `siglip_rocket` with `ROCKET_SIGLIP_BENCH=12` on the `rocket-userspace`
+build of 2026-11-01. Its three processes measured warm medians of 762.3, 760.6 and 762.2 ms, and
+each passed the fidelity gate (mean-layer cosine 0.999998, post-LN 0.999990). Two processes
+re-encoded the reference bit-identically after another image. One differed in 6 of 786432
+elements by at most 0.000244. The per-core lane-0 difference of
+[Erratum E7](../chips/rk3588.md#erratum-e7-fp16-matmul-output-differs-between-cores-on-output-lane-0)
+would explain it [hypothesis].
 
 ### Reproduction
 

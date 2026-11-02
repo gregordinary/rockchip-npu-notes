@@ -22,7 +22,7 @@ pipeline applies `BN-mul -> LUT -> OUT_CVT`, and the DPU writes the output cube.
 | GELU | Two-pass `x·Φ(x)` | Supported (default) |
 | GELU | One table over the whole curve | Not supported. It mis-decodes (§"Two-pass GELU, `x·Φ(x)`") |
 | EW ADD, SUB, MUL, MAX, MIN | Identity-conv main feed | Supported, bit-exact |
-| EW MUL | DPU-only program, flying MRDMA main | Not supported. Bit-exact on hardware, and the library's entry programs two fields wrong (§"Software support") |
+| EW MUL | DPU-only program, flying MRDMA main | Bit-exact on hardware. No library entry (§"Elementwise ops") |
 | Clip, Div | EW MAX and MIN with a constant operand, and `a·reciprocal(b)` | Supported |
 | LeakyReLU | Two-table LE/LO with a host repair of the x~0 band | Supported. alpha=0 is not supported: use the native DPU ReLU |
 | Softplus, Mish, Abs, ELU, SELU, PReLU | §"More activation kinds" | Supported |
@@ -151,7 +151,7 @@ the whole domain `[x_lo,x_hi]` onto the positive index half needs this bias. Sof
 program `BN_ALU = fp32(-x_lo·scale)`. A pre-scale `(x+B)` add, `fp32(-x_lo)`, is
 systematically wrong.
 
-The `0x80000000`=-0.0 that the standalone op uses is the no-op case. The bias relocates the
+The standalone op's `0x80000000` (-0.0) adds no bias. The bias relocates the
 table but does not cure the x~0 spike, because the mux selects on `sign(x)`
 (§"LE/LO boundary spike at x~0").
 
@@ -263,25 +263,25 @@ across 1×1/3×3/stride-2/tiled shapes [HW sweep].
 ## Large `n` and tiling
 
 The LUT op lays the flat vector out as a cube of `cols = n/8` width positions (C2=8 fp16
-each). `DPU_DATA_CUBE_WIDTH` is 13 bits, so the hard maximum for one task is `n <= 65528`. A
-transformer's `[M,I]` activation cube is millions of elements, so software must tile it. Each
-chunk must stay below the 13-bit maximum (§"13-bit cube-dimension maximum").
+each). `DPU_DATA_CUBE_WIDTH` is a 13-bit field that holds the width minus 1 [source-confirmed:
+Mesa `registers.xml`, `rkt_regcmd.c`]. A transformer's `[M,I]` activation cube is millions of
+elements, so software must tile it. Each chunk must be at most 8176 positions wide, which is
+`n = 65408` (§"13-bit cube-dimension maximum").
 
 ## Two-operand EW (HardSwish/SiLU multiply)
 
 `x · gate(x)` (HardSwish, SiLU) needs an elementwise multiply of two buffers. Two programs
 compute it bit-exactly. The one `librocketnpu` uses feeds the EW main through an identity
-conv, described below.
+conv (§"The identity-conv main feed").
 
 A DPU-only program computes it too, with no CNA or CORE [HW sweep, RK3588, both drivers]. It
 takes a flying MRDMA main and the operand on the ERDMA. That program requires three fields:
 `ORIG_CHANNEL`, `COMB_USE` bit 0 and the EW converter bypass. They are in
-[sdp-stage-precision.md](sdp-stage-precision.md) §"A two-buffer EW op needs no conv main
-feed".
+[sdp-stage-precision.md](sdp-stage-precision.md) §"Two-buffer EW op without a convolution".
 
 Mesa drives a second EW operand only as the residual of a conv (`add_tensor`), with the conv as
 the main feed [source-confirmed, [../teflon-add-capture/](../teflon-add-capture/)]. That
-program is Mesa's choice, and the datapath does not require it.
+program is Mesa's choice. The datapath does not require it.
 
 ### The identity-conv main feed
 
@@ -340,10 +340,10 @@ index_scale 2596). It is free of the flat-region spike: Φ has no exactly-flat r
 saturating tails use the unit-LUT `le_slope` extrapolation (like sigmoid).
 
 `rocket_activation_fp16(GELU)` takes this path: the gate `ROCKET_ACTIVATION_GELU_GATE` = Φ,
-then the EW-mul by x. Validated on hardware: cos=1.000000, max_abs 0.0016 vs true erf-GELU
-over `[-12,12]`, including the flat tails [HW sweep]. The two-pass GELU puts the Whisper
-encoder block's GELU on the NPU (block cos=1.000000). SiLU is likewise 2-pass and clean
-standalone.
+then the multiply by x. The multiply runs on the host by default, and on the NPU EW unit under
+`ROCKET_ACT_NPU_MUL`. Validated on hardware: cos=1.000000, max_abs 0.0016 vs true erf-GELU
+over `[-12,12]`, including the flat tails [HW sweep]. The Whisper encoder block runs its GELU
+as this two-pass form (block cos=1.000000). SiLU is likewise 2-pass and clean standalone.
 
 > [!CAUTION]
 > A single LUT covering the whole GELU curve mis-decodes on the standalone flying path (cos
@@ -362,8 +362,6 @@ kind fares better (cos 0.955) only because its curved range is narrower.
 > [!CAUTION]
 > Single-pass LUT fusion (conv->act or a hypothetical matmul->act) is only safe for inputs
 > that stay in the curved region. The reliable on-NPU GELU/SiLU is the 2-pass `x·gate(x)`.
-
-A fused matmul->act (`rocket_matmul_fp16_act`) is therefore not viable for wide inputs.
 
 ## More activation kinds
 
@@ -394,8 +392,7 @@ single-table kinds.
 
 | Option | Effect |
 |---|---|
-| `ROCKET_ACT_NPU_MUL=1` | Runs HardSwish and SiLU fully on the NPU through `rocket_ew_mul_fp16`, the identity-conv multiply. Off by default |
-| `ROCKET_ACT_EXPERIMENTAL=1` | Enables the flying `gen_ew_mul_fp16` |
+| `ROCKET_ACT_NPU_MUL` | Set to any value, `0` included, runs the multiply of the two-pass HardSwish, SiLU, GELU and Mish on the NPU through `rocket_ew_mul_fp16`, the identity-conv multiply. Unset by default, which multiplies on the host |
 | `ROCKET_ACT_WIDE_LUT` | Forces the single-pass GELU, for reverse engineering |
 | `ROCKET_LUT_ENABLE`, `ROCKET_LUT_SPTR` | Override the enable word and the `S_POINTER` value from the environment, for bring-up |
 | `ROCKET_LUT_SHIFT` | Selects the shifted single-table path. Unconditional for the positive-domain kinds |
@@ -423,7 +420,8 @@ table. Use the native DPU ReLU.
 
 `run_dpu_lut` tiles over a per-op cap, `DPU_LUT_MAXN = 32768` (`cols = 4096`). Every caller
 (SiLU, sigmoid, tanh, GELU, leaky, sqrt, rsqrt, reciprocal) therefore works at any `n`.
-Without tiling the op `gen`-fails (`-2`) and returns garbage for `n > 65528`. The LUT, pool
+Without tiling, a chunk past `n` = 65408 computes a wrong tail (Erratum E9), and the generator
+refuses (`-2`) past `n` = 65528. The LUT, pool
 and reduce entries refuse past 13 bits, and the regcmd emitters refuse any CNA or DPU extent
 past its field.
 
@@ -433,11 +431,11 @@ The EW selector is `matmul_params_t.ew_op` (2=MAX, 3=MIN, 0 = the legacy add/`ew
 path). The entries are `rocket_ew_sub_fp16`, `rocket_ew_max_fp16`, `rocket_ew_min_fp16`,
 `rocket_clip_fp16` and `rocket_ew_div_fp16`.
 
-`gen_ew_mul_fp16`, the retained flying multiply, programs two of the DPU-only program's
-fields wrong. It writes `COMB_USE(5)`, whose bit 0 stops the program completing. It also
-writes `DATA_CUBE_CHANNEL` with `ORIG_CHANNEL` 0, which makes every lane but lane 0 of each
-atom wrong (zero, on this program). It stays behind `ROCKET_ACT_EXPERIMENTAL=1`, with the two
-fields still wrong.
+No library entry runs the DPU-only multiply. `gen_ew_mul_fp16`, the retained flying multiply,
+programs two of the DPU-only program's fields wrong. It writes `COMB_USE(5)`, whose bit 0
+stops the program completing. It also writes `DATA_CUBE_CHANNEL` with `ORIG_CHANNEL` 0, which
+makes every lane but lane 0 of each atom wrong (zero, on this program). No entry calls it and no
+option enables it. Only the tests call it.
 
 ### conv -> activation fusion
 
@@ -468,21 +466,34 @@ LE/LO table mux, then the output converter's decode of a table entry.
 ### 13-bit cube-dimension maximum
 
 > [!CAUTION]
-> Erratum E9. A LUT chunk at the exact 13-bit maximum width (`cols = 8191`, `n = 65528`)
-> corrupts a thin tail of cube positions [HW sweep]. Software must keep every 13-bit
-> cube-dimension field below 8191.
+> Erratum E9. A LUT chunk wider than 8176 positions (`n` above 65408) computes every position
+> from 8176 on incorrectly, and the job raises no completion [HW sweep 2026-11-02]. Software
+> must keep a LUT chunk at or below 8176 positions, and every other DPU cube dimension that a
+> 13-bit field encodes below 8191.
 
-A 65528-element SiLU chunk mis-computed ~54 elements (constant count, data-independent,
-absent at small `n`), so cosine dipped to 0.9990. Tiling well under the maximum at
-`DPU_LUT_MAXN = 32768` (`cols = 4096`) is bit-clean (geglu/FFN cos = 1.000000, 0 misses at
-every size). The hazard is in the same family as the CBUF-bank-slack over-read: positions at
-the edge of a register's range are unsafe.
+**Conditions:** RK3588 (Turing RK1), `rocket` 1.3.0, NPU clock 928 MHz, 2026-11-02. Sigmoid,
+inputs uniform in [-8, 8], one chunk against the library's 4096-position chunks.
+
+| Chunk width (positions) | 2048-8176 | 8184 | 8188-8191 |
+|---|---|---|---|
+| Positions that differ | None | 8176-8183 | 8176 to the last |
+
+A wrong position differs by up to 0.998, a value unrelated to its input. Each wider chunk's
+job retires at the driver's timeout. The bound falls where the element count reaches 65408,
+2^16 - 128, and where the position count reaches 8176, 2^13 - 16. A sweep over one width
+cannot tell the two apart. The library tiles at `DPU_LUT_MAXN = 32768` (`cols = 4096`), half
+the bound, and is bit-clean there (geglu/FFN cos = 1.000000, 0 misses at every size).
+
+**Not characterized:** the first failing width between 8177 and 8183, and whether the bound
+belongs to the element count or the position count.
 
 The 13-bit maximum applies to every cube dimension, not to the LUT only [source-confirmed].
 SHARD (EuroMLSys '26) reports the same register limit as an `0xe010 "REGTASK Overflow"` that
 fires for any operand index > 8191. Large transposes are among the cases, independent of the
-LUT path. Treat 8191 as a hard silicon limit on every 13-bit cube-dimension field
-(`DPU_DATA_CUBE_WIDTH` / `HEIGHT` / `CHANNEL` and the PPU/RDMA mirrors), and tile below it.
+LUT path. Treat 8191 as a hard limit on every other DPU cube dimension a 13-bit field
+encodes (`DPU_DATA_CUBE_HEIGHT` / `CHANNEL`), and tile below it. The PPU's height and
+channel axes compute at 8192, which fills their 13-bit fields
+([ppu-pooling.md](ppu-pooling.md) §"Cube dimensions at the field maximum").
 The CNA's input width and height are narrower still, 11 bits, which is the binding limit for
 a convolution ([../matmul-as-conv.md](../matmul-as-conv.md) §"Per-tile geometry limits").
 
@@ -527,7 +538,7 @@ re-exposes the flat-region spike for functions with a flat run.
 #### Affected kinds
 
 Only signed-output kinds spike. The spike tracks the signed output decode (a negative
-`OUT_CVT_OFFSET`), not merely a domain straddling 0. Under a dense `[-0.02,0.02]` step-1e-5
+`OUT_CVT_OFFSET`). A domain that straddles 0 with an unsigned decode does not spike. Under a dense `[-0.02,0.02]` step-1e-5
 input sweep, the shifted-single-table kinds split cleanly [HW sweep]:
 
 - **Unsigned `[0,hi]` output (`OUT_CVT_OFFSET >= 0`): x~0-clean.** Softplus (`out_lo=0`),
@@ -566,8 +577,8 @@ EXP the fault inflates the softmax sum: the whole deep tail decodes to ~4 each.
 The clamped value decodes to ~3e-5 (rounds to ~0 on readback), which is correct for the
 tail. The sqrt, rsqrt and reciprocal kinds never produce a q=0 entry over their domains, so
 the clamp is a no-op for them. The same fault likely also sits in the sigmoid/tanh LE deep
-tail (`sigmoid(-16)~0 -> q=0`) [expected]. Those paths do not run that deep in a model, and
-the case is not measured.
+tail (`sigmoid(-16)~0 -> q=0`) [expected]. Those paths do not run that deep in a model. The
+case is not measured.
 
 ## Evidence
 
@@ -639,6 +650,19 @@ The HardSwish and SiLU default accuracy is from `tests/activation_lut_rocket.c`.
 ### Known issues
 
 The cube-dimension test is `tests/ffn_rocket.c` at `n = 65536` / `100000`.
+
+The LUT chunk bound comes from a probe that raises the library's `DPU_LUT_MAXN`. It runs one
+sigmoid chunk at each width and compares it bit for bit with the default chunking. The widths
+ran in one process, and each of the five failing widths retired at the timeout:
+
+- Exact: 2048, 4096, 4097, 5000, 6144, 7000, 7680, 8000, 8100, 8160 and 8176 positions
+- Wrong from position 8176: 8184, 8188, 8189, 8190 and 8191 positions
+
+#### Revision history
+
+| Date | Reading | Replaced by |
+|---|---|---|
+| Before 2026-11-02 | A 65528-element SiLU chunk (8191 positions) mis-computed ~54 elements, a constant, data-independent count absent at small `n`; cosine 0.9990. The rule read "every cube dimension below 8191" | The 2026-11-02 sweep: the bound is 8176 positions. At 8191 positions the sigmoid chunk differs on 120 elements, the 15 positions from 8176; the count that differs depends on the function, because a wrong output can match by chance |
 
 The x~0 mechanism comes from LeakyReLU, which has a sharp kink exactly at 0. Re-mapping x=0 to
 a different index moves the spike to follow x=0. A repair-off scan of 16385 inputs uniformly

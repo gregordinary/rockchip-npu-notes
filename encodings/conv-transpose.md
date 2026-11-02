@@ -14,10 +14,10 @@ onto a stride-1 forward convolution, or onto one matmul and a host scatter-add.
 
 | Transposed convolution | Path | Status |
 |---|---|---|
-| RK3588, direct, power-of-two strides, compact input fits one CBUF pass | CNA deconvolution mode, one task | Supported (default) |
-| Odd strides, dilation, the depthwise form, or an input past one CBUF pass | Lowering onto a stride-1 forward convolution | Supported |
+| RK3588, direct, power-of-two strides, compact input fits one CBUF pass, and the other conditions in §"Software support" | CNA deconvolution mode, one task per output-channel tile | Supported (default) |
+| Odd strides, dilation, the depthwise form, an input past one CBUF pass, or another condition of the mode's path unmet | Lowering onto a stride-1 forward convolution | Supported |
 | `pad > dil·(K−1)` on an axis, an output crop | Lowering | Not supported |
-| Weight held resident | One matmul on the resident fp16 matmul, and a host scatter-add | Supported |
+| Weight held resident, an output crop included | One matmul on the resident fp16 matmul, and a host scatter-add | Supported |
 | Weight held resident, depthwise or on the RK3576 | Resident path | Not supported |
 
 ## Output size
@@ -37,7 +37,7 @@ size. It must be `< stride`. It appears only in the trailing pad, never the lead
 The CNA register map contains a transposed-convolution mode that no reference driver
 programs [source-confirmed: Mesa `registers.xml`, allbilly `rkt_registers.h`, both naming all
 three fields]. NVDLA has no deconvolution engine at any revision, so the mode is a Rockchip
-addition, and the NVDLA documentation does not describe it
+addition. The NVDLA documentation does not describe it
 ([nvdla-lineage.md](../nvdla-lineage.md)). The RK3588 implements the mode [HW sweep]:
 
 | Register | Field | Bits | Function |
@@ -116,7 +116,8 @@ The default feature-grain count (`IH+1`) is sufficient.
 > wrong size.
 
 A complete result from a derived extent needs `P >= toh - ih`, where `toh` is the transposed
-output height. The pad field caps that at `ih <= (15 + s - k) / (s - 1)`, which is 14 at `s=2`.
+output height. The pad field caps that at `ih <= (15 + s - k) / (s - 1)`, which is 14 at `s=2`
+and `k=3`.
 The bound applies to the derived extent only. With the extent programmed, the pad is `k-1-p`,
 and the pad field never limits the input height.
 
@@ -133,16 +134,27 @@ offset `(k-1) - P`, identically at `s=2` and `s=4` [HW sweep].
 > [!CAUTION]
 > At `s=2`, pads 12-15 do not follow the `(k-1)-P` rule: the output matches the reference at
 > no offset at all. Every pad 0-11 follows it, and 16 and above wrap. At `s=4` the same pads
-> follow it. The range sits immediately below the wrap, and its cause is not known. A
+> follow it. The range sits immediately below the wrap. Its cause is not known. A
 > transposed convolution's own pad, `k-1-p`, stays below that range for every kernel up to 12.
 
 ## Software support
 
 `librocketnpu` implements a transposed convolution as `rocket_conv_transpose2d_fp16`
 (`src/rocket_conv_transpose.c`, `include/rocket_conv.h`). On the RK3588, it takes the
-hardware mode for a direct transposed convolution at power-of-two strides whose compact
-input fits one CBUF pass. It lowers everything else onto the forward convolution.
-`rocket_conv_transpose2d_route()` reports which path a call takes. On the mode's path,
+hardware mode, one task per output-channel tile, for a direct transposed convolution with all
+of:
+
+- Dilation 1
+- Strides of 1, 2, 4 or 8 per axis, with at least one axis above 1
+- `output_padding` below the stride
+- `k−1−pad` at most 11 on each axis
+- `IC` a multiple of 32
+- A compact input that fits one CBUF pass beside a 16-channel weight tile
+- One kernel within one CBUF bank
+- An output of at most 2047 per side and 262143 elements
+
+It lowers everything else onto the forward convolution. `rocket_conv_transpose2d_route()`
+reports which path a call takes. On the mode's path,
 `rocket_conv_transpose2d_fp16` sets `npu_cna_desc.deconv` and the two stride fields from
 `conv_params_t.deconv_sy/sx`. `rocket_conv2d_fp16_job_extent()` (`src/rocket_conv_internal.h`)
 runs one fp16 convolution job with the output extent given rather than derived.
@@ -153,7 +165,7 @@ value is `s-1`).
 
 A third `librocketnpu` entry keeps its weight resident and runs the transpose as one matmul
 and a host scatter-add. At model shapes it is the fastest of the three
-(§"The resident route: col2im over the matmul").
+(§"The resident path: col2im over the matmul").
 
 ### Speed against the lowering
 
@@ -240,7 +252,7 @@ agrees: `IHd − d·(K−1) = (IH−1)·s − 2p + d·(K−1) + opad + 1 = OH`.
   path avoids both costs. The sub-pixel decomposition, `s²` dense forward convs interleaved,
   costs more than the lowering at every k4 layer measured.
 
-### The resident route: col2im over the matmul
+### The resident path: col2im over the matmul
 
 A transposed convolution is one matmul followed by a scatter. Read the input as `IC` planes of
 `IH·IW` pixels and the weight as stored, `[IC][OC·KH·KW]`. Their product holds every tap of every

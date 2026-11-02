@@ -79,7 +79,7 @@ after each [HW sweep, F16, ~816 MHz, performance governor]:
    single-fd 7.01 t/s to 13.05, and pp2048 from 5.73 to 11.04. Each fd is one DRM scheduling
    entity, so the NPU cores run head ranges in parallel. Each worker also gathers and
    softmaxes its own heads. The single-fd path serializes ~2300 NPU submits per forward,
-   which is the dispatch-bound limit.
+   so dispatch bounds it.
 2. **Host softmax.** The additive mask already brings the scores host-side, so an on-NPU
    softmax is a pure round-trip. Dropping it adds +5% at pp512 and +10% at pp2048, to 13.73
    and 12.19 t/s.
@@ -157,8 +157,11 @@ Both are measured (see "Long-context: chain the heads").
 Software must select the offload by `n_kv` (context length), not by `n_tokens`. Under
 llama.cpp's 512-token micro-batching, every `FLASH_ATTN_EXT` op sees `n_tokens ~512` regardless
 of total prompt length. `n_tokens` therefore cannot tell a short prompt from a deep micro-batch
-in a long one. The position `n_kv` drives the crossover. With a threshold of `n_kv >= ~1024`, a
-mid-prefill micro-batch deep in a long context offloads, and a short prompt stays on the CPU.
+in a long one. The position `n_kv` drives the crossover. With a threshold of `n_kv >= ~1024`
+(`ROCKET_FLASH_ATTN_MIN_KV`, default 1024), a mid-prefill micro-batch deep in a long context
+offloads, and a short prompt stays on the CPU. A second threshold,
+`ROCKET_FLASH_ATTN_MIN_T` (default 16 query tokens), keeps decode on the CPU.
+
 Each micro-batch independently picks the faster backend, and mixing CPU and NPU attention across
 a single prefill is correct (the ops are independent).
 
@@ -192,8 +195,8 @@ wall-clock time at `k`=4 on `gemma4-12b` F16 at pp2048 [HW sweep 2026-09-07]. Th
 the fixed remainder at 0.57%, so more workers give almost nothing.
 
 The gain narrows 1.50x -> 1.25x from 8K -> 16K. The library call grows with n_kv, its device
-work and its host softmax alike, and the gather does not. The online/tiled attention, which
-never materializes the full `[Tp, n_kv]` score matrix, is slower (see below).
+work and its host softmax alike, but the gather does not. The online/tiled attention, which
+never materializes the full `[Tp, n_kv]` score matrix, is slower (§"Online/tiled softmax").
 
 ## The head range's host passes at an encoder shape
 
@@ -213,9 +216,8 @@ matrix, not by the device. Each column below adds one library change to the colu
 **Conditions:** Depth Anything v2-small's layer: 1370 tokens, 6 heads of 64, unmasked, on three
 workers of two heads each. RK3588, NPU clock ~816 MHz, `ondemand` governor, A76-confined. Each column comes
 from its own comparison against the column before it. The last column's comparison is one build
-switched by `ROCKET_FA_ROWMAJOR`. Its cube handoff (the scores and P passed in the cube layout)
-measured 9.7-11.0 ms of device waits a range,
-where the NEON softmax column's own comparison measured 10.5-11.3.
+switched by `ROCKET_FA_ROWMAJOR`, against its own run of the cube handoff (the scores and P
+passed in the cube layout), not the NEON softmax column's.
 
 The first three columns pass the scores and P between the two matmuls in the cube layout, the
 cube handoff. With it, the device waits are about a quarter of the range, and the rest is host
@@ -268,7 +270,8 @@ The device writes a row-major C at a cost that grows with its pitch past a 4 KiB
 Gemma-4 shape the plain-row handoff's device waits double at 8192 keys, 67-69 to 134-136 ms a
 range. By 16384 keys its call is within 4% of the cube handoff's.
 
-A block of rows at one tile's own width costs the device nothing at any key count. Past a
+A block of rows at one tile's own width costs the device nothing at any key count
+([../matmul-as-conv.md](../matmul-as-conv.md) §"Layouts"). Past a
 4 KiB row, QK therefore writes each N tile as its own `[Tp][Nt]` block. The softmax reads a row
 across the blocks and writes P as plain rows into a second BO. AV reads P at the full pitch.
 
@@ -284,9 +287,11 @@ The call against the cube handoff [HW sweep 2026-10-11]:
 | 16384 | 32 KiB | 0.959-0.991x | 0.794-0.818x |
 | 32768 | 64 KiB | 0.958-0.991x | 0.765-0.772x |
 
-**Conditions:** five workers, RK3588, NPU clock ~816 MHz, `ondemand` governor, A76-confined. The table is its own
-measurement series. The comparison in §"Scores and P as rows" measures the plain rows at
-0.636-0.690x at 1370 keys and 0.727-0.763x at 2048.
+**Conditions:** five workers, RK3588, NPU clock ~816 MHz, `ondemand` governor, A76-confined, a
+measurement series separate from §"Scores and P as rows".
+
+That section's own comparison measures the plain rows at 0.636-0.690x at 1370 keys and
+0.727-0.763x at 2048.
 
 The library writes plain rows to a 4 KiB row and blocks past it (`ROCKET_FA_RM_MAX_ROW`). Under
 blocks the device waits stay within 5% of the cube handoff's at every width. AV's row-major
@@ -397,8 +402,10 @@ at resident scratch ∝ the group size.
 
 | Feature | Control | Status |
 |---|---|---|
-| Prefill attention offload, at `n_kv >= 1024` | `ROCKET_FLASH_ATTN=0` disables it | Supported (default) |
+| Prefill attention offload, at `n_kv >= 1024` and 16 or more query tokens | `ROCKET_FLASH_ATTN=0` disables it. `ROCKET_FLASH_ATTN_MIN_KV` and `ROCKET_FLASH_ATTN_MIN_T` set the two thresholds | Supported (default) |
+| Unmasked attention (an encoder's self-attention) | `ROCKET_FLASH_ATTN_UNMASKED=1` | Supported (opt-in) |
 | Attention with a sink, `src[4]` | None | Not supported. The op stays on the CPU |
+| ALiBi (`max_bias` other than 0) | None | Not supported. The op stays on the CPU |
 | Head chaining, 32M-element head-group budget | `ROCKET_FA_CHAIN_ELEMS` | Supported (default) |
 | Worker fds and score scratch held across layers | `rocket_fa_ctx` | Supported (default) |
 | Scores and P as rows to a 4 KiB row, blocks past it | `ROCKET_FA_ROWMAJOR`, `ROCKET_FA_RM_MAX_ROW` | Supported (default) |

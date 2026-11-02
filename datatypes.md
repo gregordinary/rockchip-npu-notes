@@ -14,15 +14,15 @@ per-column detail.
 | bf16 | 3 | 16-bit | fp32 | yes | no | 1x | fp32 range at fp16 cost. Drops activation scaling |
 | tf32 | 7 § | 32-bit | fp32 | yes | no | ½x | fp32 range with 10-bit precision. Half-rate |
 
-**†** The MAC rate does not translate to wall-clock speed. fp16 is the baseline. int8 and
-int4 nominally multiply 2x and 4x faster in the array, and tf32 is half-rate. At the
-operating point measured (resident weights, multicore, ~816 MHz) the resident matmul
-measures ~460 GOP/s across fp16, int8, and int4 alike. The path is bound by DMA and
-per-job dispatch, not by the MAC array, and the 2x and 4x integer advantages do not raise
-throughput.
+**†** The MAC rate is the array's multiply rate relative to fp16, and does not translate to
+wall-clock speed. int8 and int4 multiply 2x and 4x as fast as fp16 in the array, and tf32 at
+half fp16's rate. At `512×3840×4096`, with resident weights on three cores at 928 MHz, the fp16
+matmul with CBUF weight streaming, the default, measures 947-966 GOP/s. int8 with streamed weights
+and int4 run 1.14-1.20x that [HW sweep 2026-11-02]. DMA and per-job dispatch bound the matmul,
+not the MAC array, so the integer MAC advantages raise its throughput far less than 2x and 4x.
 
-On this hardware, quantization reduces the memory footprint and does not raise prefill
-speed. A smaller model fits in RAM and in the per-fd address window. See
+Quantization reduces the memory footprint, and raises the matmul's speed at most ~1.2x at that
+shape. In a model, resident int8 prefill measured 0.60x fp16 ([perf/not-mac-bound.md](perf/not-mac-bound.md)). A smaller model fits in RAM and in the per-fd address window. See
 [perf/not-mac-bound.md](perf/not-mac-bound.md).
 
 **‡** int16's int32 output saturates. When its operand ranges keep the dot product inside
@@ -68,7 +68,7 @@ per-layer fp16 hybrid fallback. [TUNING.md](TUNING.md) lists the flags.
 - **int8 and int4.** They give smaller weights, for fitting larger models in memory. Both
   need a Hadamard rotation to tame activation outliers (without it, quantized LLM output
   is incoherent). int4's denser packing can reach single-pass K (no K-tile readback).
-  Neither is faster than fp16 at the current operating point (see the † note).
+  Neither is faster than fp16 in the whole-tile program (see the † note).
 - **int16.** Its use is as an exact integer reference. Its native int32 output saturates,
   so the exact path decomposes each operand into bytes and runs int8 matmuls
   ([encodings/output-transpose-int16.md](encodings/output-transpose-int16.md)).

@@ -43,10 +43,13 @@ tile). The mechanics:
   computes 16 identical output columns, and the entry reads back column 0. The redundant 15
   columns are a tiny fixed cost on the K-dominated shape (no extra DRAM weight traffic beyond
   the `16xKpad` ones vector).
-- **K (=H) zero-padded to %32, M to %4.** The ones weight is `1` over the real `H` columns
-  and `0` over the K-pad, so padded columns contribute 0. Padded rows produce an ignored
-  sum. When the input already meets `H%32==0 && M%4==0` (the common LLM case, e.g. Gemma
-  H=3840), the entry passes the input buffer directly as A, with no host staging copy.
+- **K (=H) zero-padded to %32, M to %4.** The M padding meets the library planner's row
+  rule, and a task computes at any M
+  ([../matmul-as-conv.md](../matmul-as-conv.md#software-support)). The ones weight is `1` over
+  the real `H` columns and `0` over the K-pad, so padded columns contribute 0. Padded rows
+  produce an ignored sum. When the input already meets `H%32==0 && M%4==0` (the common LLM
+  case, e.g. Gemma H=3840), the entry passes the input buffer directly as A, with no host
+  staging copy.
 - **fp32 output.** A bare sum stays in fp16 range, but the main consumer squares first
   (sum-of-squares for variance), where the running sum easily exceeds fp16. The reduce
   therefore returns `float[M]`. The fp16 input elements must still be finite, so square and

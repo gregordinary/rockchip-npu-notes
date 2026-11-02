@@ -2,7 +2,9 @@
 
 K-accumulation sums a matmul's partial results over K. When K is too large to contract in one
 CBUF-resident tile, the matmul splits into `nKt` K-tiles. Each tile's partial is added to a
-running sum. The DPU's eltwise (EW) stage can do that add on the NPU. The convolution result is
+running sum.
+
+The DPU's eltwise (EW) stage can do that add on the NPU. The convolution result is
 the DPU main input, and the ERDMA reads the running partial from DRAM. The EW ALU adds them, and
 the write DMA (WDMA) writes the sum back. `DPU_EW_CFG`, `DPU_RDMA_ERDMA_CFG` and
 `DPU_RDMA_FEATURE_MODE_CFG` select it.
@@ -11,12 +13,11 @@ The two places the sum can run differ in readback. A host sum reads every output
 times (`read ∝ M·N·nKt`), in fp32 for fp16 and in int64 for the integer types. The EW path reads
 each output tile once (`read ∝ M·N`).
 
-The convolution's own accumulator cannot span tiles, so these are the only two places. The
-CORE's accumulator, CACC, reduces K only within one CBUF-resident tile. The CORE register block
-has no accumulate-or-reset control, so nothing makes a later CBUF pass add into the prior CACC
-contents. The convolution task splitter splits the spatial height, never the channel (K) axis
-[source-confirmed: Mesa `rkt_task.c`]. A K larger than one CBUF tile is therefore `nKt`
-separate tasks whose partials leave the chip.
+These are the only two places, because the CORE's accumulator, CACC, reduces K only within one
+CBUF-resident tile ([sdp-stage-precision.md](sdp-stage-precision.md) §"Accumulator lifetime
+across conv ops"). The convolution task splitter splits the spatial height, never the channel
+(K) axis [source-confirmed: Mesa `rkt_task.c`]. A K larger than one CBUF tile is therefore
+`nKt` separate tasks whose partials leave the chip.
 
 EW is the only per-element SDP stage. BS and BN broadcast a per-channel `[C]` vector, which
 cannot hold per-pixel K-partials (see [sdp-stage-precision.md](sdp-stage-precision.md)).
@@ -38,8 +39,8 @@ An integer K-accumulation built on it is not characterized.
 **Conditions:** fp16, validated at `N=16…384` (2 to 48 surfaces) and `M` 1 to 512.
 
 The fp16 geometry follows Mesa's working `add_tensor` residual-add geometry
-[HW sweep, source-confirmed]. All the fields below are register bits [4:31], that is, the
-geometric value `<< 4`:
+[HW sweep, source-confirmed]. The stride and notch fields are register bits [31:4], the
+geometric value `<< 4` [source-confirmed: Mesa `registers.xml`]:
 
 | Register | Value | Fields |
 |---|---|---|
@@ -87,9 +88,9 @@ the first two surfaces from their own bases, so an output of 16 channels or fewe
 them.
 
 > [!CAUTION]
-> A stride floored at 12, `MAX(out_w·out_h, 12)`, reads the wrong surfaces at every M below 12
-> once N exceeds 16. The sum is a full, plausible surface. That stride is correct only at M 12
-> and up.
+> Erratum E12: a stride floored at 12, `MAX(out_w·out_h, 12)`, reads the wrong surfaces at
+> every M below 12 once N exceeds 16. The sum is a complete, plausible output. That stride is
+> correct only at M 12 and up.
 
 For an integer EW add, software must set the whole precision bundle to one integer code. The
 bundle is the three precision fields in DPU `0x4010`, the DPU_RDMA `FEATURE_MODE_CFG`, and the
@@ -106,9 +107,8 @@ The EW running sum accumulates in fp16, and each add rounds. The host path sums 
 in fp32. On a standalone matmul the difference is ~0.2-0.4%: max_abs ~8 on a 512×3840×4096
 whose outputs reach ~4000, and worst ~56 on the deepest FFN.
 
-The fp16 EW K-accumulation is not bit-exact, and it does not change greedy LLM tokens.
-Gemma-4-12B output stays coherent, and the in-model per-op verify at M=512 is `nonfinite=0`,
-worst `max_abs~0.38`.
+The fp16 EW K-accumulation is not bit-exact. Under it, Gemma-4-12B's greedy output stays
+coherent, and the in-model per-op verify at M=512 is `nonfinite=0`, worst `max_abs~0.38`.
 
 ## Integer and float paths
 
@@ -139,31 +139,45 @@ on the integer types, grow Kt through the convolution's own K-reduction, by shri
 
 ## Software support
 
-**Conditions:** RK3588, NPU clock ~816 MHz.
+`ROCKET_KACC=1`, the EW path, is the default for fp16, and CBUF DATA_REUSE follows it
+automatically. `ROCKET_KACC=0` selects the byte-exact host sum.
 
-`ROCKET_KACC=1`, the EW path, is the default for fp16. It gains +19% on Gemma-4-12B prefill
-(pp2048, 2026-06-15). Across pp512-2048 on 0.8B and 9B F16 models it gains +5-20% over the host
-sum [HW sweep 2026-06-28]. The peak is +20%, at 9B pp512 [HW sweep 2026-06-28]. Greedy output
-stays coherent.
+**Conditions:** RK3588, `rocket` 1.3.0, NPU clock 928 MHz, CPU governor `performance`, the
+streamed fp16 plan (the default), llama.cpp b11539, `-t 8`, the default `-ub`. Measured
+2026-11-02.
 
-CBUF DATA_REUSE follows automatically, for ~+7% more. `ROCKET_KACC=0` selects the byte-exact
-host sum.
+On the streamed plan the EW path gains 1.08-1.17x on in-model prefill [HW sweep 2026-11-02]:
+
+| Model, F16 | Test | `ROCKET_KACC=1` against `=0` |
+|---|---|---:|
+| Gemma-4-12B | `pp2048` | 1.16-1.17x |
+| Llama-3.2-3B | `pp512` | 1.08-1.11x |
+| Llama-3.2-3B | `pp2048` | 1.08-1.09x |
+
+DATA_REUSE adds at most 1% there: Gemma-4-12B `pp2048` reads 1.002-1.008x against
+`ROCKET_REUSE=0` [HW sweep 2026-11-02].
+
+The whole-tile plan (`ROCKET_MM_STREAM=0`) was measured at an NPU clock of ~816 MHz. There
+the EW path gains +19% on Gemma-4-12B `pp2048` (2026-06-15). It gains +5-20% across
+`pp512`-`pp2048` on 0.8B and 9B F16 models, and DATA_REUSE adds ~+7% [HW sweep 2026-06-28].
+
+### Short M tiles
+
+**Conditions:** RK3588, kernel 7.2.9, `rocket` 1.3.0, NPU clock 928 MHz, CPU governor
+`performance`, the streamed fp16 plan, resident weights over five worker fds. Measured
+2026-10-22.
 
 `librocketnpu` accumulates on the NPU at every M tile, including a last M tile of 4 or 8 rows.
 At a 160-row M tile, 2 in every 40 values of M end in such a tile. At K 3072 and N 8192, M 484
 and 488 run 1.19-1.23x faster with the NPU sum than with the host sum [HW sweep 2026-10-22].
-
-**Conditions:** RK3588, kernel 7.2.9, `rocket` 1.3.0, NPU clock 928 MHz, CPU governor
-`performance`. Resident weights over five worker fds, best of five calls, three passes with the
-order rotated, the system memory reset before every process. Measured 2026-10-22.
 
 ### ki-fence chaining (`ROCKET_KACC_CHAIN`)
 
 The KACC path fences once per K-step, because each step after the first reads the prior
 partial. Chaining the whole `[ki][tile]` sequence into one self-chained kick collapses `nKt`
 fences to one. The hardware honors the in-kick read-after-write, so the chained path is
-byte-exact to the per-K-step path (see [regcmd-task-model.md](regcmd-task-model.md) §"in-kick
-data dependency").
+byte-exact to the per-K-step path (see [regcmd-task-model.md](regcmd-task-model.md) §"Chained
+tasks honor an in-kick data dependency (WDMA -> ERDMA)").
 
 The K-steps are serially dependent, so a chained kick pipelines only the independent tiles
 within each K-step. The net effect tracks `gcap = BATCH/nKt` (BATCH=64)
@@ -175,9 +189,16 @@ within each K-step. The net effect tracks `gcap = BATCH/nKt` (BATCH=64)
 | 2 (nKt 22-32) | nKt=24,32 | ~1.01 (slight loss) |
 | 1 (nKt >= 33) | nKt=40 | ~1.08 (`wait` +18%, serial stalls) |
 
-`ROCKET_KACC_CHAIN` is opt-in and off by default. `=1` engages only at gcap>=3 and otherwise
-falls back, so it never slows a matmul down. `=2` forces any `nKt` that fits. Gemma's FFN-down
-(nKt=40) falls back, so the end-to-end LLM gain is ~0.
+`ROCKET_KACC_CHAIN` is opt-in and off by default. `=1` engages only at gcap>=3, the regime
+where the table above measured it faster, and otherwise falls back. `=2` forces any `nKt` that
+fits. On the whole-tile plan, Gemma's FFN-down at M 512 has nKt 40 with symmetric tiles and 30
+with asymmetric ones. `=1` falls back there, so its end-to-end LLM gain measured ~0. The
+streamed plan, the fp16 default, runs that matmul at Kt 1120, nKt 14 and gcap 4, where `=1`
+engages [host-computed].
+
+> [!NOTE]
+> On the streamed plan `=1` costs 2-3% end to end. Gemma-4-12B F16 `pp2048` reads 0.97-0.98x
+> the default with `ROCKET_KACC_CHAIN=1`, at 928 MHz [HW sweep 2026-11-02]. Leave it off.
 
 ## Evidence
 
@@ -216,6 +237,19 @@ Both returned garbage, and both failed on the partial register bundle, not on th
 With the triple left at fp16, the int32 element sizes match no model of an add. The
 whole-bundle measurement is `tests/ew_int_probe.c`, on both drivers. It fed both operands from
 memory, which is why the convolution-fed K-accumulation remains not characterized.
+
+### Software support
+
+The 2026-11-02 ratios pair the arms within one pass, over three passes with the arm order
+rotated. Every process followed a memory reset (`drop_caches`, `compact_memory`) and a
+discarded warm-up process. Gemma-4-12B ran `llama-bench -r 2` and Llama-3.2-3B `-r 3`, on
+`gemma-4-12b-it-F16.gguf` and `Llama-3.2-3B-Instruct-F16.gguf`. The `ROCKET_KACC_CHAIN=1` arm
+logged no fallback, but a per-call engage count was not recorded.
+
+### Short M tiles
+
+Each figure is the best of five calls, over three passes with the order rotated, and the
+system memory was reset before every process.
 
 ### ki-fence chaining
 

@@ -68,8 +68,10 @@ can instead lay M along the width at height 1, with a surface stride of `−3M`.
 to 2048 and N 64 to 256. int8 at K 128 and 1024, N 64 and 256.
 
 With that stride, an fp16 or int8 matmul task is bit-exact at every M measured: 1-17, 31, 33, 63
-and 64. fp16 is also bit-exact with M along the width [HW sweep 2026-10-21]. int4, int16, bf16
-and tf32 share the generators' cube geometry and are not characterized below `M%4==0`.
+and 64. fp16 is also bit-exact with M along the width [HW sweep 2026-10-21]. A resident
+multi-tile int8 or int4 matmul is bit-exact at unaligned M from 1 to 257 [HW sweep 2026-11-01,
+RK1]. So are the int16, bf16 and tf32 entries and the group-wise resident int8 and int4 entries
+[HW sweep 2026-11-02, RK1].
 
 A convolution reads its input through the same stride, with H the input height. With
 `width × (H − 4)`, a one-task fp16, fp16 depthwise or int8 convolution is bit-exact at input
@@ -87,7 +89,7 @@ channels, 3×3.
 > negative result clamped to 0 is also incorrect. A matmul programmed this way produces incorrect
 > output at every M that is not a multiple of 4. A convolution with its stride clamped at 0
 > produces incorrect output below four input rows whenever its input spans more than one
-> channel group. It is bit-exact at M 4, 8, 12, 16 and 64 [HW
+> channel group. The truncating stride is bit-exact at M 4, 8, 12, 16 and 64 [HW
 > sweep 2026-10-21]. Software must compute the stride as `width × (H − 4)`.
 
 Mesa computes `line_stride × (H/4 − 1)` in floating point, which equals `width × (H − 4)` at every
@@ -106,11 +108,10 @@ whole, the whole-tile form, or streams through them (§"CBUF weight streaming").
 matmuls are therefore tiled three ways:
 
 - **M (rows)** and **N (output channels)** split into independent output blocks. Each is a
-  separate NPU job, trivially parallel, and this is the axis `librocketnpu` fans across
-  cores.
+  separate task, and these blocks are what `librocketnpu` fans across cores.
 - **K (contraction)** splits only at a Kt too large for the CBUF. The K-partials are
   then summed on the host in fp32 (the byte-exact fallback), or on the NPU via the DPU
-  eltwise unit for fp16 (the default, +19%). See
+  eltwise unit for fp16 (the default). See
   [encodings/k-accumulation.md](encodings/k-accumulation.md).
 
 > [!CAUTION]
@@ -118,7 +119,7 @@ matmuls are therefore tiled three ways:
 > issue E4). Without it, the feature DMA over-reads and corrupts the tail rows (see
 > [encodings/cbuf-bank-slack.md](encodings/cbuf-bank-slack.md)).
 
-The K-tile count `nKt = ceil(K / Kt)` is the readback multiplier. With host K-accumulation
+The K-tile count `nKt = ceil(K / Kt)` multiplies the readback. With host K-accumulation
 the host reads every output tile `nKt` times (`read ∝ M·N·nKt`). With on-chip
 K-accumulation (or single-pass `nKt=1`) it reads each tile once (`read ∝ M·N`).
 
@@ -142,12 +143,11 @@ time by under 3% (2 to 8 banks at K 384-2560) [HW sweep 2026-10-21].
 
 > [!CAUTION]
 > Erratum E11: a streamed task below the weight-bank minimum never completes. The job runs
-> until the driver's watchdog retires it (~500 ms on the RK3588), the fence signals as if the
-> job had completed, and the output is not written. The next job produces correct output.
+> until the driver's watchdog retires it (~500 ms on the RK3588). The fence signals as if the
+> job had completed, but the output is not written. The next job produces correct output.
 > fp16 with one weight bank hangs this way at K 384, 896 and 1152. int8 hangs with two weight
 > banks at K 1120 and 1376, whose atoms are 1.09 and 1.34 banks, and not with three [HW sweep
-> 2026-10-21]. Software must program at least two weight banks, enough banks for one
-> whole group, and for int8 one bank more.
+> 2026-10-21].
 
 A streamed task has three further requirements:
 
@@ -159,7 +159,7 @@ A streamed task has three further requirements:
   ([encodings/cbuf-reuse.md](encodings/cbuf-reuse.md)).
 
 The task count it removes and the per-core weight bandwidth are in
-[perf/not-mac-bound.md](perf/not-mac-bound.md) §"Streamed weights".
+[perf/not-mac-bound.md](perf/not-mac-bound.md) §"CBUF weight streaming".
 
 ### Per-tile geometry limits
 
@@ -168,7 +168,7 @@ narrow ones. The CNA holds the input width and height and the output width in 11
 each [TRM: `RKNN_cna_data_size0` bits 26:16 and 10:0, `RKNN_cna_data_size2` bits 10:0].
 `FEATURE_GRAINS`, which software sets to the input height plus one, holds 10 bits
 [source-confirmed: Mesa `registers.xml`]. One task therefore reads at most 1022 input rows by
-2047 columns. The DPU's cube fields are 13 bits wide, and they do not limit a convolution.
+2047 columns. The DPU's cube fields are 13 bits wide, so they do not limit a convolution.
 
 > [!CAUTION]
 > Erratum E8: a value past its field wraps, and the task writes a complete output of the
@@ -184,8 +184,9 @@ Software must cap each axis of a tile separately.
 ### Native K-reduction
 
 The conv reduces over K in a single pass up to the CBUF limit. Through the tiler, fp16 is
-hardware-tested correct to K = 10240 [HW sweep]. In the whole-tile form, K tiles to a few
-hundred only because the output tile (Mt×Nt) fixes how much CBUF is left for Kt. Shrinking Mt
+bit-exact to K 15360 [HW sweep 2026-10-21] (§"CBUF weight streaming"). In the whole-tile form,
+K tiles to a few hundred only because the output tile (Mt×Nt) fixes how much CBUF is left for
+Kt. Shrinking Mt
 and Nt grows Kt and collapses nKt. int4 on Gemma's `K=3840` reaches `nKt=1` (single-pass, zero
 readback K-accumulation) at Mt=Nt=64.
 
@@ -285,28 +286,37 @@ The figures below compare the row-major form's submit-to-fence time with the cub
 
 ### Device cost
 
-**Conditions:** RK3588, `rocket` 1.3.0, NPU clock ~816 MHz, 2026-09-26. Each wait is on a
-4 KiB BO that the job lists as an output, and every configuration's BOs are the same size.
+**Conditions:** RK3588 (Turing RK1), `rocket` 1.3.0, NPU clock 928 MHz, CPU governor
+`performance`, 2026-11-02. Each wait is on a 4 KiB BO that the job lists as an output, and every
+configuration's BOs are the same size.
 
-The device cost depends on the output's row pitch. At the library's tile shapes (256×384×256
-and 256×512×128 fp16 -> fp32, 256×384×256 fp16 -> fp16, 256×512×256 int8 -> int32), a
-row-major task at the tile's own width runs 0.96-1.12x the cube program's submit-to-fence.
+The device cost depends on the output's row pitch. A task can read A and write C as rows at the
+tile's own width. At the library's four tile shapes it takes 0.93-1.14x the cube program's
+time [HW sweep 2026-11-02]. The shapes are:
 
-The row-major read of A costs 1.00-1.07x at 256×384×256 and 1.06-1.21x at 256×512×128. The
-second is the shape with the least MAC work for each byte of A it reads. At neither shape
-does the read cost grow with the pitch, from the tile's own width to 16 KiB a row. Writing
-into a wider C costs time that does grow with the pitch once a row passes 4 KiB. At
-256×384×256 fp16 -> fp32:
+- 256×384×256 and 256×512×128, fp16 -> fp32
+- 256×384×256, fp16 -> fp16
+- 256×512×256, int8 -> int32
+
+The ratio at one shape moves by up to 0.15 from process to process. At its own width, the
+row-major form therefore costs the device nothing measurable.
+
+The row-major read of A costs 1.01-1.21x at both fp16 -> fp32 shapes. At neither shape does
+the read cost grow with the pitch, from the tile's own width to 16 KiB a row. Writing into a
+wider C costs time that does grow with the pitch once a row passes 4 KiB. At 256×384×256
+fp16 -> fp32, with A read as a cube:
 
 | C row pitch | 1 KiB (own) | 2 KiB | 4 KiB | 8 KiB | 16 KiB | 32 KiB |
 |---|---|---|---|---|---|---|
-| submit-to-fence, as a multiple of the cube program | 0.88-0.95 | 0.99-1.00 | 0.85-1.07 | 1.12-1.25 | 1.43-1.60 | 2.01-2.29 |
+| submit-to-fence, as a multiple of the cube program | 0.84-1.01 | 0.94-1.08 | 0.88-0.91 | 1.10-1.22 | 1.41-1.45 | 1.96-2.17 |
 
-Each value is the range over processes of the median per-rep ratio.
+Each value is the range over three processes of the median per-rep ratio. The table's
+own-width column writes only C as rows, so it is a different task from the 0.93-1.14x above,
+which also reads A as rows.
 
 The 256×512×128 shape has half the output channel groups. There the same sweep measures
-1.10-1.13x at 8 KiB, 1.29-1.38x at 16 KiB and 1.61-1.74x at 32 KiB, about half the added
-time. The cost therefore scales with the rows written times the pitch [HW sweep].
+0.95-1.10x at 8 KiB, 1.15-1.23x at 16 KiB and 1.53-1.60x at 32 KiB, about half the added
+time. The cost therefore scales with the rows written times the pitch [HW sweep 2026-11-02].
 
 The proposed cause is that the write DMA steps through the notch at a fixed rate
 [hypothesis]. The CNA reads at the same pitches, through the same IOMMU, at no cost.
@@ -369,7 +379,7 @@ own unfolded input.
 rocket-userspace's `rocket_conv2d_fp16_prepacked` runs the matmul resident, with its weight packed
 once, and the unfold on the host across the worker threads. The direct fp16 conv entry scatters its
 weight on every call. At pix2pix's eight encoder layers the direct entry summed 148.5 ms against
-ONNX Runtime's 47.5 [HW sweep, RK1, 2026-09-28].
+ONNX Runtime's 47.5 [HW sweep, RK1, ~816 MHz, 2026-09-28].
 
 The table compares the resident entry with ONNX Runtime 1.27.0's per-node time for the same
 layer [HW sweep]:
@@ -417,7 +427,8 @@ Per call, the M split against the N split [HW sweep, same operating point]:
 | ConvTranspose, M <= 256, B 16x A or more (pix2pix up1-up5) | 1.2-2.5 |
 
 Both resident entries take the M split once every worker gets 64 rows and N is at most 4M. The
-rule reproduces every row of the table.
+M split also needs the weight copied to every worker to fit 64 MiB. The rule reproduces every
+row of the table.
 
 ### Inside a session
 
@@ -443,17 +454,18 @@ convolutions there.
 ## Software support
 
 `librocketnpu`'s matmul generators program the feature surface stride as `width × (H − 4)`, so
-a task computes at any M. Its planners still require `M%4==0`. Its one-shot entry points pad
-M==1 up to 4 rows (3 zero rows, which contribute 0 and cannot saturate), compute, and return
-row 0. The resident and streaming paths reject M==1, and on those paths the caller pads a
-single-vector matmul to 4 rows.
+a task computes at any M. Its planners still require `M%4==0`. Its resident int8 and int4
+entries, per-channel and group-wise, also refuse an unaligned M. Every datatype's output is
+bit-exact with those checks bypassed (§"Feature surface stride"). Its one-shot entry points pad M==1 up to 4 rows (3 zero
+rows, which contribute 0 and cannot saturate), compute, and return row 0. The resident and
+streaming paths reject M==1, and on those paths the caller pads a single-vector matmul to 4
+rows.
 
 The `ggml-rocket` backend offloads a matmul only at M >= `ROCKET_MIN_M` (default 32, never
 below 4).
 
-Two other guards in `librocketnpu` confine the field wrap of Erratum E8 to the thin-channel
-case. The `FEATURE_GRAINS` check refuses a tall plane before it wraps. The bank check refuses
-an fp16 plane before it reaches a width of 2048.
+`librocketnpu`'s convolution tilers cap each tile at 1022 input rows by 2047 columns, the
+bound of Erratum E8. A plan refuses a layer whose smallest tile passes either.
 
 `librocketnpu`'s fp16 and int8 generators stream a weight cube larger than its banks. They
 refuse a task below the weight-bank minimum, which `npu_stream_weight_banks()` computes (the
@@ -461,10 +473,9 @@ int8 generator one bank above it), and refuse `WEIGHT_REUSE` on a streamed cube.
 planner chooses a streamed plan by default (`ROCKET_MM_STREAM`, `=0` selects the whole-tile
 plan). The int8 planner streams under `ROCKET_MM_STREAM_INT8=1`.
 
-A short convolution tile also costs more CBUF than its rows suggest. The convolution path
-writes the surface stride as `width × (H − 4)` clamped at 0, and pads a sub-input below four
-rows up to four. A budget taken at the unpadded rows therefore admits a tile that the bank
-check then refuses.
+The convolution generators write the signed stride `width × (H − 4)`. The library still pads a
+sub-input below four rows up to four with zero rows, a rule of its own (§"Feature surface
+stride"). Its tilers therefore take a short tile's CBUF budget at the padded height.
 
 ## Evidence
 
@@ -506,7 +517,7 @@ ways: padded, unpadded with the signed stride, and unpadded with the stride clam
 |---|---|---|
 | Padded to four rows | 111 of 111 bit-exact | 54 of 54 bit-exact |
 | Unpadded, `width × (H − 4)` | 111 of 111 bit-exact | 54 of 54 bit-exact |
-| Unpadded, clamped at 0 | Bit-exact at 8 input channels (one group), incorrect at every shape with more | Incorrect at 32 and 96 input channels; bit-exact at 16, which the entry pads to 32 with zero weights |
+| Unpadded, clamped at 0 | Bit-exact at 8 input channels (one group), incorrect at every shape with more | Incorrect at 32 and 96 input channels. Bit-exact at 16, which the entry pads to 32 with zero weights |
 
 The int8 rows ran through the library entry, which pads the input channels to 32, and 36 of
 them also through the generator directly. The clamped configuration ran only at input widths 1
@@ -518,6 +529,25 @@ formula ([SOURCES.md](SOURCES.md)).
 
 The cosine-metric test that first recorded the failure at M 1 is
 `tests/matmul_correctness_matrix_rocket.c`.
+
+The resident measurement ran `rocket_matmul_int8_prepacked` and `rocket_matmul_int4_prepacked`
+with their call-time M check bypassed, against a host int32 reference, on 2026-11-01. M was 1,
+2, 3, 5, 6, 7, 9, 13, 17, 31, 33, 63, 65, 255 and 257, with 4, 8 and 64 as controls. K×N was
+1024×256 and 4096×1024 at a pack M of 512. It was 3840×3072 at a pack M of 256, where M 257
+spans two M tiles. Sentinel rows past row M stayed unwritten.
+
+The other datatypes ran on 2026-11-02 under the same bypass. M was 1, 2, 3, 5, 7, 13, 17, 31,
+33, 63, 65, 255 and 257, with 4, 8, 64 and 256 as controls:
+
+- `rocket_matmul_int16_exact` at K 256, N 64, operands over [-32768, 32639], against an int64
+  reference
+- `rocket_matmul_bf16` at K 288 and `rocket_matmul_tf32` at K 272, N 48, integer operands in
+  [-8, 8], exact in both datatypes, against an integer reference
+- `rocket_matmul_int8_prepacked_gw` at K 1024, N 192, and `rocket_matmul_int4_prepacked_gw` at
+  K 1024, N 256, group 128, pack M 256, power-of-two scales, against a double reference
+
+All 88 results were exact, and no guard row past row M changed. These shapes are one or two
+tiles, so a many-tile int16, bf16 or tf32 job at an unaligned M is not characterized.
 
 ### CBUF weight streaming
 
@@ -569,8 +599,22 @@ The test is `tests/rowmajor_tile_probe`.
 
 ### Device cost
 
-Each value in the pitch table is taken at 40 rotated reps a process. Two processes ran at 1 and
-2 KiB, and four at the rest.
+The figures are three interleaved rounds of `tests/rowmajor_tile_probe` in its
+`--timing-only`, `--pitch` and `--pitch-asym` modes. Each round ran one process per mode, at 30
+rotated reps a process, and every task in them was exact.
+
+#### Revision history
+
+| Date | Figure | Conditions | Replaced by |
+|---|---|---|---|
+| 2026-09-26 | Rows at the tile's own width, 0.96-1.12x | ~816 MHz, four tile shapes | 0.93-1.14x |
+| 2026-09-26 | Pitch table at 256×384×256: 0.88-0.95 (own), 0.99-1.00 (2 KiB), 0.85-1.07 (4 KiB), 1.12-1.25 (8 KiB), 1.43-1.60 (16 KiB), 2.01-2.29 (32 KiB) | ~816 MHz, 40 rotated reps a process, two processes at 1 and 2 KiB and four at the rest | The 2026-11-02 table |
+| 2026-09-26 | 256×512×128: 1.10-1.13x (8 KiB), 1.29-1.38x (16 KiB), 1.61-1.74x (32 KiB) | ~816 MHz | 0.95-1.10x, 1.15-1.23x, 1.53-1.60x |
+| 2026-09-26 | Row-major read of A: 1.00-1.07x at 256×384×256, 1.06-1.21x at 256×512×128 | ~816 MHz | 1.01-1.21x at both |
+
+The two 2026-09-26 own-width readings looked inconsistent. They are different tasks: the first
+reads A and writes C as rows, and the pitch table's own-width column writes only C as rows.
+Both ranges lie inside the 0.15 process-to-process movement measured on 2026-11-02.
 
 ### Cost in a tiled fp16 job
 
