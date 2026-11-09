@@ -64,9 +64,9 @@ session, resident measures 24.6 against the serial streaming path's 15.8 @ub2048
 
 The cache gives up the quant RAM saving for the full fp16 resident footprint, and it is opt-in
 for that reason. It shows that the 0.64x plateau is a software cost. The 0.64x resembles the
-native resident-int8 0.60x of [not-mac-bound.md](not-mac-bound.md), by a different mechanism:
-host dequant here, int32 readback there. Unlike the int8 readback limit, the dequant cost is
-recoverable, and the cache recovers it.
+whole-tile resident-int8 0.61-0.66x of [not-mac-bound.md](not-mac-bound.md), by a different
+mechanism: host dequant here, int32 readback there. Both costs are recoverable: the cache
+recovers the dequant, and the streamed int8 plan most of the readback.
 
 ## Dequant component of `-ub`
 

@@ -48,18 +48,32 @@ settings compute the same value:
 matmul through the integer convert, fp32 output, `CVT_ROUND` 0.
 
 At `cvt_type` 0, an offset added before the rounding and one added after it differ only at a
-tie with an odd offset. There the order above rounds the sum to even. The result is then one
-count from `round_half_to_even(acc * SCALE >> SHIFT) + OFFSET`.
+tie. The converter adds the offset to the truncated quotient, and then decides the tie
+[HW sweep 2026-11-07]:
 
-With an int8 output, at `cvt_type` 0, saturation comes after the offset. The int8 depthwise
-path is bit-exact against `sat8(round_half_to_even(acc * SCALE >> SHIFT) + OFFSET)` at output
-zero points from -128 to 127, at two scales [HW sweep, RK1, measured 2026-09-23]. That model
-rounds before it adds the offset, so it differs from the `cvt_type` 0 order only at a tie with
-an odd zero point. With an odd `MUL`, a tie is one accumulator residue in `2^SHIFT`
-(§"The `CVT_ROUND` tie rule"), about `2^-SHIFT` of the outputs. Under the NVDLA order,
-subtracting before the multiply, the zero point scales down to a fraction of one.
+| `CVT_ROUND` | A tie of `acc * SCALE / 2^SHIFT` goes to | Equivalent model |
+|---|---|---|
+| 0, half to even | The even neighbor of the quotient plus the offset | `round_half_to_even(acc * SCALE / 2^SHIFT + OFFSET)` |
+| 1, half away from zero | The neighbor away from zero by the accumulator's sign | `round_half_away(acc * SCALE / 2^SHIFT) + OFFSET` |
 
-**Not characterized:** the int8-output writer at a tie with an odd zero point.
+**Conditions:** RK3588 (Turing RK1), `rocket` 1.3.0, NPU clock 928 MHz, 2026-11-07. The direct
+int8-output convolution program at `MUL` 2^14 and `SHIFT` 15 and 17, output zero points from -5
+to 100, under each `CVT_ROUND` setting.
+
+At `CVT_ROUND` 0 the two orders therefore differ at a tie with an odd offset. At `CVT_ROUND` 1
+they differ at a tie where the accumulator and the offset-included sum have opposite signs.
+
+With an int8 output, saturation comes after the offset, and the int8 writer follows the table
+above. The int8 depthwise path is bit-exact against `sat8(round_half_to_even(acc * SCALE >>
+SHIFT) + OFFSET)` at output zero points from -128 to 127, at two scales [HW sweep, RK1, measured
+2026-09-23]. That model rounds before it adds the offset, so at `CVT_ROUND` 0 it is one count
+off at a tie with an odd zero point. With an odd `MUL`, a tie is one accumulator residue in
+`2^SHIFT` (§"The `CVT_ROUND` tie rule"), about `2^-SHIFT` of the outputs. Under the NVDLA
+order, subtracting before the multiply, the zero point scales down to a fraction of one.
+
+> [!NOTE]
+> At the default `CVT_ROUND` 0, the int8 writer adds the zero point before it rounds. A CPU
+> model that rounds first is one count off at a tie with an odd zero point.
 
 ### The `CVT_ROUND` tie rule
 
@@ -134,8 +148,18 @@ A negative result is written with the same magnitude and the sign bit set (`0xFB
 > ±65504. Software that can produce a result past 65504 must bound its operands, or treat both
 > ±65504 and ±inf as an overflow.
 
-**Not characterized:** the fp16 outputs of the EW and LUT paths. Also the flash attention's
-score program, whose softmax stayed finite at raw scores past the fp16 range (Evidence).
+The EW stage's fp16 output narrows by the same rule. An EW add or multiply on a convolution
+feed writes ±inf from 65520 and 65472 at the 65488 tie [HW sweep 2026-11-07].
+
+Nothing narrows before the output. A single fp16 product past 65504 enters the sum at full
+width, as the arithmetic model in [chips/rk3588.md](../chips/rk3588.md) §"fp16 matmul
+arithmetic" has it. A product past the range that later products bring back writes the exact
+in-range sum [HW sweep 2026-11-07]. A lone product of 65520 or more writes ±inf, as a sum does.
+The batched matmul entry, which the flash attention's scores come from, writes the
+same bits.
+
+**Not characterized:** the fp16 output of the LUT path. Also the softmax path of one
+flash-attention run whose output stayed finite at raw scores past the fp16 range (Evidence).
 
 ## Derivation of MUL and SHIFT from a float scale
 
@@ -221,7 +245,8 @@ speed optimization).
 ## Per-channel (per-axis) requant on the BS multiplier
 
 **Conditions:** RK3588 (Turing RK1), NPU clock ~816 MHz, 2026-09-27. The int8-out depthwise
-program, at two shapes, one a stride-2 plane.
+program, at two shapes, one a stride-2 plane. The direct int8-out program at two 3×3 shapes, 64
+to 64 and 32 to 160 channels, for the multiplier, the split shift and `B`.
 
 The output requant has one scale and one shift per task. A per-output-channel scale therefore
 goes on the BS stage's multiplier, which reads a per-channel operand [HW sweep]:
@@ -300,6 +325,32 @@ The per-channel converter in the `0x1xxx` domain (`CVT_CON0` `0x104C` `CVT_TRUNC
 `CVT_CON5` `0x1180` `PER_CHANNEL_CVT_EN`) is the CNA input path. It normalizes features
 and weights as they stream into CBUF, and is not an output requant.
 
+### TFLite's two rounding points
+
+TFLite's integer requant rounds twice. Its fixed-point multiply rounds `acc · M0 / 2^31` to an
+integer, where `M0` is a 31-bit multiplier. Its right shift by `e` bits then rounds again
+([../depthwise-conv.md](../depthwise-conv.md) §"The int8 domain"). The OUT_CVT rounds once. A
+requant agrees with TFLite on more accumulators only when it reproduces both rounding points
+[host-computed 2026-09-27]:
+
+| Requant | Accumulators that differ from TFLite's | Largest share in one layer |
+|---|---:|---:|
+| OUT_CVT alone, `CVT_ROUND` 0 | 1.00% | 24.5% |
+| OUT_CVT alone, `CVT_ROUND` 1 | 1.00% | 24.5% |
+| BS `C` and OUT_CVT `MUL` as one ~30-bit multiplier, rounded once | 1.16% | 24.7% |
+| BS `C = round(M0 / 2^16)` at BS shift 15, then OUT_CVT `MUL` 2^14 at `SHIFT` 14 + `e`, `CVT_ROUND` 1 | 0.13% | 0.44% |
+
+**Conditions:** a host model of each requant over the 255 per-tensor scales of five ImageNet
+classifier `.tflite` models. Each scale takes 400000 accumulators, uniform over the range that
+does not saturate the output.
+
+The last row rounds at the BS shift where TFLite's multiply rounds, and at the OUT_CVT where its
+shift rounds. It still differs on 0.13%, because `C` keeps 15 of `M0`'s 31 bits. The one-rounding
+forms differ most where TFLite's right shift is small. At a right shift of 1 they differ on
+about a quarter of a layer's accumulators, and at 2 on an eighth.
+
+**Not characterized:** the two-point requant on a device.
+
 ### Consequence for int8 activations resident between conv ops
 
 An on-chip requant, per-tensor or per-channel, differs from TFLite's by at most one per op.
@@ -313,7 +364,8 @@ such as COCO mAP.
 
 ### Requant entries
 
-`gen_conv2d_int8_fill(int8_out=1)` uses the integer convert to emit requantized int8, within
+`gen_conv2d_int8` and `gen_conv2d_dw_int8` with `int8_out=1` use the integer convert to emit
+requantized int8, within
 one of TFLite at a rounding boundary ([depthwise-conv.md](../depthwise-conv.md)).
 
 Every entry in rocket-userspace writes `CVT_ROUND` 0, so its rule is half to even. Its CPU
@@ -327,9 +379,31 @@ The fp16 output of the int8 datapath is not available in rocket-userspace.
 
 ### Direct int8-output program
 
-`rocket_conv2d_int8_q` in rocket-userspace programs whole groups, with zero kernels in the
-padding. Through `tflite-rocket` it runs MobileDet and SSD MobileNet v2 1.19-1.27x faster than
-the int32-raw path [HW sweep, RK1, ~816 MHz, 2026-09-27].
+**Conditions:** RK3588 (Turing RK1), NPU clock ~816 MHz (the 600 MHz request), 2026-09-27.
+`tflite-rocket` with `native_int8`, warm.
+
+`rocket_conv2d_int8_q` in rocket-userspace is the direct int8-out entry for a per-tensor weight
+scale. It programs whole groups, with zero kernels in the padding. On MobileDet's direct
+convolutions, 0.037% of its outputs differ from TFLite's requant by one count, and none by more
+[HW sweep].
+
+Through `tflite-rocket`, the entry runs two detectors faster than the int32-raw path with its
+host requant [HW sweep]:
+
+| CPU configuration | MobileDet | SSD MobileNet v2 |
+|---|---:|---:|
+| Governor `performance`, process on the A76 cores | 1.22-1.27x | 1.19-1.20x |
+| Governor `ondemand`, `scaling_min_freq` 1.2 GHz, no CPU affinity | 1.205-1.221x | 1.165-1.169x |
+
+On `ondemand`, MobileDet takes 148 ms against the int32-raw path's 180 ms.
+
+For a 1×1 convolution, the other path is the resident int8 matmul with a host requant. The
+entry is faster than it at every output plane of 400 pixels or more. At 100 pixels the matmul
+is faster on 8 of 12 convolutions [HW sweep]. `tflite-rocket` therefore sends a 1×1 to the
+entry from 256 pixels (`pw_i8out_min_m`). On those 1×1s, 0.050% of MobileDet's outputs and
+0.074% of SSD MobileNet v2's differ from TFLite's by one count, and none by more. Splitting a
+layer's output channels across a pool's workers measures 0.99-1.03x the unsplit speed [HW
+sweep].
 
 ### Per-axis depthwise entry
 
@@ -352,6 +426,19 @@ mAP over 100 images is 0.3019 against the CPU's 0.2996. The depthwise term falls
 library call itself moves 28.6 -> 26.8 ms. Most of these layers are small enough that the fixed
 per-call overhead sets their cost.
 
+### Per-axis direct entry
+
+`rocket_conv2d_int8_q_perc` in rocket-userspace runs a per-output-channel weight scale on the
+direct int8-out program. Its planner is the depthwise entry's, which sorts the output channels
+into scale classes. Each class runs as tasks of whole 32-kernel groups, with its own BS shift
+and OUT_CVT gain. At eight shapes the device matches an independent host model of that
+arithmetic on every element [HW sweep, RK1, ~816 MHz, 2026-09-27].
+
+Against TFLite's per-channel arithmetic, 0.156% of the outputs of EfficientDet-Lite0's 102
+convolutions differ by one count, and none by more [HW sweep, RK1, ~816 MHz, 2026-09-27]. Over
+those convolutions and the 1×1s of §"Direct int8-output program", the largest share in one
+layer is 0.41%, at a class head.
+
 ## Evidence
 
 ### Integer convert
@@ -372,6 +459,21 @@ At `cvt_type` 0 only the output-scale placement with ties to even is exact at al
 settings. At `cvt_type` 1 only the offset before the multiply, with ties to even, is.
 The odd offsets at a tie separate the two placements at `cvt_type` 0.
 
+The tie order on the int8 writer was measured with `tests/requant_zp_order_probe.c` through
+`rocket_conv2d_int8_q`. Every input sits at its zero point, so each output channel's
+accumulator is its bias. The scale's top 14 mantissa bits are all ones, so the derivation gives
+`MUL` exactly 2^14. The requant is then `acc >> e`, for e 1 and 3. Of 64 channels, 32 sit on
+ties, odd multiples of 2^(e-1), and 32 off them.
+
+Each call wrote 1024 outputs at one zero point. The zero points were -5, -1, 0, 1, 2, 3, 7 and
+100, one call each. At `CVT_ROUND` 0 the offset-first model explains all 1024 outputs of every
+call. At each odd zero point, all 512 ties disagree with the round-first model. At `CVT_ROUND` 1
+the round-first model explains every output. No job timed out.
+
+The offset-first model with ties away from zero misses 16-112 ties at the odd zero points. It
+also misses 32 ties at zero point 2 and 256 at zero point 100. Those are the ties whose
+accumulator is negative while the offset-included sum is not.
+
 ### The `CVT_ROUND` tie rule
 
 The test is `tests/requant_round_probe.c` (2026-09-23). Each run leaves exactly one of five
@@ -390,7 +492,7 @@ are all ones, and asserts the rule on both SoCs.
 
 ### fp16 narrowing
 
-The table comes from one `gen_matmul_fp16` task with `fp32tofp16` = 1, M 4, K 512, N 16. Each
+The table comes from one `gen_gemm_fp16` task with `fp16_out` = 1, M 4, K 512, N 16. Each
 weight column holds integers of at most 2048, which are exact in fp16. Its sum is one
 target: 1000, 2048, 65472, 65488, 65500, 65504, 65505, 65519, 65520, 65535, 65536, 70000,
 100000, 135000, 262144 or 1000000. The activation rows are +1, −1, +1 and −1. Every sum is an
@@ -400,10 +502,35 @@ their sum.
 
 An earlier measurement, ggml-rocket's `test-rocket-fa` with `ROCKET_FA_QSCALE=0` (RK1,
 ~816 MHz, 2026-10-09), leaves a raw `q·k` of 60000 to 135000 on the flash attention's fp16
-scores. The host softmax that reads the scores returned no non-finite output, where an inf
-score gives NaN. It differed from a double reference by up to 1.0. That run recorded the
-softmax output, not the value of an overflowed score. It was read as a converter that
-saturates at ±65504, which the one-task measurement does not show.
+scores. The softmax that read the scores returned no non-finite output, where an inf score
+gives NaN in the host softmax. It differed from a double reference by up to 1.0. That run recorded the
+softmax output, not the value of an overflowed score, and not which of the flash attention's
+softmax paths computed it. It was read as a converter that saturates at ±65504. Neither the
+one-task measurement nor the product measurement below shows that: both score entries write ±inf
+from 65520.
+
+The EW measurement is `tests/fp16_ew_overflow_probe.c` through `rocket_ew_add_fp16` and
+`rocket_ew_mul_fp16`, the convolution-fed EW program, on 256 elements each. The add walked
+65472 + 8k for k 0-127 and its negation. The multiply used operand pairs whose products are
+65472, 65504, 65520 (45 × 1456 and 91 × 720) and 65536, with their negations. No product of two
+fp16 values equals the 65488 tie. Every output matches IEEE round-to-nearest-even narrowing, and
+saturation at 65504 explains none of the results from 65520 up.
+
+The product measurement is `tests/fp16_mm_product_overflow_probe.c` through
+`rocket_matmul_fp16` at M 4, K 128 and N 64, one K pass. It ran on the RK1 at 928 MHz under
+`rocket` 1.3.0, on 2026-11-07. The activation rows hold ones and a few large values, with the
+signs + − + −. The large values are 256, 45, 625, 375, 1000, 100, 200, 2047 and 999. Some weight
+columns select one product of 65472 to 1000000, some two or three in-range products summing past
+65504, and some many small ones. The cancellations start with a product past 65504 and end in
+range, such as 70000 − 10000 and 1000000 − 999000.
+
+Every element is scored against five models. The first holds the products and their sum exact
+and narrows the sum once at the output. The second clamps that output to ±65504. The other three
+clamp each product to ±65504, make each product of 65520 or more ±inf, or round each product to
+fp16. The first explains 256 of 256 elements and the others 208 to 236. The cancellation
+1000000 − 999000 reads 1000, where a clamped product gives 0 and an infinite one NaN.
+
+`rocket_matmul_fp16_batch` on the same operands as two items writes the same bits.
 
 ### Derivation of MUL and SHIFT from a float scale
 
@@ -443,14 +570,40 @@ The RK3576 test sets `C` 16384 and fields 14 and 12, in both orders
 (`tests/rk3576_coeff_c shiftsign`). The sign-split model explains 32 of 32 channels, and either
 field alone explains 16-17.
 
+The direct-program test is `tests/conv_i8out_probe` in its per-channel mode, at 64 to 64 and 32
+to 160 channels. Every element is scored against the split model, the CPEND model and the
+multiplier left out. Its cases are these:
+
+- An identity multiplier
+- `C` from 8192 to 32767 at shift 14
+- The shift split 14 and 6
+- `B` with `OW_SRC` clear and set
+
 ### BN stage per-channel multiplier
 
 All 8 tasks over two shapes ran to the 500 ms watchdog and wrote nothing. No reference program
 found here enables NRDMA.
 
+### TFLite's two rounding points
+
+The model reproduces TFLite's reference integer arithmetic, both roundings half away from zero,
+then the clamp. The OUT_CVT rows derive `MUL` and `SHIFT` as the library does. The ~30-bit row
+searches `C` from 16384 to 32767 for the pair closest to the scale. The scales are those of
+Inception v1 and v3, MobileNet v1 and v2, and ResNet-18. A real activation concentrates nearer
+the zero point than a uniform accumulator, so the uniform range weights each layer's extremes
+more than inference does. The per-layer medians are 0.27% for both OUT_CVT rows, 0.39% for the
+~30-bit row and 0.11% for the two-point row.
+
 ### Software support
 
 The CPU model is `tests/requant_model.h`. The per-axis test is
-`tests/conv_dw_int8_perc_runtime.c`. The MobileDet and SSD MobileNet v2 measurement is pinned,
-over four rotated passes. The EfficientDet-Lite0 measurement has the governor pinned, on the
-A76 cores, over four rotated passes.
+`tests/conv_dw_int8_perc_runtime.c`. The direct per-axis test is
+`tests/conv2d_int8_q_perc_rocket.c`, through the fd, context and pool entries and the host
+model. It also scores TFLite's per-channel arithmetic, failing on any difference past one.
+
+The `performance` speedups for MobileDet and SSD MobileNet v2 are from four passes with the
+configuration order rotated, and the `ondemand` ones from two. The 1×1 comparison ran 39
+convolutions on both programs, 27 at output planes of 400 pixels or more and 12 at 100 pixels.
+Each of EfficientDet-Lite0's 102 convolutions ran on TFLite's own input. The per-axis depthwise
+speedup on EfficientDet-Lite0 has the governor pinned, on the A76 cores, over four rotated
+passes.

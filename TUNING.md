@@ -157,6 +157,7 @@ free RAM.
 | Interactive chat, short prompts | Any | A `Q4_K_M` GGUF for decode, and `taskset 0xf0 -t 4`. No NPU options | Prefill is below the offload threshold, and the turn is decode-bound |
 | Medium or long prefill | F16, fits | Defaults only (K-accumulation, weight streaming, operand reuse and attention offload on) | Already the fastest prefill |
 | Agentic or RAG, repeated prefill | F16, fits ~2x | `ROCKET_F16_RESIDENT=auto` | Packs the weights once |
+| Agentic or RAG, repeated prefill | F16, fits ~1.5x but not ~2x | `ROCKET_INT8=1 ROCKET_INT8_RESIDENT=1`, and `ROCKET_INT8_CACHE_MB=0` at 8 B and above | Holds the weights resident in half the bytes of resident fp16. Perplexity rises 0.7-2.8% ([Native int8 / int4 / bf16](#native-int8--int4--bf16)) |
 | Medium or long prefill | Quantized GGUF, fp16 does not fit | `-b 2048 -ub 2048` | Amortizes the per-micro-batch dequantization. Two of eleven models lose, so measure it |
 | Agentic, RAG or long prefill | Quantized GGUF, fp16 fits | `ROCKET_QUANT_RESIDENT=auto` at the default `-ub`, without `-b 2048 -ub 2048` | Faster than the combination with `-ub 2048` on all seven models measured both ways. Costs the full fp16 footprint |
 | Medium or long prefill | MoE whose experts offload (gpt-oss, DeepSeek-V2-Lite) | `-b 2048 -ub 2048`. The expert offload needs no option | Default-on, and it decides its own placement ([MoE routed experts](#moe-routed-experts-on-the-npu)) |
@@ -321,7 +322,9 @@ converge within noise.
 - **RAM cost:** roughly the fp16 model size free (Qwen3.5-9B ~18 GB), plus the NPU
   [IOVA window](GLOSSARY.md). There is no disk cost beyond the quantized GGUF. Use `auto`,
   which sizes the budget from free RAM, rather than a blanket `=1`. On a model larger than the
-  default 2 GB budget, `=1` places only part of it, which is a net loss against streaming.
+  default 2 GB budget, `=1` places only part of it, which is a net loss against streaming. On
+  Qwen3.5-9B `Q4_K_M` at pp2048 and `-ub 2048`, `=1` measured 19.3 t/s against 22.1 streamed
+  [HW sweep 2026-07-01].
 - **Gain:** 1.35-1.75x over streaming at the default `-ub`, against 1.00-1.66x combined with
   `-ub 2048`, on seven models of 1.8 to 11.9 B [HW sweep 2026-08-29/31]. At pp2048 a resident
   Q4_K_M GGUF of 1.8-9.0 B prefills at 3.2-4.2x the repacked 8-thread CPU backend
@@ -369,17 +372,26 @@ measures 132 t/s in three processes and 151-155 t/s in two. The combined form me
   used for repeated prefill.
 - **RAM cost:** ~2x the fp16 model size.
 - **Gain:** 1.14-1.16x at pp2048 on three 3-4 B F16 models with the streamed default
-  [HW sweep 2026-11-02, 928 MHz]. Gemma-4-12B F16, 94% resident, gains 1.00-1.12x. The
-  whole-tile plan at ~816 MHz gained 1.078-1.084x on the 3-4 B models [HW sweep 2026-08-29]. A fusable
+  [HW sweep 2026-11-02, 928 MHz]. Gemma-4-12B F16, 94% resident, gains 1.00-1.12x. A fusable
   projection group (Q\|K\|V, gate\|up) is placed as one combined weight. The gain
   therefore includes fusion's shared packA, which added ~+5.7% to residency alone on the build
   of 2026-07-15.
   [perf/weight-residency-fusion.md](perf/weight-residency-fusion.md) has the mechanism and the
   comparison.
+- **Workers:** the worker count (`ROCKET_N_THREADS`, default 5) changes how many weights this
+  option places, and not monotonically. On Gemma-4-12B F16 at pp512, six workers place 293
+  weights, against 286 at five and 274 at seven [HW sweep 2026-09-02]. At pp2048 the memory
+  reserve binds first, and six workers place 284 against five's 286 [HW sweep 2026-09-03].
 
 > [!CAUTION]
 > `ROCKET_PREPACK_MADVISE` reclaims the source weights for a prefill-only run, and breaks CPU
 > decode. Do not use it for an interactive or serving run.
+
+Prefetch hints do not shorten a cold GGUF load. The kernel's default readahead already streams a
+cold mapping as minor faults, at ~780 MB/s, the NVMe's read rate. `MADV_WILLNEED` is neutral, and
+`MADV_SEQUENTIAL` with `MADV_WILLNEED` takes 33% longer, with 16383 major faults [HW sweep
+2026-06-30]. The sequential hint's drop-behind evicts pages that the weight scatter reads again
+[hypothesis].
 
 ### Host CPU pinning
 
@@ -398,6 +410,18 @@ The NPU time is identical with and without pinning, so the gain is on the host. 
 not decide it: the streamed 12B gains as much as the resident 9B. `taskset 0xf0` at 8 threads
 gains 1.05-1.10x on the same three. The 8-thread gain is roughly a third to a half of the share
 of instructions the unpinned run retires on the little cluster.
+
+> [!NOTE]
+> Pin with `taskset`, not with `llama-bench`'s own affinity flags. Over the same eight cores,
+> `-C 0xff --cpu-strict 1` measured 59.94 t/s on Qwen3.5-0.8B F16, against 125.97 t/s with no
+> affinity set [HW sweep 2026-08-28/29].
+
+No runtime flag replaces the pin. llama.cpp's `--poll 0` measures 1.013x the unpinned prefill on
+Qwen3.5-0.8B F16 [HW sweep 2026-09-01]. In an OpenMP build of llama.cpp the flag reaches no
+compiled code. libgomp's `OMP_WAIT_POLICY` and `GOMP_SPINCOUNT` do reach the thread barrier. But on
+Gemma-4-12B F16 all of libgomp's work is at most 0.24% of prefill time [host-computed]
+([perf/data/tuning-matrix.md](perf/data/tuning-matrix.md) §"Pinning to the A76s is worth
+1.05-1.13x on prefill, and the gain tracks the little cluster's instruction share").
 
 CPU decode gains too. At `taskset 0xf0 -t 4` it runs 1.32-4.22x the unpinned `-t 8` rate over
 fifteen GGUFs, F16 and quantized, dense and MoE [HW sweep 2026-11-01, llama.cpp b11539,
@@ -455,6 +479,9 @@ RK1].
   default `-ub 512` it measures 1.97-2.00x that CPU backend, and 2.17-2.21x the experts-on-CPU
   configuration [HW sweep 2026-11-02, 928 MHz]. That configuration reads 0.90-0.91x the CPU
   backend at pp512.
+- **Workers:** set `ROCKET_N_THREADS=6`. On gpt-oss-20b at pp2048, six workers measure 1.022x
+  the default five, and seven and eight measure no more [HW sweep 2026-09-02]. Every count
+  places the same stacks.
 - **Micro-batch:** where the experts offload, `-b 2048 -ub 2048` measures 1.25x the default
   `-ub` on gpt-oss-20b and 1.32x on DeepSeek-V2-Lite at pp2048 [HW sweep 2026-08-29]. Where the
   backend leaves the experts on the CPU, keep the default `-ub`: on Qwen3-30B-A3B `-ub 2048` is
@@ -616,12 +643,21 @@ experts-on-CPU baseline, rather than a streamed partial-residency loss. Partial 
   int4 and int8 are char-identical to fp16 greedy output, and bf16 is token-identical. At
   `512×3840×4096`, int8 with streamed weights and int4 run 1.14-1.20x fp16's streamed matmul.
   Their MAC rates are 2x and 4x, but the matmul is DMA/dispatch-bound
-  ([perf/not-mac-bound.md](perf/not-mac-bound.md)). In a model, fewer bits do not raise prefill
-  speed.
-- **When to use it:** only to make a model fit that would not at F16, or for bf16's fp32 range.
-  Resident int8 in-model prefill is 0.60x fp16, and int4 is ~0.53x. No on-chip K-accumulation
-  is implemented for the int32 partials, so each K-tile reads back. The result is slower, but
-  a quarter to a half of the footprint.
+  ([perf/not-mac-bound.md](perf/not-mac-bound.md)). In a model, at equal residency, fewer bits
+  do not raise prefill speed.
+- **When to use it:** to make a model fit that would not at F16, or for bf16's fp32 range.
+  The int8 path also holds a model's weights resident in half the memory resident fp16 takes.
+  Resident int8 in-model prefill runs at 0.95-0.99x resident fp16 and 1.11-1.16x the default
+  fp16 path, on two 3 B models at 928 MHz. On Ministral-3-8B it reaches resident fp16's rate [HW sweep 2026-11-07]
+  ([perf/not-mac-bound.md](perf/not-mac-bound.md) §"In-model int8 and int4 prefill"). int4
+  measured ~0.53x fp16 in the whole-tile program, at ~816 MHz.
+- **Budget:** at 8 B and above, set `ROCKET_INT8_CACHE_MB=0`, which removes the budget. The
+  default 4096 MB holds 58-62% of an 8-9 B model's int8 weights, and the rest take the fp16
+  path. The partial placement costs 3-5% of prefill on Ministral-3-8B and 1-3% on Qwen3.5-9B
+  [HW sweep 2026-11-07, 928 MHz].
+- **Accuracy:** resident int8 raises wikitext perplexity 0.7-2.8% over fp16 on three models of
+  3-9 B [HW sweep 2026-11-06/07]. The Hadamard rotation lowers Qwen3.5-9B's, but not
+  Ministral-3-8B's ([MODEL-NOTES.md](MODEL-NOTES.md#qwen35-9b-q4_k_m)).
 - **Disk cost:** the native int4 and int8 paths quantize from a full-precision (F16) GGUF and
   require Hadamard rotation. They do not take a pre-quantized `Q4` file, so they use the disk
   of the larger F16 GGUF to save runtime RAM. With only a `Q4_K` GGUF, use the GGUF-quant path
@@ -630,6 +666,14 @@ experts-on-CPU baseline, rather than a streamed partial-residency loss. Partial 
 - **Recommendation:** for RAM alone, a `Q4_K_M` GGUF is simpler and also speeds decode. Run it
   as [Options by workload](#options-by-workload) gives. Native int4 is for the ¼ footprint from
   an F16 source.
+
+A bf16 GGUF offloads without `ROCKET_BF16=1`, which selects the exact bf16 path that writes an
+fp32 result. Without it, each micro-batch converts the bf16 weights to fp16 and runs the fp16
+path. That conversion is faithful: Qwen3.5-0.8B's perplexity is 20.4427 from the BF16 GGUF and
+20.4425 from the F16 one. It is also repeated on every micro-batch. At pp2048 the BF16 GGUF
+therefore prefills at 0.56-0.58x the F16 GGUF on Qwen3.5-0.8B and 9B [HW sweep 2026-07-02,
+~816 MHz, whole-tile fp16 plan]. Convert a bf16 GGUF to F16 once, with
+`llama-quantize in.gguf out.gguf f16`.
 
 ### Attention offload
 
@@ -672,7 +716,7 @@ not list, treat it as a projection, not a measurement.
 | `ROCKET_MM_ASYM`, `ROCKET_KACC` and DATA_REUSE | A few models, mostly Gemma-4-12B and Qwen3.5 | Every other model, which takes the default without a measurement |
 | `-b 2048 -ub 2048` | Eleven models, 0.75-30.53 B [HW sweep 2026-08-29/30] | |
 | `ROCKET_QUANT_RESIDENT` | Combined with `-ub 2048`, nine quantized models of 0.75-11.91 B [HW sweep 2026-08-28..31]. Alone and combined, seven models of 1.8 to 11.9 B | How the gain falls with the placed fraction. `gemma4-12b` is the only partly placed model on the board, at 83-87% alone against 73-74% combined, a two-point contrast on one model rather than a curve |
-| `ROCKET_F16_RESIDENT` | Three 3-4 B F16 models [HW sweep 2026-08-29] and Gemma-4-12B F16 [HW sweep 2026-09-01] | The gain with CBUF weight streaming on |
+| `ROCKET_F16_RESIDENT` | Three 3-4 B F16 models with CBUF weight streaming on [HW sweep 2026-11-02], and Gemma-4-12B F16 | Models above 12 B |
 | MoE expert offload | gpt-oss-20b and DeepSeek-V2-Lite, and Qwen3-30B-A3B, which it declines [HW sweep] | |
 | `ROCKET_MOE` size thresholds | Fitted on gpt-oss-20b and DeepSeek-V2-Lite, which disagree about which shapes are eligible. Qwen3-30B-A3B, a third architecture, confirms the threshold's sign but not its position, at 201 MMAC against the 340 default | The threshold's position on another architecture |
 | `ROCKET_MOE_CACHE_MB` | Two budget series, gpt-oss-20b and Qwen3-30B-A3B, which invert. Both on the same 31 GiB board | The board-size axis. The small-board table is arithmetic |
@@ -691,7 +735,39 @@ Each prefill pinning gain is from rotated interleaved passes. The overlap with r
 one pass of `tg64 -r 3` per configuration, each from a memory reset, at 928 MHz
 ([perf/data/tuning-matrix.md](perf/data/tuning-matrix.md)). The CPU-only prefill comparison is
 one process per thread count at pp512 [HW sweep 2026-11-01]. It measured 1.04x on
-SmolVLM2-2.2B F16 and 1.10x on Ministral-3-8B `Q4_K_M`, from `ggml-rocket`'s `MEASUREMENTS.md`.
+SmolVLM2-2.2B F16 (30.94 against 29.63 t/s) and 1.10x on Ministral-3-8B `Q4_K_M` (10.29 against
+9.34 t/s), from `ggml-rocket`'s `MEASUREMENTS.md`.
+
+The `--poll 0` figure is six rotated passes, with ratios paired within a pass, 0.44 standard
+errors above 1.00. In the same passes `taskset 0xf0 -t 4` measured 1.165x. The A55 instruction
+count moved 0.35%, and context switches 0.05% [HW sweep 2026-09-01, RK1]. The
+`-C 0xff --cpu-strict 1` reading is one process per configuration.
+
+### `ROCKET_F16_RESIDENT=auto`
+
+The placement counts at pp512 are byte-identical across independent processes [HW sweep
+2026-09-02, RK1]. Five readings are at five workers, three at six and two at seven. The pp2048
+counts are two processes per worker count, `-p 2048 -n 0 -r 1` [HW sweep 2026-09-03]. At pp2048,
+eight workers measured 0.987x five's prefill over three rotated passes, and placed 281 weights
+against 286 [HW sweep 2026-09-01].
+
+The default of five workers comes from a dense fp16 sweep on Gemma-4-12B F16 at pp1024 and
+`-ub 1024`. Three to six workers measured 7.15, 8.06, 8.24 and 8.27 t/s, with the NPU at its
+198 MHz boot clock [HW sweep 2026-06-14]. That operating point is superseded, and the sweep is not
+characterized at 928 MHz.
+
+### Cold GGUF load
+
+The prefetch figures are a microbenchmark on the RK1's NVMe [HW sweep 2026-06-30]. It reads a
+2 GB file through a cold mapping in the weight scatter's tiled order, after a `drop_caches`:
+
+| Advice | Wall-clock time | Major faults |
+|---|---:|---:|
+| None | 2.72-2.75 s | 1 |
+| `MADV_WILLNEED` | 2.78-2.82 s | 1 |
+| `MADV_SEQUENTIAL` | 2.73 s | 1 |
+| A sequential warm-up pass | 2.77-2.79 s | 1 |
+| `MADV_SEQUENTIAL` and `MADV_WILLNEED` | 3.64 s | 16383 |
 
 ### `-b 2048 -ub 2048` (llama.cpp)
 
@@ -744,7 +820,16 @@ resident on every pass except `gemma4-12b`, which places part of its weights
 `gemma4-12b`'s +3.5% is the narrowest margin in the set, and its per-pass spread is the widest,
 at 6.3%. Its sign is resolved, and its size is not.
 
+The blanket `=1` comparison, 19.3 against 22.1 t/s, is one process per configuration
+[HW sweep 2026-07-01, RK1].
+
 ### MoE routed experts on the NPU
+
+#### Worker count
+
+The worker-count ratios on gpt-oss-20b are paired within each of three rotated passes, at
+`-b 2048 -ub 2048` [HW sweep 2026-09-02, RK1]. An A/B with the two configurations adjacent
+measured eight workers at 1.027x five.
 
 #### Budget series on gpt-oss-20b
 
@@ -815,6 +900,7 @@ Readings taken on earlier builds:
 | 2026-06-28 | `-b 2048 -ub 2048` on the 9B | ~2.1x (2.098): 8.2 -> 17.2 t/s | The 2026-08-29/30 sweep measures 1.424x |
 | 2026-06-28 | `-b 2048 -ub 2048` on the 27B | 2.25x (2.250) | The 2026-08-29/30 sweep measures 1.532x |
 | 2026-06-28 | `ROCKET_QUANT_RESIDENT`, Qwen3.5-9B `Q4_K` pp2048 | Resident 24.6 vs streaming 15.8 = 1.56x (~0.92x the 26.8 F16) | Streaming at `-ub 2048` with serial dequant [HW sweep 2026-06-28] |
+| 2026-08-29 | `ROCKET_F16_RESIDENT=auto`, three 3-4 B F16 models, pp2048 | 1.078-1.084x | ~816 MHz, the whole-tile fp16 plan. The 2026-11-02 series at 928 MHz with CBUF weight streaming measures 1.14-1.16x |
 
 Both `-ub` readings are lower in the 2026-08-29/30 sweep by the same 0.68 factor
 (2.098 -> 1.424, 2.250 -> 1.532). Between the two sweeps, three default-on host-cost cuts

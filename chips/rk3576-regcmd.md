@@ -51,7 +51,7 @@ any of them programs the SoC incorrectly, and no error is reported:
 | CORE `0x301c` hi | Output height | Halved | `oh_task-1`, the output rows the task writes, minus one | The `conv2d` capture: `0x27` = 39 for a 40-row output |
 | `0x1088`, `0x1070` | Feature-data address | `0x1070` on the ARGB path | `0x1088` on both datapaths | The `conv0` capture's fourth task: `0x1088` is `0x12360`, and `0x1070` is zero |
 | `0x1080` | Pad word | Open. A lookup keyed on stride and depthwise | The closed form below | The `conv2d` capture: `0x02020101` |
-| `0x103c` hi, `0x1044` lo | CBUF entries | `max(iw/4, ic/2)` | `ceil(iw*ic/64)` | The depthwise capture: 56 at `iw`=112, `ic`=32 |
+| `0x103c` hi, `0x1044` lo | CBUF entries | `max(iw/4, ic/2)` | `ceil(iw*ic/64)` for a tight plane | The depthwise capture: 56 at `iw`=112, `ic`=32 |
 
 The output-height field is the number of output rows *this task* writes, minus one. Software
 must program CORE `0x301c` as `(oh_task-1)<<16 | (ow-1)`, and the same `oh_task-1` at DPU
@@ -90,6 +90,10 @@ capture separates the two. At `iw` 112 and `ic` 32 the granule count is 56, and 
 gives 28. A narrow, deep tile, such as a 1×1 pointwise convolution over a small plane, is in the
 region where the two differ.
 
+The two halves are equal only for a tight plane. `0x103C` high is the fetch length, and
+`0x1044` low is the DDR row advance, which a plane inside wider rows sets to the pitch
+([rk3576.md](rk3576.md) §"A plane inside wider rows").
+
 ## Unnamed registers and their RK3588 equivalents
 
 The offsets below are RK3588 registers at a new offset. The published map records several of
@@ -101,7 +105,7 @@ them as RK3576-only, with no RK3588 counterpart:
 | `0x104C` / `0x1050` | the four CVT scales, two per register (`scale1<<16 \| scale0`, `scale3<<16 \| scale2`) | `CNA_CVT_CON1..4`, one each |
 | `0x1054`-`0x105C` | the CVT offsets (non-zero only on the int8 ARGB path, where the captures set them to -128 per channel, and inert there: §"The int8 ARGB input domain") | folded into the same CON1..4 |
 | `0x108C` | burst lengths, `weight_burst<<16 \| data_burst`, `0x000F000F` | `CNA_DMA_CON0` `0x1078` |
-| `0x103C` hi, `0x1044` lo | CBUF data entries, `ceil(iw*ic/64)`, written twice | `CNA_CBUF_CON1` `0x1044` |
+| `0x103C` hi, `0x1044` lo | The fetch length and the DDR row advance, in 64-byte granules. Both are `ceil(iw*ic/64)` for a tight plane, and they differ for a plane inside wider rows | `CNA_CBUF_CON1` `0x1044` |
 | `0x1084` | the CNA border pad constant | `CNA_PAD_CON1` `0x1184` |
 | `0x5024` | base of the DPU shift word, a per-task operand rather than a spare (see below) | the register fields `BS_MUL_CFG.BS_MUL_SHIFT_VALUE` `0x4048` and `DATA_FORMAT.BS_MUL_SHIFT_VALUE_NEG` `0x4010` |
 
@@ -152,7 +156,7 @@ each of these is programmed correctly:
 - The output geometry
 - The writer
 
-At IC=OC=32 the RK3576 takes the same weight cube as the RK3588 (`weight_conv_int8`,
+At IC=OC=32 the RK3576 takes the same weight cube as the RK3588 (`conv_weight_index_int8`,
 oc-group 32 / ic-group 32).
 
 The int8 convolution is bit-exact at every geometry whose channel counts are programmed as
@@ -174,7 +178,7 @@ budget is the `rocket_hw_rk3576` machine-parameter profile.
 ## Channel counts as multiples of 32
 
 Software must program the register `ic` and `oc` each as a multiple of 32, the group that
-`weight_conv_int8` pads its two channel axes to.
+`conv_weight_index_int8` pads its two channel axes to.
 
 > [!CAUTION]
 > A convolution whose programmed channel counts are not multiples of 32 produces incorrect
@@ -211,7 +215,7 @@ Rounding `oc` up to 32 satisfies both.
 
 The vendor compiler does not pad. Its `conv2d` capture is ic=16 with weight bytes
 `ic*oc*kh*kw`, the unpadded size, so the vendor packs a 16-channel weight group where
-`weight_conv_int8` pads to 32. The regcmd encoder matches that program register for register, so the
+`conv_weight_index_int8` pads to 32. The regcmd encoder matches that program register for register, so the
 difference is in the weight cube and not in the registers. Padding is the RK3588 cube's form of
 the same conv. The vendor's partial-group packing is the other form, at half the weight bytes
 for such a layer.
@@ -535,7 +539,7 @@ stride, the C2=16 channel atom inside a row, and the CBUF surface/group stride. 
 
 | Register | Value | Unit | Function |
 |---|---|---|---|
-| `0x1090` | `iw*4` | 4-byte | Line stride |
+| `0x1090` | `iw*4` | 4-byte | Line stride, advanced once every four rows. Not a row pitch |
 | `0x1094`, `0x1098` | `iw*ih` | 16-byte | CBUF surface/group stride |
 
 ### The coefficient buffer
@@ -865,7 +869,7 @@ counts, the sub-encoding's clearest signature in a capture.
 | `0x104C`/`0x1050` | scales = 1 | `0x4000` (Q14 unity) per live channel |
 | `0x1054`-`0x105C` | 0 | -128 per live channel in the captures. Inert |
 | `0x1084` pad const | `zp - 0x80`, already centered | the stored zero point, `zp + 0x80` for a uint8 `zp`, one byte per channel |
-| `0x1090` line stride | `iw*4` (a cube row in 4-byte words) | `iw*ic/16` (the packed row in 16-byte atoms) |
+| `0x1090` line stride | `iw*4`, advanced once every four rows | `iw*ic/16` (the packed row in 16-byte atoms) |
 | `0x1078` hi | `iw-1` | `iw*ic/16 - 1` |
 | `0x1094`, `0x1098` | plane / task surface strides | both `line_stride * ih` |
 | `0x118C` | `(iw-1)<<16 \| (ih_full-1)` | `(entries-1)<<16 \| (entries-2)` |
@@ -1240,22 +1244,21 @@ On the refetching int8 path the live bits measured are `0x1018` bit 30 and `0x10
 (§"The row window and its three registers"). `0x1018` bit 31, the reuse form's retain flag, is
 not characterized on the RK3576.
 
-## The appended DPU epilogue stage
+## The per-tensor weight BS arrangement
 
-One DPU epilogue op appended to a convolution changes three registers [source-confirmed:
-RKNN-Toolkit2 captures]. A bias add, a scale and an eltwise sum each change the same three, to
-the same values:
+The vendor compiler arranges an int8 convolution's BS stage by how the convolution's weights
+are quantized [source-confirmed: RKNN-Toolkit2 2.3.0 captures]. Per-channel weight scales,
+the compiler's default, and one scale for the whole weight tensor differ in three registers:
 
-| Register | plain conv | conv + an epilogue stage |
+| Register | per-channel weights | per-tensor weights |
 |---|---|---|
 | `0x4044` BS ALU operand | `1` | `0` |
 | `0x4050` BS config | `0x80011111` | `0x80021111` (bits[19:16] 1 -> 2) |
 | `0x501C` BRDMA config | `0x710` | `0x114` |
 
-These registers do not encode which epilogue op runs. A per-output-channel bias, a
-per-channel scale and a per-channel sum all lower onto one BS-stage configuration. What
-separates them is the coefficient buffer's contents and the requant triple
-(`0x40AC`-`0x40B4`), the only other thing that differs between the three captures.
+The weights' values do not move these registers. The same 16->128 k5 s2 convolution gives
+the first column compiled per-channel and the second compiled per-tensor. So do convolutions
+whose weights vary only the bias, only the per-channel magnitude or only the sign mix.
 
 Neither `0x4050` nor `0x501C` decodes under the RK3588's field map at these offsets. The value
 `0x80011111` sets bit 12, which is reserved in the RK3588's `BS_CFG`. The RK3576's
@@ -1304,8 +1307,8 @@ visible:
 
 | arrangement | `0x4044` | `0x4050` | `0x501C` |
 |---|---|---|---|
-| plain int8 conv | 1 | `0x80011111` | `0x710` |
-| int8 conv + an epilogue stage | 0 | `0x80021111` | `0x114` |
+| int8 conv, per-channel weights | 1 | `0x80011111` | `0x710` |
+| int8 conv, per-tensor weights | 0 | `0x80021111` | `0x114` |
 | vendor float conv | 2 | `0x00021111` | `0x100` |
 
 The first arrangement is bit-exact at both precisions with a coefficient group (`A`, `B`, `C`)
@@ -2157,9 +2160,9 @@ task still waits for a poll. The RK3588 series' `086` arrangement, ported as
 `patches/rk3576/npu/0015` and `0016`, runs all n from one kick:
 
 - Userspace lays the n programs out contiguously at one even-word stride. It rewrites each
-  trailer's inert `OP_NONE` filler into a `PC_BASE_ADDRESS` write pointing at the next
+  trailer's inert `TARGET_NONE` filler into a `PC_BASE_ADDRESS` write pointing at the next
   (`src/rocket_chain.c`, shared with the RK3588). The RK3576 emitter ends every program with
-  the same `[OP_NONE, PC_REGISTER_AMOUNTS, OP_40, OP_ENABLE]` trailer that the rewrite expects.
+  the same `[TARGET_NONE, PC_REGISTER_AMOUNTS, TARGET_PRE_ENABLE, TARGET_ENABLE]` trailer that the rewrite expects.
 - Userspace submits them as n drm tasks with `DRM_ROCKET_JOB_BATCHED`.
 - The driver programs task 0 only, sets `TASK_NUMBER = n`, and advances `next_task_idx`
   straight to the end. The PC streams all n from one kick, and the job retires on the single
@@ -2551,8 +2554,8 @@ holds one from the moment it exists. With the fix, every site returns to userspa
 the put. The two touch different files and compose.
 
 A generator that refuses leaves its output parameters untouched, and a caller that submits
-anyway hands the kernel a malformed job. `gen_matmul_fp16()` emits the RK3588 geometry encoding
-and refuses on the RK3576 by construction. The refusal leaves `matmul_params_t.task_count` at 0,
+anyway hands the kernel a malformed job. `gen_gemm_fp16()` emits the RK3588 geometry encoding
+and refuses on the RK3576 by construction. The refusal leaves `gemm_params_t.task_count` at 0,
 and task descriptors built from those unset parameters submit `regcmd_count == 0`. Software
 must check the generate step before building a submit from it.
 
@@ -2675,7 +2678,7 @@ The mapping, for software that drives the emitter directly:
 | operand | layout |
 |---|---|
 | A[M,K] | the feature cube, channel `k`, pixel `m` at `(m/iw, m%iw)`, C2 = 16 int8 lanes |
-| B[N,K] | `weight_conv_int8(N, K, 1, 1, n+1, k+1, 1, 1)` |
+| B[N,K] | `conv_weight_index_int8(N, K, 1, 1, n+1, k+1, 1, 1)` |
 | C[M,N] | the int8 output cube, `(n/16)*surf_elems*16 + 16*(y*iw + x) + n%16` |
 
 The plane is free. Any `(iw, ih)` with `iw*ih == M` holds the M rows, and every such plane
@@ -2765,7 +2768,7 @@ In `librocketnpu`, the planner `r76_plan_cbuf` refuses a shape past either bound
 
 ### The int32 output
 
-With DPU `0x4010`'s output-width field at `precision_int32` and OUT_CVT at exact unity, the DPU
+With DPU `0x4010`'s output-width field at `PREC_INT32` and OUT_CVT at exact unity, the DPU
 writes the raw 32-bit accumulators of an int8 program. The words are the accumulators
 themselves, laid out on the RK3588's int32 cube map in 32-bit words:
 
@@ -3165,9 +3168,9 @@ The trailer's `PC_OPERATION_ENABLE` is `0x18`, DPU and DPU_RDMA, neither the con
 `0x1D` nor the pool's `0x60`.
 
 > [!NOTE]
-> The load program's dummy cube writes nothing at any address, so the load program cannot
-> show that the table loaded. A convolution that reads the table shows it: its output follows
-> the table.
+> The load program's dummy cube leaves the 4096-byte BO it is pointed at unchanged [HW sweep,
+> H96 MAX M9]. Where the cube writes is not decoded, so the load program cannot show that the
+> table loaded. A convolution that reads the table shows it: its output follows the table.
 
 > [!CAUTION]
 > The table is held in the LUT RAM, and a separate submit can take a runtime-PM cycle between

@@ -4,6 +4,32 @@ How the facts in [rk3588.md](rk3588.md) were established: the measurements, cont
 space and excluded causes behind each section. The sheet states each fact. This record states
 its evidence, under the sheet's section names.
 
+## SoC integration
+
+### Bus QoS
+
+The device-tree read is `find /proc/device-tree -name priority-init` on the mainline RK1, which
+returned nothing across the whole tree. The five `qos@fdf7xxxx` nodes were present.
+
+The per-submit bytes are a mean: the weight bytes over the submits. They were taken with
+`ROCKET_MM_PROFILE` on Qwen3.5-0.8B F16 at pp2048, under `rocket` 1.1.0 at the 600 MHz request
+(~816 MHz). They read 1.86 MB
+at a micro-batch of 2048 rows, 1.89 MB at 512 and 1.91 MB at 128. A mean cannot exclude a few
+small submits in a mix. At a micro-batch of 2048 rows the 2430 submits divided their time as:
+
+| Phase | Share |
+|---|---:|
+| Wait for the device | 63.8% |
+| Weight pack | 23.5% |
+| Output read | 9.8% |
+| Cache sync | 2.2% |
+| Register program generation | 0.4% |
+| Submit ioctl, 0.073 ms each | 0.31% |
+
+Detection-shaped matmuls do reach the small regime: `64×768×64` moves 50 KiB a submit and
+`64×64×768` 40 KiB. Their per-submit distribution on a detection graph was not measured, and no
+QoS setting was programmed.
+
 ## Programming model
 
 ### fp16 matmul arithmetic
@@ -202,3 +228,36 @@ queue counts toward that core's score.
   index XOR, and none maps core 2 onto core 0.
 - *The clock-gating registers.* The sweep is under
   [Clock-gating registers](#clock-gating-registers), above.
+
+### E13: a core stops completing jobs after job timeouts
+
+Three occurrences on the mainline RK1, each read from `journalctl -k`:
+
+| Date | Kernel, clock | Jobs that timed out | What timed out | Outcome |
+|---|---|---|---|---|
+| 2026-09-20 | 7.2.0-1-arm64, 600 MHz request | ~306 in one hour | Probe configurations with invalid precision codes | One core on which every job timed out, until a reboot on 2026-09-23. `conv2d_fp16_rocket` and `matmul_fp16_rocket` failed on it, and on the fresh boot every test passed |
+| 2026-11-02 | 7.2.9-1-arm64, 900 MHz request | ~560 in one session | Pools past the PPU's output-width allowance, each raising no completion | `failed to set idle on domain 'nputop'`, an external abort in `rocket_job_run`, a core stuck `resuming`. `systemctl reboot` hung after `sshd` stopped. Power cycle |
+| 2026-11-07 | 7.2.9-1-arm64, 900 MHz request | ~27 in 5 minutes | Convolution-fed EW configurations ([../encodings/sdp-stage-precision.md](../encodings/sdp-stage-precision.md) §"The EW stage with a convolution main feed") | See below |
+
+The 2026-11-07 sequence, by core:
+
+1. Four timeouts on core 1, each of a configuration that never completes, with no other log line.
+   The configuration that completed before them completed again after them.
+2. One timeout of a configuration with the MRDMA disabled. Its reset logged `Enable stall request
+   timed out, status: 0x00010b` and `Disable paging request timed out` on core 1's IOMMU
+   (`fdaca000`), and the next job's `rocket_job_run` raised a warning at
+   `__iommu_group_set_core_domain` through `iommu_detach_group`. Three later jobs on core 1
+   returned without a logged timeout, two writing nothing and one writing other values.
+3. A configuration that had completed on core 1 in every earlier run completed in 3 of 8 runs
+   there, and timed out in the others. Plain convolution tasks on core 0 stayed exact in every
+   process.
+4. 52 s after the last of those timeouts, `failed to set idle on domain 'npu1', val=0`. The next
+   job's runtime resume of core 1 took `synchronous external abort: 0000000096000010` at
+   `rk_iommu_enable_stall`, called from `rk_iommu_resume` through `rocket_job_run`, and the kernel
+   was tainted `M`. Core 1 stayed `resuming`, with the reset worker and the submitting process in
+   D state.
+
+The per-core NPU interrupt counts in `/proc/interrupts` attributed the jobs to cores. A
+process's first job ran on core 0, and its second on core 1. The 2026-09-20 occurrence is the one
+in which a pool test failed only at some kernel sizes. That selectivity was the wedged core and
+not the pool, and which submits landed on it was not read.

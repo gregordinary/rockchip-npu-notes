@@ -1,22 +1,23 @@
 # F16 weight residency and projection fusion
 
 F16 weight residency and the fusion of projections that share an input raise prefill
-throughput together. On Llama-3.2-3B-F16 the two together measure 1.081x at pp2048 over the
-streaming default [HW sweep 2026-08-29]. The tables below split the gain on the build of
-2026-07-15, whose streaming default was slower. There the two gave +18.5% at pp512 and +13.6%
-at pp2048 [HW sweep].
+throughput together. On three 3-4 B F16 models the two together measure 1.14-1.16x at pp2048
+over the default, which packs each weight on every call [HW sweep 2026-11-02]. The tables below
+split the gain on the build of 2026-07-15, whose default was slower. There the two gave +18.5%
+at pp512 and +13.6% at pp2048 [HW sweep].
 
 Residency (`ROCKET_F16_RESIDENT`) removes the per-call weight scatter, and projection fusion
 removes the per-node input scatter. The two gains combine. Greedy output is byte-identical
 across all three configurations (llama-simple, ~300-token prompt).
 
 **Conditions:** RK3588 (RK1), NPU clock ~816 MHz, Llama-3.2-3B-F16, warm pp512 and pp2048
-through ggml-rocket in llama.cpp, idle board, 2026-07-15. The 1.081x is pp2048 at the default
-`-ub`, CPU governor `performance`, three interleaved passes with the configuration order
-rotated, 2026-08-29 ([data/tuning-matrix.md](data/tuning-matrix.md)).
+through ggml-rocket in llama.cpp, idle board, 2026-07-15. The 1.14-1.16x is Llama-3.2-3B,
+Ministral-3-3B and Phi-4-mini F16 at pp2048, 2026-11-02 ([benchmarks.md](benchmarks.md)). It
+ran at the default `-b` and `-ub`, NPU clock 928 MHz, CBUF weight streaming on, CPU governor
+`performance`, llama.cpp b11539.
 
 **Not characterized:** the fusion gain on models other than Llama-3.2-3B-F16, and the split
-between residency and fusion on the build of 2026-08-29.
+between residency and fusion on the build of 2026-11-02.
 
 | config | pp512 (t/s) | pp2048 (t/s) |
 |---|---|---|
@@ -86,9 +87,14 @@ minimum. The entry is `ggml_backend_rocket_mul_mat_group_resident` (ggml-rocket 
 - **Separate-projection architectures only.** Llama, Qwen and Mistral have distinct Q/K/V
   and gate/up weights. Architectures that already pack qkv / gate-up as a single combined
   weight (e.g. Phi-4-mini) have nothing to fuse. They are the pure-residency case, and gain
-  only residency's packB-once.
-- **F16 only.** A quantized fused group gives no gain: a quantized expert or projection path
-  is bound by per-micro-batch dequantization, so fusing it does not help.
+  only residency's packB-once. On the build of 2026-07-15 that gave Phi-4-mini F16 +21.0% at
+  pp512, +15.9% at pp1024 and +13.7% at pp2048 [HW sweep 2026-07-15].
+- **F16 only.** A quantized fused group is slower than the unfused one, and the backend fuses
+  F16 groups only. On Qwen3.5-9B at pp2048, `Q4_K` measured 20.46 t/s fused against 21.04
+  unfused, ~2.8% slower, and `Q8_0` ~20.5 against ~21.0 [HW sweep 2026-06-30]. The fused path
+  engaged and stayed faithful. Quantized prefill is bound by the per-micro-batch
+  dequantization, which fusion does not reduce, and the combined path adds host scratch
+  [hypothesis].
 - **Opt-in**, through `ROCKET_F16_RESIDENT` like the rest of the resident family. The default
   path, with the option off, is untouched and bit-identical. Decode is unaffected (the source
   GGUF stays mapped). The RAM cost is ~2x the fp16 model (resident tiles plus the source), so
@@ -147,7 +153,20 @@ pairs are positive at both lengths.
 The gain itself shows that residency engaged. A silent fallback to the streaming-fused path
 would measure ~55 / 41, which is below resident-no-fusion, not above it.
 
+The quantized fused group ran interleaved and clock-fair at ~816 MHz (the 600 MHz request), in
+five paired rounds, all of them slower fused. On `Q4_K` it formed 40 fused groups a pass, mostly
+`ffn_gate` with `ffn_up` (N 12288), plus the GQA `attn_k` with `attn_v`. Perplexity was 6.9314
+fused against 6.9313 unfused, with the same argmax [HW sweep 2026-06-30].
+
+The Phi-4-mini figures are residency against the default on the build of 2026-07-15. They are
+48.94 -> 59.23 t/s at pp512, 42.53 -> 49.29 at pp1024 and 36.21 -> 41.16 at pp2048. Its greedy
+output was byte-identical between the two.
+
 ### Revision history
+
+| Measured | Quantity | Value | Conditions |
+|---|---|---|---|
+| 2026-08-29 | Residency with fusion over the default, Llama-3.2-3B-F16, pp2048 | 1.081x | ~816 MHz, the whole-tile fp16 plan, the default `-ub`, three interleaved passes with the configuration order rotated ([data/tuning-matrix.md](data/tuning-matrix.md)) |
 
 An earlier measurement on 2026-07-15 preceded the interleaved pairs above. It compared
 residency without fusion against the streaming-fused default, on Llama-3.2-3B-F16 at ~816 MHz

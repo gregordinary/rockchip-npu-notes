@@ -114,6 +114,11 @@ The two plans ran interleaved and warm. The tests are `tests/matmul_kacc_chain_b
 warm comparison, with `ROCKET_MM_PROFILE` for the submit and wait split) and
 `tests/matmul_correctness_matrix_rocket.c` (bit-exactness).
 
+A sweep of the `ROCKET_MM_MT`, `ROCKET_MM_NT` and `ROCKET_MM_KT` overrides covered the LLM matmul
+shapes on the whole-tile plan [HW sweep 2026-06-30, ~816 MHz]. It found no gain beyond the
+asymmetric tile. The remaining per-shape variation was within noise. Choosing Kt per shape measured
+~1-3% at M=512, also within noise, so the planner keeps the largest Kt that fits.
+
 ### End-to-end measurement
 
 Qwen3.5-0.8B-F16 is 6 repetitions, and the other three models 3 each. The end-to-end result

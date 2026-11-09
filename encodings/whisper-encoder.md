@@ -32,8 +32,9 @@ byte-identical either way (no repack).
 > A fused single-pass matmul->GELU (1×1-conv-act epilogue) fails for wide FFN inputs, at
 > cos~0.04 and max_abs=128. The fc1 output spans the flat tail (`GELU(x)~0`, x≲-3), where the
 > LUT's flat-tail mux spike hits en masse ([dpu-lut-activation.md](dpu-lut-activation.md)).
-> Single-pass LUT fusion is limited to the curved region. On the NPU, GELU and SiLU use the
-> 2-pass `x·gate(x)`.
+> The conv->GELU epilogue fails on the two front-end convolutions too, at cos 0.009-0.012 on
+> real speech. Single-pass LUT fusion is limited to the curved region. On the NPU, GELU and
+> SiLU use the 2-pass `x·gate(x)`.
 
 ## Lowering
 
@@ -114,6 +115,13 @@ is RMSNorm's ([rmsnorm-onnpu.md](rmsnorm-onnpu.md)). The beta argument can be NU
 `rocket_conv1d_fp16` (`src/rocket_conv.c`) runs Whisper's two front-end convs (kw=3, pad=1,
 conv1 IC=n_mels stride 1, conv2 stride 2). They are a width-only 1D conv, lowered onto the
 validated `rocket_conv2d_fp16` with time on the height axis (§"Constraints").
+
+Each conv's bias and GELU follow it. Software must run that GELU as the 2-pass form
+(§"GELU: the 2-pass `x·Φ(x)`"), not as the conv's single-pass epilogue. On Whisper base over
+real speech, 3.2% of conv1's outputs and 17.7% of conv2's fall below −3. The epilogue is off by
+up to 128 at 2.4% of conv1's outputs and 6.2% of conv2's. The 2-pass form is within 0.0016
+[HW sweep 2026-11-07] ([dpu-lut-activation.md](dpu-lut-activation.md) §"Fused single-pass
+matmul->GELU").
 
 ### STFT as a polyphase convolution
 

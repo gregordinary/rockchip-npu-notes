@@ -346,8 +346,7 @@ readable register. Three independent observations confirm it:
 
 No separate output-write counter exists in a mapped domain either. The only WDMA registers
 in the DPU block are `WDMA_SIZE_0/1` (0x4058/0x405C). They are output-shape config, the
-channel/height/width that the host writes, and not a write-back count (Mesa `registers.xml`,
-`librocketnpu`'s `npu_hw.h`).
+channel/height/width that the host writes, and not a write-back count (Mesa `registers.xml`).
 
 NVDLA has the same structure. The only perf registers of the SDP register group (the RKNPU's
 DPU) are stall and saturation events (`D_PERF_WDMA_WRITE_STALL`, `D_PERF_OUT_SATURATION`),
@@ -361,8 +360,7 @@ PMU (§5) is the way to measure bytes moved.
 
 - `rocket`: `drivers/accel/rocket/rocket_{drv,core}.c`, `rocket_registers.h`, and the DT
   `rk3588-base.dtsi` (per-core pc/cna/core)
-- Register map: Mesa `rocket/registers.xml` (`DDMA` domain @ 0x8000), and `librocketnpu`'s
-  `npu_hw.h`
+- Register map: Mesa `rocket/registers.xml` (`DDMA` domain @ 0x8000)
 - RK3576 counter (§7): gahingwoo's mainline-`rocket` RK3576 bring-up
   (`https://www.reddit.com/r/embedded/comments/1ub5npg/`)
 - Independent probe (§4): poad42/opennpu_rk3588, read at `983282e`,

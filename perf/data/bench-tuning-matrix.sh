@@ -45,9 +45,13 @@
 # pp2048 arm on Qwen3.6-27B is 77 minutes against 18 for the NPU arm beside it. Turn it on for a
 # model whose CPU comparison is the point, not as a matter of course.
 #
-# THE GOVERNOR. bench-llm.sh refuses to run while a cpufreq policy is unpinned, and every row the
-# matrix holds was taken unpinned. So reproducing a recorded row needs ALLOW_UNPINNED=1, and a
-# pinned run is a new row rather than a re-measurement of an old one.
+# THE GOVERNOR. bench-llm.sh refuses to run while a cpufreq policy is unpinned. The rows the
+# matrix holds recorded no governor per arm: the harness of 2026-08-28/31 neither set nor read it.
+# The matrix header's `performance` is a live read taken on 2026-08-28, and nothing records the
+# state through 2026-08-31. The per-process readout cannot settle it either, because a
+# cycles-per-busy-time frequency moves only 2.5% between the two governors on an offloading
+# llama-bench process (../cpu-governor-and-offload.md, "LLM prefill"). So treat an old row's
+# governor as unknown; a pinned run is a new row, and ALLOW_UNPINNED=1 reproduces the unpinned case.
 #
 # COST. Default MODE=headline is the pp2048 row only -- the "how much does tuning buy" table is
 # a pp2048 table, and paying for the curve on every arm is what turns a model into an hour.

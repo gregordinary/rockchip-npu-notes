@@ -138,14 +138,14 @@ the CNA/CORE stages only. With CORE at 5, the output is 1e25 garbage.
 
 ## Software support
 
-The emit layer (`gen_matmul_task`) is datatype-agnostic: it writes proc/in/out precision,
-data_sign, and the cvt_* fields straight from descriptor structs. The datatype lives only in
-the descriptor setup (which precision value, which element bytes, which tile layout, which
-output cube). int8 and int4 therefore needed no driver rewrite.
+`librocketnpu`'s task emitter is datatype-agnostic: it writes the CNA, CORE and DPU precision
+fields from the task's description. The datatype lives only in each generator's setup: the
+precision codes, the element bytes, the tile layout and the output cube. A new datatype
+therefore needs only its own generator.
 
 The bf16 tiled path (`rocket_matmul_bf16`) is bit-clean to 512×15360×3840.
 
-`gen_matmul_tf32` (precision per-stage, element 4 B, data_entries K/16) and `weight_tf32`
+`gen_gemm_tf32` (precision per-stage, element 4 B, data_entries K/16) and `gemm_weight_index_tf32`
 (N/16,K/16,16,16) pass on hardware. The tf32 tiled path is validated on hardware [HW sweep
 2026-06-18]. `rocket_matmul_tf32` and `rocket_matmul_plan_tf32` (`rocket_matmul.c`) are a
 clone of the bf16 tiled path with the 4-byte geometry:
@@ -197,7 +197,7 @@ the precision value on a small shape and classifies the output. Both then verify
 Because int16's products are correct and its output path differs, bf16 still needs the
 standalone test.
 
-A host regcmd diff of `gen_matmul_bf16` against `gen_matmul_fp16`'s fp32-out program confirms
+A host regcmd diff of `gen_gemm_bf16` against `gen_gemm_fp16`'s fp32-out program confirms
 the three-word change. The bf16 test (`matmul_bf16_rocket`) passes across the shape ladder.
 
 The int4 sweep's `3 saturates / 7 writes nothing` result does not rule out precisions 3
@@ -212,7 +212,7 @@ localize a wrong weight tile (`ROCKET_TF32_PAT`: ones, k-ramp, n-col, m-row, K-i
 tiled path's test is the sample-verified `matmul_tf32_tiled_rocket.c`.
 
 A host diff showed the index helpers (`feat_idx_tf32` C2=4, `wt_idx_tf32`
-(N/16,K/16,16,16)) bit-exact against `weight_tf32` and `feature_data(C2=4)` before the
+(N/16,K/16,16,16)) bit-exact against `gemm_weight_index_tf32` and `feature_index(C2=4)` before the
 hardware run. The single-task test could not reach the K=48 case: its `main()` required
 K%32, so K∈{32,64,128} are all %32.
 

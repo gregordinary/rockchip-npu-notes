@@ -57,12 +57,12 @@ source of the N-alignment requirement:
 
 | datatype | weight layout | N-group | K-group | notes |
 |---|---|---:|---:|---|
-| fp16 | `(N/16, K/32, 16, 32)` | 16 | 32 | `weight_fp16` (code: `((k-1)%16)*32`, K-group 32) |
-| int8 | `(N/32, K/32, 32, 32)` | 32 | 32 | `weight_int8` |
-| int4 | `(N/64, K/32, 64, 32)` | **64** | 32 | `weight_int4`, nibble-packed |
-| int16 | `(N/16, K/32, 16, 32)` | 16 | 32 | `weight_int16` (== `weight_fp16`: int16 and fp16 share the 16-kernel weight group) |
-| bf16 | `(N/16, K/32, 16, 32)` | 16 | 32 | `weight_tf32`'s 2-byte sibling, reusing `wt_idx_i16` (== `weight_fp16`) |
-| tf32 | `(N/16, K/16, 16, 16)` | 16 | **16** | `weight_tf32`: 4-byte halves the K-group to 16 (N-group stays 16). Still a 1024-byte tile (16·16·4) |
+| fp16 | `(N/16, K/32, 16, 32)` | 16 | 32 | `gemm_weight_index_fp16` (code: `((k-1)%16)*32`, K-group 32) |
+| int8 | `(N/32, K/32, 32, 32)` | 32 | 32 | `gemm_weight_index_int8` |
+| int4 | `(N/64, K/32, 64, 32)` | **64** | 32 | `gemm_weight_index_int4`, nibble-packed |
+| int16 | `(N/16, K/32, 16, 32)` | 16 | 32 | `gemm_weight_index_int16` (== `gemm_weight_index_fp16`: int16 and fp16 share the 16-kernel weight group) |
+| bf16 | `(N/16, K/32, 16, 32)` | 16 | 32 | `gemm_weight_index_tf32`'s 2-byte sibling, reusing `wt_idx_i16` (== `gemm_weight_index_fp16`) |
+| tf32 | `(N/16, K/16, 16, 16)` | 16 | **16** | `gemm_weight_index_tf32`: 4-byte halves the K-group to 16 (N-group stays 16). Still a 1024-byte tile (16·16·4) |
 
 int4 weights are nibble-packed and int8 weights are byte-packed. int4 is 2 values per
 byte with HILO=0, and the nibble order is already correct, with no swap. Weight bytes:
@@ -99,8 +99,8 @@ C2 (`C2 = 16 bytes / sizeof(out elem)`), whichever input datatype produced it
 
 | matmul | output datatype | out elem | output cube C2 |
 |---|---|---:|---:|
-| fp16×fp16 (default, `fp32tofp16=1`) | fp16 (narrowed) | 2 B | 8 |
-| fp16×fp16 (`fp32tofp16=0`) | fp32 | 4 B | 4 |
+| fp16×fp16 (default, `fp16_out=1`) | fp16 (narrowed) | 2 B | 8 |
+| fp16×fp16 (`fp16_out=0`) | fp32 | 4 B | 4 |
 | int8×int8 | int32 | 4 B | 4 |
 | int4×int4 | int16 | 2 B | 8 |
 | int16×int16 | int32, saturating (see below) | 4 B | 4 |
@@ -110,7 +110,7 @@ C2 (`C2 = 16 bytes / sizeof(out elem)`), whichever input datatype produced it
 The rule is C2 = 16 / out-elem-bytes, set by the output element size alone. C2=8 for a
 2-byte output (fp16-narrowed matmul, int4->int16), and C2=4 for a 4-byte output (fp32 /
 int32). The fp16 path's fp32 output uses the same cube as the others. With the full fp32
-accumulator (`fp32tofp16=0`, `size_e=3`, `surf×4`), the DPU writes the C2=4 cube that int8,
+accumulator (`fp16_out=0`, `size_e=3`, `surf×4`), the DPU writes the C2=4 cube that int8,
 bf16 and tf32 use. Read as C2=4, the fp16-input fp32 output matches an fp64 reference to
 ~1e-7.
 
@@ -204,7 +204,7 @@ A K>=64 sweep (plus a K=48 tile, %16-not-%32) separates the two tf32 layouts and
 
 ### Output cube channel atom (C2)
 
-`gen_matmul_fp16` emits the full fp32 accumulator into the same C2=4 `out_idx_i16` cube.
+`gen_gemm_fp16` emits the full fp32 accumulator into the same C2=4 `out_idx_i16` cube.
 `rocket_matmul_fp16_f32out` confirms it on hardware.
 
 ### int4 output saturation and the Kt cap

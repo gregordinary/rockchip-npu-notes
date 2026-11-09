@@ -262,6 +262,9 @@ capacity from a control path. The asymmetric sweep holds one worker fixed as a v
 | large | 1024 | 256 KiB  | 20.6-22.5% | 27.9-38.9% |
 | equal | 2048 | 1024 KiB | 95.6-98.8% | 48.5-55.3% |
 
+The probe's source comment gives the tiny aggressor's rate as 62-76% over three runs. This
+record documents only the two runs in the table.
+
 The trigger is not capacity. An aggressor whose whole feature plane is four granules, 256 bytes
 against a 448 KiB pool, corrupts about three quarters of the victim's calls. Nothing is being
 exhausted, so the collision is unconditional.
@@ -663,9 +666,13 @@ The sweep sharpened the two limits the sheet states: the resident weight slice a
 The per-window cost of about 1.2 ms is the 2026-07-25 measurement of a 64×64 ic64 oc64 k3 SAME
 convolution cut into 2-32 windows. Each window was its own submit, on a `rocket` with the
 cold-start fix and without patch `0012`. That `rocket`'s completion poll ran at the stock 1 ms
-period. At the 50 us period of `0012` a submit measures 439 us (an 8×64×32 int8 matmul,
-2026-07-28) [HW sweep, H96 MAX M9]. Chaining the row tasks into one kick takes a 32×32 plane
-in 8 windows from 2.8 to 1.0 ms (2026-07-29) [HW sweep, H96 MAX M9]. See rk3576-regcmd.md
+period.
+
+At the 50 us period of `0012`, an 8×64×32 int8 matmul's submit measured 439 us on 2026-07-28. On
+2026-07-31 its median measured 329-348 us [HW sweep, H96 MAX M9]. The sheet states the second
+(§"Register encoding: Per-submit cost and the completion poll"). Chaining the row tasks into one
+kick takes a 32×32 plane in 8 windows from 2.8 to 1.0 ms (2026-07-29) [HW sweep, H96 MAX M9].
+See rk3576-regcmd.md
 §"Cost per window", §"Per-submit cost and the completion poll" and §"Chained row
 tasks".
 
@@ -1172,7 +1179,8 @@ shape table of `tests/rk3576_residual_add.c`.
 ## Accumulation order
 
 Two runs are identical. The test is `tests/rk3576_mm_fp16_round`. [HW sweep, H96 MAX M9,
-`rocket` 1.6.0, 2026-09-25]
+`rocket` 1.6.0, 2026-09-25]. The compiled program matches the same model on every output at every
+K, two runs identical [HW sweep, H96 MAX M9, Armbian 7.3.3 `rocket`, 2026-11-09].
 
 ### Excluded models
 
@@ -1184,6 +1192,11 @@ The probe is `tests/rk3576_mm_bf16_probe`, one task a shape. Two runs are identi
 under the unmodified fp16 program come back wrong on every element, so the check can fail. The
 fp16 control runs after the bf16 runs. [HW sweep, H96 MAX M9, `rocket` 1.6.0, 2026-09-26]
 
+The compiled program repeats it. Every bf16 arm is exact at 16×256×64 and 64×1024×128. bf16 bytes
+under the fp16 program are wrong on every element, and the closing fp16 control is exact. The
+round mode matches the 32-product group model on every output, and two runs are identical.
+[HW sweep, H96 MAX M9, Armbian 7.3.3 `rocket`, 2026-11-09]
+
 ## Single-task limits
 
 The limits come from `tests/rk3576_mm_fp16_envelope`, 49 shapes, each run as one task past the
@@ -1191,12 +1204,35 @@ tested shapes. The shape one row past the window is wrong the same way on a seco
 multi-task shapes were run in the test suite on the same board.
 [HW sweep, H96 MAX M9, `rocket` 1.6.0, 2026-09-25]
 
+On the compiled program the same probe ran five shapes. Three are exact: 128×1024×256,
+21×6144×512 and 64×512×8192. Two are wrong on every row, on both runs: 129×1024×256 and
+22×6144×512.
+[HW sweep, H96 MAX M9, Armbian 7.3.3 `rocket`, 2026-11-09]. The K 6176 and N 8960 shapes were
+not rerun. Neither completes, and that driver answers such a job with a timeout and a core reset.
+
 ## fp16 matmul entries
 
 On the H96, `tests/rk3576_mm_fp16_gate` runs 23 one-task shapes exact to the single-task limits,
 and 6 shapes of 2 to 25 tasks. Its row-major weight control comes back wrong on 64 of 64
 [HW sweep, gate run, `rocket` 1.6.0, 2026-09-25]. The test's fills make every sum exact in fp32,
 so it cannot see rounding.
+
+On the compiled program the same gate passes all 32 of its checks, with the same shapes and
+control. [HW sweep, H96 MAX M9, Armbian 7.3.3 `rocket`, 2026-11-09] `tests/rk3576_mm_fp16_vendor_gate`
+holds the emitter to every such program in a `.rkllm`. Two files were read, both from
+RKLLM-Toolkit 1.3.0 for the RK3576 at w4a16 g128 [host-computed, 2026-11-09]:
+
+| Model | Library's CBUF arrangement | Other arrangements | Mismatches |
+|---|---|---|---|
+| SmolLM2-1.7B-Instruct, compiled for this check | 2116 at 867 shapes, M 14-128 | 2840 | 0 |
+| Llama-3.2-1B-Instruct, a published `.rkllm` | 3104 at 1267 shapes, M 4-256 | 4340 | 0 |
+
+In the library's arrangement every word matches. In the others every word outside CNA `0x1018`,
+`0x1038`, `0x103C` and `0x1040` matches. The SmolLM2 file was built with the toolkit's export
+example: `w4a16_g128`, the `normal` algorithm, two NPU cores, no calibration dataset, a 4096
+context. The gate's source names both files and their hashes.
+`tests/rk3576_poison_probe pair` ran four kinds of job after the compiled program at a zero gap.
+Each wrote 20 of 20: int8 direct, fp16 direct, int8 FC and the matmul form [HW sweep, 2026-11-09].
 
 ## int8 matmul jobs that raise no completion
 
@@ -3889,7 +3925,7 @@ The marginal cost of a submit is priced from the A/Bs that add or remove one.
 
 Two instruments split the bucket. The chain's own profile splits its interval into the submit
 ioctl, the fence wait and the `FINI_BO`. The second instrument is
-`rocket-userspace/tools/rk3576-job-timing-debug.patch`, a debug module rather than a series
+`patches/rk3576/npu/debug/job-timing.patch`, a debug module rather than a series
 patch. It adds five microsecond accumulators to the driver's polled completion path, exposed as
 writable module parameters. The table runs on the 0023 module plus the instrument. The driver's
 terms are `bench(200) - bench(100)` over 100, so the gate's fixed setup jobs cancel.
@@ -4015,20 +4051,21 @@ The register formulas come from RKNN-Toolkit2 register programs for known conv g
 two capture sets under
 [rocket-userspace `tests/data/rk3576-vendor-capture/`](https://github.com/gregordinary/rocket-userspace/blob/main/tests/data/rk3576-vendor-capture/).
 
-The found captures come from Ga Hing Woo's bring-up repo. They are real convolutions, including
-a MobileNet-shaped stem:
+The int8 captures are built by `int8/mkint8.py` from seeded weights and calibration data.
+They are convolutions at planes the compiler windows, including a MobileNet-shaped stem
+compiled as one graph:
 
 | Capture | Geometry | What only it can show |
 |---|---|---|
-| `conv2d_rk3576.rknn` | ic 16, oc 128, k5 s2, 80×80 -> 40×40 | the normal `in_ch>4` path at k != 3, and a single task over the whole plane |
-| `dw_rk3576.rknn` | depthwise c32, k3 s1, 112×112 | the depthwise words, and a task windowed to 91 input rows |
-| `conv64_rk3576.rknn` / `conv0_rk3576.rknn` | ic 3, oc 32, k3 s2 | the first-conv ARGB sub-encoding, at two image sizes |
-| `iso_bias` / `iso_scale` / `iso_sum` | the `conv2d` geometry plus one appended op | what a DPU epilogue stage moves |
+| `conv2d_c16_128_k5_s2.rknn` | ic 16, oc 128, k5 s2, 80×80 -> 40×40 | the normal `in_ch>4` path at k != 3, and a single task over the whole plane |
+| `dw_c32_k3_s1_112.rknn` | depthwise c32, k3 s1, 112×112 | the depthwise words, and a task windowed to 91 input rows |
+| `conv64_argb_64.rknn` / `conv0_argb_224.rknn` | ic 3, oc 32, k3 s2 | the first-conv ARGB sub-encoding, at two image sizes |
+| `iso_bias` / `iso_scale` / `iso_sum` | the `conv2d` geometry with per-tensor weights | what the per-tensor BS arrangement moves |
 
 The manufactured captures are in `dw/` and `dw/named/`. The scripts `dw/mkdw.py` and
 `dw/named/mknamed.py` rebuild both sets and contain the dependency pins.
 
-The found depthwise captures confound almost everything. In them, every C=32 program is
+The `int8/` depthwise captures confound almost everything. In them, every C=32 program is
 stride 1 and every C=64 one is stride 2. Every one is k=3, every one is a multiple of 32
 channels, and every one is a square plane. The manufactured captures separate all of it, at 22
 channel counts from 8 to 256, both strides, kernels 1/3/5/7 and rectangular planes. The
@@ -4465,11 +4502,18 @@ seven registers that the register-fidelity gate's diff cannot otherwise reach ar
 exactly across thirteen continuation tasks. The tasks span three kernel sizes, both strides,
 both channel counts and all three CBUF origins.
 
-## Register encoding: The appended DPU epilogue stage
+## Register encoding: The per-tensor weight BS arrangement
 
-Three captures are the same conv as `conv2d_rk3576.rknn` with one extra op appended, one each
-of a bias add, a scale and an eltwise sum. They make a controlled experiment run by the
-vendor's own compiler.
+Three captures are the `conv2d` geometry compiled with per-tensor weights. Their weights vary
+only the bias, only the per-channel magnitude or only the sign mix. All three program `0x4044`
+0, `0x4050` `0x80021111` and `0x501C` `0x114`. Compiled per-channel, the same three models
+program the plain conv's 1, `0x80011111` and `0x710`. The plain conv compiled per-tensor
+programs the per-tensor values [source-confirmed: RKNN-Toolkit2 2.3.0, `int8/mkint8.py`,
+2026-11-09]. The quantization method sets the three registers, and the weights do not.
+
+The earlier captures of the arrangement appended a bias add, a scale or an eltwise sum to the
+conv. By their author's record they also carried one weight zero point each. The appended op
+and the quantization method therefore changed together in them.
 
 ### The BS operand source
 
@@ -4606,7 +4650,7 @@ the integer word.
 
 ### The direct-path float weight cube
 
-The int8 weight cube's group of 32 is the harness's `weight_conv_int8`. A bijective decode
+The int8 weight cube's group of 32 is the harness's `conv_weight_index_int8`. A bijective decode
 pins the feature cube's C2 = 8, not a score.
 
 Each group needs a shape chosen so that it is observable at all, and the output group is the
@@ -4727,7 +4771,7 @@ method traps met in bringing up the fp16 datapath are:
   patches register 0 reports that every value changed nothing. A correct sweep of an inert
   register reports exactly the same. The mistake survived a full pass over `0x100C` before
   the reading that mattered was found.
-- `feature_data()` and `weight_conv_*()` take 1-based channel and kernel indices. A 0-based
+- `feature_index()` and `conv_weight_index_*()` take 1-based channel and kernel indices. A 0-based
   call drives the group remainder negative and misplaces the whole cube. The result is a wrong
   output rather than an absent one, so it reads as an encoding error.
 - A bias probe fixes only the channel-to-lane mapping. Every pixel holds the same value per
@@ -5051,7 +5095,7 @@ child. Before the fix 0 of 5 sites returned to userspace, and after it 5 of 5 di
 H96 MAX M9, 7.1.3].
 
 The client that reached the oops on the RK3576 was `librocketnpu`'s uAPI selftest. Its
-deadline canary built its task descriptors from the parameters a refused `gen_matmul_fp16()`
+deadline canary built its task descriptors from the parameters a refused `gen_gemm_fp16()`
 left unset.
 
 ### Client-supplied addresses
@@ -5189,6 +5233,10 @@ and 120 row tasks [HW sweep, H96 MAX M9, 2026-07-28, `tests/rk3576_i32_zero_run.
 | integer spin, no memory traffic    | 11.7%  (14/120)               |
 | memcpy over 16 KiB, L1-resident    | 9.2%   (11/120)               |
 | streaming memcpy over 32 MiB, DDR  | **51.7%** (62/120)            |
+
+A two-test-point run of the same shape on the same day, quiet against four streaming-memcpy
+threads, measured 11.0% and 44.8%. The probe's source comment quotes that run. The ladder
+above added the two controls, and the sheet states its figures.
 
 The two controls hold the CPUs equally busy and the cache hierarchy equally hot while leaving
 DDR alone. At this sample size they are not distinguishable from quiet (7, 11 and 14 of 120,

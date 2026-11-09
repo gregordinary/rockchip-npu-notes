@@ -21,11 +21,11 @@ the use case, the precision, the prompt size and the RAM or disk each opt-in nee
 | Qwen3.5-0.8B | F16 | Supported. Prefill is faithful: greedy output is token-identical to the CPU [HW sweep 2026-06-28] | Defaults | | ~1.44x at pp512 | Warm [HW sweep 2026-06-27/28] |
 | Qwen3.5-0.8B | Q4_K_M | Supported | `-b 2048 -ub 2048` with `ROCKET_QUANT_RESIDENT=auto` | 1.179x | | pp2048 [HW sweep 2026-08-28] |
 | Llama-3.2-3B-Instruct | Q4_K_M | Supported | `ROCKET_QUANT_RESIDENT=auto` at the default `-ub` | 1.472x | | [HW sweep 2026-08-29/31] |
-| Llama-3.2-3B-Instruct | F16 | Supported | `ROCKET_F16_RESIDENT=auto` | 1.081x | | pp2048 [HW sweep 2026-08-29] |
+| Llama-3.2-3B-Instruct | F16 | Supported | `ROCKET_F16_RESIDENT=auto` | 1.14-1.16x | | pp2048 [HW sweep 2026-11-02] |
 | Ministral-3-3B | Q4_K_M | Supported | `ROCKET_QUANT_RESIDENT=auto` at the default `-ub` | 1.445x | | [HW sweep 2026-08-29/31] |
-| Ministral-3-3B | F16 | Supported | `ROCKET_F16_RESIDENT=auto` | 1.078x | | pp2048 [HW sweep 2026-08-29] |
+| Ministral-3-3B | F16 | Supported | `ROCKET_F16_RESIDENT=auto` | 1.15x | | pp2048 [HW sweep 2026-11-02] |
 | Phi-4-mini | Q4_K_M | Supported | `ROCKET_QUANT_RESIDENT=auto` at the default `-ub` | 1.508x | | [HW sweep 2026-08-29/31] |
-| Phi-4-mini | F16 | Supported | `ROCKET_F16_RESIDENT=auto` | 1.084x | | pp2048 [HW sweep 2026-08-29] |
+| Phi-4-mini | F16 | Supported | `ROCKET_F16_RESIDENT=auto` | 1.16x | | pp2048 [HW sweep 2026-11-02] |
 | SmolVLM2-2.2B-Instruct, text path | Q4_K_M | Supported | `ROCKET_QUANT_RESIDENT=auto` at the default `-ub 512` | 1.346x | | [HW sweep 2026-08-31] |
 | Qwen3.5-9B | Q4_K_M | Supported | `ROCKET_QUANT_RESIDENT=auto` at the default `-ub` | 1.752x | | [HW sweep 2026-08-29/31] |
 | Ministral-3-8B | Q4_K_M | Supported | `ROCKET_QUANT_RESIDENT=auto` at the default `-ub` | 1.651x | | [HW sweep 2026-08-29/31] |
@@ -38,8 +38,8 @@ the use case, the precision, the prompt size and the RAM or disk each opt-in nee
 | Qwen3-30B-A3B, MoE | Q4_K_M | Supported | Defaults | Every tuned configuration is slower | | [HW sweep 2026-08-30] |
 
 **Conditions:** RK3588 on a Turing RK1 (31 GiB), NPU clock ~816 MHz (the 600 MHz request). The
-rows dated 2026-11-01 ran at 928 MHz (the 900 MHz request) on llama.cpp b11539, with the CPU
-governor at `performance` and the CPU backend's weight repack on.
+rows dated 2026-11-01 and 2026-11-02 ran at 928 MHz (the 900 MHz request) on llama.cpp b11539.
+Those rows had the CPU governor at `performance` and the CPU backend's weight repack on.
 
 The gain is prefill with the recommended options against prefill with the defaults, both on the
 NPU. A ratio against the CPU takes the 8-thread CPU backend on the same GGUF as its baseline.
@@ -241,6 +241,9 @@ It is the only dense model measured on which the combined recipe gives no gain, 
   ([TUNING.md](TUNING.md#residency-in-place-of--ub-2048) gives the cause).
 - **Footprint:** residency holds ~13 GB of fp16 weight cubes beside the 5.3 GiB GGUF. They
   fit a 31 GiB board with room to spare, but do not fit a 16 GiB one.
+- **Native int8 from the F16 GGUF:** set `ROCKET_INT8_HADAMARD=1` on this model. Resident int8
+  raises wikitext perplexity 2.83% over the fp16 path without the rotation, and 0.97% with it
+  [HW sweep 2026-11-07, 928 MHz]. The rotation lowers the perplexity at every chunk.
 
 ### Ministral-3-8B (Q4_K_M)
 
@@ -250,6 +253,9 @@ It is the only dense model measured on which the combined recipe gives no gain, 
   prefills at 39.6 t/s.
 - **Other configurations:** against the streamed default, the combined recipe gains 1.325x,
   and `-ub 2048` alone 1.176x [HW sweep 2026-08-29/31].
+- **Native int8 from the F16 GGUF:** the Hadamard rotation does not lower this model's
+  perplexity. Resident int8 raises wikitext perplexity 0.73% over the fp16 path without the
+  rotation, and 0.93% with `ROCKET_INT8_HADAMARD=1` [HW sweep 2026-11-07, 928 MHz].
 
 ### Gemma-4-12B-it
 
@@ -719,4 +725,5 @@ Readings that later measurements replace:
 | Measured | Quantity | Value | Conditions |
 |---|---|---|---|
 | 2026-07-14 | Qwen3.5-0.8B F16 prefill against the CPU | 0.36x at pp16, 0.83x at pp64, 1.04x at pp96, 1.15x at pp128, crossing at ~86 rows | Warm, ~816 MHz, the build of that date. The 2026-10-09 measurement in §"NPU role and operating point" crosses at 21-25 rows |
+| 2026-08-29 | `ROCKET_F16_RESIDENT=auto` over the defaults, pp2048 | Llama-3.2-3B 1.081x, Ministral-3-3B 1.078x, Phi-4-mini 1.084x | ~816 MHz, the whole-tile fp16 plan. The 2026-11-02 rows in §"Supported models" are at 928 MHz with CBUF weight streaming |
 | 2026-07-03 | gpt-oss-20b, experts on the CPU, pp2048 | 13.11 t/s at `-ub 512`, 11.31 at `-ub 2048` | A build that offloaded gpt-oss's attention with no sink term, which the handler declines from 2026-07-14. The 2026-08-27 table in §"gpt-oss-20b `-ub` setting" measures 13.53 and 13.63 |

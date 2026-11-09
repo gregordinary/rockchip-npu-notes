@@ -81,6 +81,10 @@ quant(y) = clamp(round(y * 32768), 0, 32767)        # unsigned Q0.15, [0,1] outp
 > Software must write all 1,026 entries in every submit that reads them. Reuse between the
 > tasks of one submit is not characterized.
 
+Programs that write both tables run correctly one after another. Sigmoid, tanh and sigmoid as
+three separate submits each match their solo output [HW sweep 2026-09-27]. This holds under
+mainline `rocket` 1.3.0 and under the vendor `rknpu` 0.9.8.
+
 ## The geometry constants (sigmoid)
 
 These constants place the LUT over the input range and map its Q0.15 output back to fp16
@@ -97,23 +101,29 @@ These constants place the LUT over the input range and map its Q0.15 output back
 | `LE_SLOPE_SCALE / SHIFT` | `23107 / 22` | underflow/overflow extrapolation slope |
 | `EW_CFG` | `EW_RELU_BYPASS(1)\|EW_OP_CVT_BYPASS(1)` | LUT runs (`EW_LUT_BYPASS` left clear, bit7=0) |
 
+The vendor compiler programs Sigmoid for the RK3588 with these constants, apart from
+`CVT_TYPE`, which it leaves at 0. At `OUT_CVT_SCALE` 1 the two orders of the offset and the
+multiply give the same value [source-confirmed: `rknn-toolkit2` 2.3.0,
+[../lut-rknn-capture/README.md](../lut-rknn-capture/README.md)].
+
 HardSigmoid reuses every one of these constants. Only the table content changes
 (`clip(x/6+0.5,0,1)`), because its output is also in `[0,1]` on the same grid. Any
 `[0,1]`-codomain `f` drops in the same way.
 
-The register fields follow Mesa `registers.xml` and `librocketnpu`'s `include/npu_hw.h`. See
+The register fields follow Mesa `registers.xml`. See
 also [../README.md](../README.md), [precision-field.md](precision-field.md), and
 [SOURCES.md](../SOURCES.md) for the allbilly encoding reference.
 
 ## Task framing
 
-The op uses the same task framing as `gen_matmul_task`, rather than the rknpu-style framing.
+The op uses the same task framing as `librocketnpu`'s matmul programs, rather than the
+rknpu-style framing.
 The program sets `DPU_S_POINTER`/`DPU_RDMA_S_POINTER` to `0xE`, then writes the register
-content, then the trailer `OP_NONE · OP_REG_PC(PC_REGISTER_AMOUNTS) · OP_40 · OP_ENABLE`.
+content, then the trailer `TARGET_NONE · TARGET_PC(PC_REGISTER_AMOUNTS) · TARGET_PRE_ENABLE · TARGET_ENABLE`.
 **The enable word is `0x18`**, bits 3 and 4 (DPU and DPU_RDMA), not the matmul's `0x1D`.
 No CNA or CORE participates, so bit 0 (CNA) and bit 2 (CORE) are clear
 ([regcmd-task-model.md](regcmd-task-model.md) §"`PC_OPERATION_ENABLE` as a block bitmap").
-The trailer target encoding is `librocketnpu`'s `OP_REG_DPU = BLOCK_DPU|PC_OP_01`
+The trailer target encoding is `librocketnpu`'s `TARGET_DPU = NPU_TARGET_DPU|NPU_REG_WRITE`
 (`DPU 0x1000 -> 0x1001`).
 
 ## The NVDLA hybrid LUT (LE/LO)
@@ -167,8 +177,11 @@ out_fp16 = (q_interp + OUT_CVT_OFFSET) * 2^-MINUS_EXP * OUT_CVT_SCALE     (FP32T
 - `OUT_CVT_OFFSET` is signed and added before the shift. The `+1` of the [0,1] path is the
   same field as a Q-domain rounding bias, and Mesa's int8 requant uses it as a signed
   `ozp-0x80`. A tanh run on hardware confirms it: store `(tanh(x)+1)/2` in Q0.15 and decode
-  `tanh = (q - 16384) * 2^-14`, i.e. `OFFSET = -16384 (0xFFFFC000)`, `MINUS_EXP = 14`. The
-  result is max_abs 0.0034.
+  `tanh = (q - 16384) * 2^-14`, i.e. `OFFSET = -16384 (0xFFFFC000)`, `MINUS_EXP = 14`.
+- **Tanh's index scale is 4096**, so its table spans x in ±4, where tanh is within half an
+  fp16 ulp of ±1. Outside |x| <= 0.01, the output is within 0.00049 of fp16 tanh at every fp16
+  input in [-8, 8] [HW sweep 2026-11-09]. That band is the one in §"LE/LO boundary spike at
+  x~0". A larger scale saturates early: 0.0039 at 5216, and 0.0049 at the vendor's 5424.
 - **Bias trick for any bounded range `[lo, hi]`:** store `g = (f(x)-lo)/S`
   (`S=2^Sexp >= hi-lo`), then `MINUS_EXP = 15-Sexp`, `offset = round(lo·32768/S)`,
   `scale=1`. It drives single-pass tanh (S=2), SiLU (S=32, X=±16), and HardSwish over the
@@ -286,7 +299,7 @@ program is Mesa's choice. The datapath does not require it.
 ### The identity-conv main feed
 
 An identity conv supplies the main feed. The program reuses the exact fp16 K-accumulation
-eltwise path (`gen_matmul_fp16` `accumulate=1`) with an identity weight matrix. The conv
+eltwise path (`gen_gemm_fp16` `accumulate=1`) with an identity weight matrix. The conv
 reproduces operand `A` into CACC as the EW main, and the EW unit multiplies it by the ERDMA
 operand `B`:
 
@@ -359,6 +372,23 @@ uses. The cause is the flat-tail mux spike (§"LUT flat-region mux spike"), hit 
 because a real fc1 output spans the flat negative region (`GELU(x)~0` for `x≲-3`). The tanh
 kind fares better (cos 0.955) only because its curved range is narrower.
 
+The conv->activation fusion fails the same way on Whisper's two front-end convolutions over
+real speech [HW sweep 2026-11-07]:
+
+| Convolution | Outputs | Below −3 | Within 0.0015 of 0 | Off by more than 0.05 | cos | max_abs |
+|---|---:|---:|---:|---:|---:|---:|
+| conv1, 80 to 512 channels, stride 1 | 1536000 | 49726 (3.2%) | 1980 | 37525 | 0.0088 | 128.0 |
+| conv2, 512 to 512 channels, stride 2 | 768000 | 135751 (17.7%) | 1262 | 47645 | 0.0122 | 128.0 |
+
+**Conditions:** RK3588 (Turing RK1), `rocket` 1.3.0, NPU clock 928 MHz, 2026-11-07. Whisper
+base's front-end weights with each bias folded into its convolution, on the 30 s log-mel of an
+11 s speech clip. The fused GELU is scored against erf-GELU of the convolution's own output.
+
+Every element off by more than 0.05 is off by more than 1. Each lies below −3 or within 0.0015
+of 0. Of the outputs below −3, 34-73% are wrong, and of those near 0, 66-92%. Elsewhere the fused
+output is within 0.0040 of GELU. The 2-pass form on the same convolutions is within 0.0016, at
+cos 1.000000.
+
 > [!CAUTION]
 > Single-pass LUT fusion (conv->act or a hypothetical matmul->act) is only safe for inputs
 > that stay in the curved region. The reliable on-NPU GELU/SiLU is the 2-pass `x·gate(x)`.
@@ -427,23 +457,20 @@ past its field.
 
 ### Elementwise ops
 
-The EW selector is `matmul_params_t.ew_op` (2=MAX, 3=MIN, 0 = the legacy add/`ew_mul`
+The EW selector is `gemm_params_t.ew_op` (2=MAX, 3=MIN, 0 = the legacy add/`ew_mul`
 path). The entries are `rocket_ew_sub_fp16`, `rocket_ew_max_fp16`, `rocket_ew_min_fp16`,
 `rocket_clip_fp16` and `rocket_ew_div_fp16`.
 
-No library entry runs the DPU-only multiply. `gen_ew_mul_fp16`, the retained flying multiply,
-programs two of the DPU-only program's fields wrong. It writes `COMB_USE(5)`, whose bit 0
-stops the program completing. It also writes `DATA_CUBE_CHANNEL` with `ORIG_CHANNEL` 0, which
-makes every lane but lane 0 of each atom wrong (zero, on this program). No entry calls it and no
-option enables it. Only the tests call it.
+No library entry runs the DPU-only multiply. The fields it requires are in
+[sdp-stage-precision.md](sdp-stage-precision.md) §"Two-buffer EW op without a convolution".
 
 ### conv -> activation fusion
 
-`npu_dpu_desc.lut_en` + `lut_ep` (a `lut_epilogue_t`) drive the fusion inside
-`gen_conv2d_task`. Default-off is byte-identical: the regcmd adds exactly +1026 ops, the LE/LO
+`conv_params_t.act` (a `lut_epilogue_t`) drives the fusion inside the fp16 convolution
+program, `gen_conv2d_fp16`. Default-off is byte-identical: the regcmd adds exactly +1026 ops, the LE/LO
 upload, and nothing else. `rocket_conv2d_act_fp16` (rocket_conv.h) wires it for
-SiLU/tanh/GELU. Away from the x~0 band, the fused conv->tanh output is within 0.0039 of the
-true function [HW sweep]. Inside the band it spikes, as the standalone op does (§"LE/LO
+SiLU/tanh/GELU. Away from the x~0 band, the fused conv->tanh output is within 0.0005 of the
+true function [HW sweep 2026-11-09]. Inside the band it spikes, as the standalone op does (§"LE/LO
 boundary spike at x~0").
 
 ### Frontends
@@ -460,8 +487,9 @@ boundary spike at x~0").
 
 ## Known issues
 
-The four issues are listed in pipeline order. The input cube's geometry comes first, then the
-LE/LO table mux, then the output converter's decode of a table entry.
+The first four issues are listed in pipeline order. The input cube's geometry comes first, then
+the LE/LO table mux, then the output converter's decode of a table entry. The last is a job
+timeout whose stage is not characterized.
 
 ### 13-bit cube-dimension maximum
 
@@ -508,8 +536,9 @@ a convolution ([../matmul-as-conv.md](../matmul-as-conv.md) §"Per-tile geometry
 HardSwish (exactly 0 for x<=-3) trips it whether the flat run is in-table (wide table ->
 +128) or pushed into underflow extrapolation (knee table -> +16). Only the curved knee
 `[-3,3]` is clean. Smooth activations (sigmoid/tanh/SiLU) never have an exactly-flat run, so
-they are correct away from the table boundary. The saturating tail of tanh uses the tuned
-underflow slope `23107>>22`, not slope 0. NVDLA's IAS gives no flat-region recipe.
+they are correct away from the table boundary. Tanh's underflow slope is sigmoid's `23107>>22`:
+it leaves the largest error unchanged and fewer outputs inexact than slope 0 [HW sweep
+2026-11-09]. NVDLA's IAS gives no flat-region recipe.
 
 ### LE/LO boundary spike at x~0
 
@@ -580,7 +609,31 @@ the clamp is a no-op for them. The same fault likely also sits in the sigmoid/ta
 tail (`sigmoid(-16)~0 -> q=0`) [expected]. Those paths do not run that deep in a model. The
 case is not measured.
 
+### Intermittent timeout of a small first job
+
+> [!CAUTION]
+> A small standalone LUT job that runs first after other NPU work can outlast the driver's
+> 500 ms watchdog, intermittently. Its output is then not written [HW sweep 2026-09-27]. The
+> driver logs the timeout in the kernel log. Software must treat the output of a timed-out job
+> as unwritten.
+
+**Conditions:** RK3588 (Turing RK1), `rocket` 1.3.0, NPU clock ~816 MHz (the 600 MHz request),
+2026-09-27. Sigmoid and HardSigmoid jobs of `n` = 128, the first two LUT jobs of a process
+that runs after other NPU work.
+
+Both jobs timed out together, and the jobs after them in the same process completed. LUT jobs
+of `n` = 4096 that follow other NPU work completed in the usual time at every run [HW sweep
+2026-09-27]. The cause is not characterized.
+
+**Not characterized:** which preceding program sets up the timeout, whether the LUT starts in a
+cold state, and other `rocket` versions and NPU clocks.
+
 ## Evidence
+
+### Table persistence between submits
+
+The three-submit sequence is part of `tests/reuse_follower_rocket.c`. Each program writes both
+tables. Each output equaled the same activation run alone in 20 of 20 trials on each driver.
 
 ### Support status
 
@@ -599,6 +652,13 @@ gives ACC~2.
 ### Signed / wide output: the affine OUT_CVT
 
 The single-pass tanh, SiLU and HardSwish tables are validated by `tests/lut_tanh_rocket.c`.
+
+Tanh's index scale comes from `tests/lut_tanh_scale_probe.c`, which runs every finite fp16
+input in [-8, 8], 36866 of them, through the library's tanh once per scale. Scales from 2048 to
+6144 were swept. Outside |x| <= 0.01 the error falls with the scale to the 0.00049 floor at 4096,
+and stays there below it. The band where the error exceeds 0.002 is |x| <= 0.00011-0.00016 at
+every scale up to 4608, and widens slowly as the scale falls. Two runs of a scale are
+identical. **Conditions:** RK3588 (Turing RK1), `rocket` 1.3.0, NPU clock 928 MHz, 2026-11-09.
 
 ### Positive-domain kinds: sqrt / rsqrt / reciprocal
 
@@ -623,8 +683,17 @@ channels at an input size:
 
 Against the standalone op on the same conv output, the fused output measures 0.0005 for tanh,
 0.0039 for SiLU and 0.0020-0.0039 for GELU. Against the true function, the fused tanh
-measures 0.0039 on the three shapes where it has no x~0 spike. The tiled shape has three, and
-measures 8.0001 [HW sweep, RK3588 (Turing RK1), 2026-09-23].
+measures 0.0005 on the three shapes where it has no x~0 spike. The tiled shape has three, and
+measures 8.0001 [HW sweep, RK3588 (Turing RK1), 2026-11-09].
+
+The Whisper front-end measurement is `tests/conv1d_gelu_epilogue_probe.c`. Its inputs come from
+`tools/whisper_frontend_dump.py`: the two convolutions of whisper.cpp's `ggml-base.bin`, and a
+whisper.cpp-style log-mel of `jfk.wav` padded to 3000 frames. The descriptor carries no bias, so
+each bias rides in as one more input channel held at 1.0, whose center-tap weight is the bias.
+Each convolution runs as `rocket_conv1d_fp16` alone, then `rocket_activation_fp16(GELU)` on that
+output (the 2-pass form), and as `rocket_conv2d_act_fp16(GELU)`. Both GELU outputs are scored
+against erf-GELU in double of the `rocket_conv1d_fp16` output. The second convolution reads the
+first's exact GELU, rounded to fp16, so each epilogue is scored on its own.
 
 ### Two-operand EW (HardSwish/SiLU multiply)
 
@@ -657,6 +726,13 @@ ran in one process, and each of the five failing widths retired at the timeout:
 
 - Exact: 2048, 4096, 4097, 5000, 6144, 7000, 7680, 8000, 8100, 8160 and 8176 positions
 - Wrong from position 8176: 8184, 8188, 8189, 8190 and 8191 positions
+
+The timeout comes from `tests/activation_lut_rocket.c`, whose first two jobs are the sigmoid
+and HardSigmoid at `n` = 128. They timed out once in a `ctest` run of the library's tests and
+once in ten standalone runs, on the first of the ten. The other nine runs completed. The
+`n` = 4096 jobs are from `tests/reuse_follower_rocket.c`. They are sigmoid, tanh and sigmoid as
+separate submits, and a sigmoid after a matmul with weight reuse and K-accumulation live. They
+ran 120 times on each of two boards, and none was slow.
 
 #### Revision history
 

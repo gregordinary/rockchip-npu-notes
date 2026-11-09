@@ -155,8 +155,8 @@ of:
 
 It lowers everything else onto the forward convolution. `rocket_conv_transpose2d_route()`
 reports which path a call takes. On the mode's path,
-`rocket_conv_transpose2d_fp16` sets `npu_cna_desc.deconv` and the two stride fields from
-`conv_params_t.deconv_sy/sx`. `rocket_conv2d_fp16_job_extent()` (`src/rocket_conv_internal.h`)
+`rocket_conv_transpose2d_fp16` sets `conv_params_t.deconv_sy/sx`, and `gen_conv2d_fp16`
+programs `CONV_CON1.DECONV` and the two stride fields from them. `rocket_conv2d_fp16_job_extent()` (`src/rocket_conv_internal.h`)
 runs one fp16 convolution job with the output extent given rather than derived.
 
 `ROCKET_CONV_TRANSPOSE_HW=0` forces the lowering. For register-level testing,

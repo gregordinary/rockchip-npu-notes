@@ -22,8 +22,11 @@ and int4 run 1.14-1.20x that [HW sweep 2026-11-02]. DMA and per-job dispatch bou
 not the MAC array, so the integer MAC advantages raise its throughput far less than 2x and 4x.
 
 Quantization reduces the memory footprint, and raises the matmul's speed at most ~1.2x at that
-shape. In a model, resident int8 prefill measured 0.60x fp16 ([perf/not-mac-bound.md](perf/not-mac-bound.md)). A smaller model fits in RAM and in the per-fd address window. See
-[perf/not-mac-bound.md](perf/not-mac-bound.md).
+shape. In a model, resident int8 prefill with streamed weights, the int8 default, runs at
+0.95-0.99x resident fp16's rate at 3 B parameters [HW sweep 2026-11-06, 928 MHz]. A smaller
+model fits in RAM and in the per-fd address window.
+[perf/not-mac-bound.md](perf/not-mac-bound.md) §"In-model int8 and int4 prefill" gives the
+larger models and the conditions.
 
 **‡** int16's int32 output saturates. When its operand ranges keep the dot product inside
 int32, a task is exact. A matmul that needs exact int64 results over full-range int16
@@ -47,6 +50,26 @@ The matmul entries leave integer requant and dequant to the host. The DPU's outp
 requantize on chip, and the int8 convolution entries use it
 ([encodings/out-cvt-converter.md](encodings/out-cvt-converter.md)).
 
+### fp16 matmul with fp32 output
+
+An fp16 matmul can write its fp32 accumulator instead of narrowing it to fp16
+([encodings/tile-layouts.md](encodings/tile-layouts.md) gives the cube). With fp32 output, the
+largest error is ~1e-7 of the largest result. With fp16 output it is ~5e-4 [HW sweep
+2026-06-22].
+
+**Conditions:** RK3588 (Turing RK1), NPU clock ~816 MHz (the 600 MHz request). Random fp16
+operands in [-4, 4], at `64×4096×512` and at shapes of one and several K tiles. The fp16 output
+narrows each K-tile partial to fp16 before the host sums them. The reference is the fp64 dot
+product of the same fp16 inputs.
+
+The fp32 output reads back twice the output bytes. Its cost follows `M/K`, the ratio of the
+fp16 output's bytes to the weights' bytes. Where the output is much smaller than the weights,
+the matmul takes 0.1% longer than with fp16 output. Where `M·N` approaches `N·K`, it takes 35%
+longer [HW sweep 2026-06-22].
+
+In rocket-userspace, `rocket_matmul_fp16_f32out` writes the fp32 output, and
+`rocket_matmul_fp16` narrows to fp16.
+
 ## Model quantization
 
 The datatype menu is the matmul capability, not a whole-model quant recipe. int4, int16,
@@ -68,7 +91,7 @@ per-layer fp16 hybrid fallback. [TUNING.md](TUNING.md) lists the flags.
 - **int8 and int4.** They give smaller weights, for fitting larger models in memory. Both
   need a Hadamard rotation to tame activation outliers (without it, quantized LLM output
   is incoherent). int4's denser packing can reach single-pass K (no K-tile readback).
-  Neither is faster than fp16 in the whole-tile program (see the † note).
+  int8 prefill in a model does not exceed resident fp16's rate (see the † note).
 - **int16.** Its use is as an exact integer reference. Its native int32 output saturates,
   so the exact path decomposes each operand into bytes and runs int8 matmuls
   ([encodings/output-transpose-int16.md](encodings/output-transpose-int16.md)).
@@ -83,3 +106,11 @@ per-layer fp16 hybrid fallback. [TUNING.md](TUNING.md) lists the flags.
 - The int8 and int4 output stride quirk: [encodings/size-e-quirk.md](encodings/size-e-quirk.md)
 - What the eltwise unit can accumulate: [encodings/k-accumulation.md](encodings/k-accumulation.md)
 - Why MAC advantages do not become speed: [perf/not-mac-bound.md](perf/not-mac-bound.md)
+
+## Evidence
+
+### fp16 matmul with fp32 output
+
+The test is `tests/matmul_fp32out_rocket.c`. It scores 8192 sampled outputs against the fp64
+reference. The error figure is the largest absolute error divided by the largest reference
+magnitude. Each path's time is the best of three warm calls in one process.

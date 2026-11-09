@@ -7,23 +7,27 @@ scatter and gather, then runs at that frequency. The NPU-offloaded configuration
 CPU-only configuration does not. A comparison taken under the default governor therefore
 understates the offload, and can show it as a regression [HW sweep 2026-08-25].
 
-**Conditions:** two RK3588 boards, one per driver as the table's rows give them, running the
-same TFLite detector (SSDLite-MobileDet, `native_int8=1`).
+**Conditions:** RK3588 (Turing RK1), the mainline `rocket` driver, NPU clock 928 MHz (the
+900 MHz request), A76 `scaling_min_freq` 1 200 MHz. Three TFLite detectors through tflite-rocket
+at `native_int8=1`, each latency the median of 30 warm invokes, 2026-10-29. The `performance`
+configuration also runs the process on the A76 cores, and the `ondemand` configuration leaves it
+unpinned.
 
-**Not characterized:** the `cpu-sleep` gain on larger models and on quantized ones, and the
-separate effects of the governor and of `cpu-sleep` on whisper.cpp's decoder.
+**Not characterized:** the governor's effect at 928 MHz apart from that pinning. The `cpu-sleep`
+gain on larger models and on quantized ones. The separate effects of the governor and of
+`cpu-sleep` on whisper.cpp's decoder.
 
-| board | CPU governor | NPU delegate (median) | plain CPU TFLite (median) |
-|---|---|---|---|
-| mainline `rocket` 1.3.0, kernel 7.2 | `performance` | 199.4 ms | 198.0 ms |
-| | `ondemand` | **252.3 ms** | 198.2 ms |
-| vendor `rknpu` 0.9.8, kernel 6.1 | `performance` | 199.7 ms | 183.4 ms |
-| | `ondemand` | **639.4 ms** | 183.3 ms |
+| Detector | `performance` | `ondemand` | `ondemand` over `performance`, per pass |
+|---|---:|---:|---:|
+| SSDLite-MobileDet | 51.4 ms | 73.5 ms | 1.29-1.50x |
+| SSD MobileNet v2 | 47.1 ms | 64.3 ms | 1.34-1.40x |
+| EfficientDet-Lite0 | 94.5 ms | 127.8 ms | 1.34-1.37x |
 
-The CPU-only configuration is flat to a tenth of a millisecond under both governors on both
-boards. A multi-threaded XNNPACK inference keeps every core busy, so `ondemand` raises the
-clock and keeps it raised. The delegated configuration takes 1.27x as long on one board and
-3.2x on the other.
+On this board and on a vendor-kernel board, the CPU-only configuration is flat to a tenth of a
+millisecond under both governors [HW sweep 2026-08-25]. A multi-threaded XNNPACK inference keeps
+every core busy, so `ondemand` raises the clock and keeps it raised. On the vendor board, `rknpu`
+0.9.8 on kernel 6.1, the delegated SSDLite-MobileDet took 199.7 ms on `performance` and 639.4 ms
+on `ondemand`, 3.2x. Its CPU interpreter took 183.4 and 183.3 ms.
 
 ## Cause
 
@@ -31,14 +35,17 @@ The size of the penalty is set by the minimum frequency the governor is allowed 
 A76 cluster. The two boards run the same governor with the same tunables (`up_threshold` 95,
 `sampling_rate` 6.7-10 ms, `powersave_bias` 0), and differ in that minimum:
 
+**Conditions:** SSDLite-MobileDet at `native_int8=1` on one delegate build, on both boards,
+2026-08-25 [HW sweep].
+
 | board | A76 `scaling_min_freq` | A76 `scaling_max_freq` | ratio | measured penalty |
 |---|---|---|---|---|
 | mainline, kernel 7.2 | 1 200 MHz | 2 400 MHz | 2.0x | 1.27x |
 | vendor, kernel 6.1 | 408 MHz | 2 352 MHz | 5.8x | 3.2x |
 
 The penalty follows the platform's CPU frequency configuration, and the mechanism is identical
-under both drivers. The delegated configuration takes 3.2x as long where the A76 cluster can
-drop to 408 MHz, and 1.27x as long where its minimum is 1 200 MHz. A board read right after a delegated run shows the cluster at its minimum frequency.
+under both drivers. A board read right after a delegated run shows the cluster at its minimum
+frequency.
 
 ## The deep CPU idle state
 
@@ -94,11 +101,21 @@ every core busy. It matches, within 2%, an earlier measurement series that recor
 **Conditions:** the mainline RK1, `rocket` 1.3.0, NPU clock ~816 MHz, pp2048 with
 `-b 2048 -ub 2048`, llama.cpp b11242.
 
+The size of the bias depends on the configuration. On Llama-3.2-3B `Q4_K_M` at the default `-ub`,
+NPU prefill is only 1.018x faster under `performance` [HW sweep 2026-11-07]. There `ondemand`
+holds the A76 cores at 2.4 GHz for ~83% of their busy time, an effective 2.06 GHz against
+2.11 GHz pinned. A cycles-per-busy-time readout therefore cannot tell the two governors apart on
+such a process.
+
+**Conditions:** the mainline RK1, `rocket` 1.3.0, NPU clock 928 MHz, pp2048 at the default `-b`
+and `-ub`, llama.cpp b11539.
+
 ## A per-node offload inside a model
 
-A frontend that offloads single layers incurs the host's costs once per layer. Three of them
+A frontend that offloads single layers incurs the host's costs once per layer. Four of them
 were measured on the resident im2col convolution, alone and inside ONNX Runtime. They are the
-governor, the deep idle state, and the core that each call's workers start on.
+governor, the deep idle state, the core that each call's workers start on, and scratch memory
+allocated per call.
 
 ### The governor and the idle state
 
@@ -138,19 +155,45 @@ pix2pix, whose caller is not pinned, 0.926-0.958x [HW sweep].
 A benchmark whose own caller is unpinned cannot show this cost, however its gaps and governor
 are set. `librocketnpu` creates every per-call worker on its target core.
 
+### Scratch allocated per call
+
+A buffer that a per-node call allocates and frees each time can return to the kernel between
+calls. Every call then faults it in again. Depth Anything's encoder allocated and freed
+~17 MiB of scratch per encode. With the `Conv` claim on, the process took 2.8-5.2 k minor faults
+an image, and with the claim off none [HW sweep 2026-10-09].
+
+**Conditions:** RK1, NPU clock ~816 MHz, Depth Anything v2 Small through ort-rocket at
+`ORT_DISABLE_ALL`, 4 threads on the A76 cores, ONNX Runtime spinning off, 2026-10-09.
+
+Two changes each remove the faults:
+
+- Disabling glibc's heap trim and its dynamic mmap threshold takes the faults to 0. It also
+  takes the encoder's added time with the claim on from 29-32 ms to 14-15 ms. An application can
+  set `GLIBC_TUNABLES=glibc.malloc.trim_threshold=2147483648:glibc.malloc.mmap_threshold=33554432`.
+- Holding the scratch in the library's context, allocated once, takes the faults to 0.
+  `librocketnpu`'s SigLIP-family encoder holds it so.
+
 ### Whole models
 
-On a whole model, the governor and `cpu-sleep` move the CPU-only configuration as well as the
-offloaded ones [HW sweep].
+On a whole model, the governor moves the CPU-only configuration as well as the offloaded ones
+[HW sweep 2026-10-27].
 
-**Conditions:** pix2pix through ort-rocket, 4 threads, ONNX Runtime spinning off, RK1,
-2026-10-09 UTC, before the per-call worker placement change above.
+**Conditions:** pix2pix through ort-rocket, 4 intra-op threads on the A76 cores, both sessions at
+`ORT_ENABLE_ALL`, ONNX Runtime spinning off, RK1, NPU clock 928 MHz (the 900 MHz request),
+2026-10-27.
 
-| Configuration | `performance` over `ondemand` | `cpu-sleep` off over `performance` |
-|---|---:|---:|
-| CPU EP | 0.928 | 0.993 |
-| ConvTranspose claim only | 0.892 | 0.985 |
-| ConvTranspose and Conv claims | 0.884 | 0.951 |
+| Configuration | `performance` | `ondemand` | `performance` over `ondemand` |
+|---|---:|---:|---:|
+| CPU EP | 146.6 ms | 158.3 ms | 0.926 |
+| ConvTranspose claim only | 76.4 ms | 84.5 ms | 0.904 |
+| ConvTranspose and Conv claims | 47.4 ms | 54.3 ms | 0.873 |
+
+The ratio column is the ratio of the medians [host-computed]. Against the CPU EP, both claims
+measure 3.09x on `performance` and 2.91x on `ondemand`.
+
+Under `performance`, turning `cpu-sleep` off takes the CPU EP to 0.993x its time [HW sweep
+2026-10-09, ~816 MHz]. It takes the ConvTranspose claim alone to 0.985x and both claims to 0.951x.
+That measurement predates the per-call worker placement above.
 
 With ONNX Runtime's spinning off, the CPU-only configuration's threads block between operators,
 and `ondemand` lowers their clock as well. The XNNPACK configuration of the detection
@@ -214,8 +257,13 @@ The reason the host share is large on this silicon is in [not-mac-bound.md](not-
 
 ### Detection measurement
 
-Each configuration took twelve invokes, with the first three discarded. The governor
-configurations were interleaved, and the run was repeated twice.
+The 928 MHz table is four passes, one process per configuration [HW sweep 2026-10-29]. The
+governor order and the model order rotated, and memory was reset before every process. Each ratio
+pairs the two governors within a pass.
+
+The two-board measurement took twelve invokes a configuration, with the first three discarded.
+The governor configurations were interleaved, and the run was repeated twice [HW sweep
+2026-08-25].
 
 ### The deep CPU idle state
 
@@ -234,18 +282,36 @@ The samples have no timestamps, so which phase of a run the low ones fall in is 
 
 ### LLM prefill
 
-Each ratio is paired over three rotated passes, each within 0.01 of the mean.
+Each ratio is paired over three rotated passes, each within 0.01 of the mean. The Llama-3.2-3B
+ratio is two rotated passes, 25.22-25.23 t/s against 24.76-24.79, each process after a memory
+reset and a discarded warm-up. A76 cycles are `perf stat -a` on cores 4-7 over the timed
+process. Busy time is the cores' `/proc/stat` user, system, irq and softirq time, and the time at
+each frequency is `cpufreq` `time_in_state`.
 
 ### A per-node offload inside a model
 
 The single-layer table is two passes. The worker-thread figures are one binary over three
-passes. In the whole-model table, each ratio pairs two configurations inside one of five
-rotated passes, with memory reset before each configuration.
+passes. The whole-model table is medians over five passes, with the configuration order and the
+governor order rotated, and memory reset before each configuration. Its paired speedups with both
+claims span 2.95-3.10x on `performance` and 2.89-2.94x on `ondemand`. The `cpu-sleep` ratios pair
+two configurations inside one of five rotated passes.
+
+The heap-trim figures are two rotated passes under `performance`, with the claim off and on. The
+context-owned scratch is four rotated passes under `ondemand`. There the faults with the claim on
+measured 4.1-5.2 k an image before the change and 0 after. The `performance` passes measured
+2.8-3.9 k, the low end of the reported range.
 
 ### whisper.cpp's CPU decoder
 
 The `ondemand` figures are single processes, and the `performance` ones are three passes with
 the configuration order rotated.
+
+### Revision history
+
+| Measured | Quantity | Value | Conditions |
+|---|---|---|---|
+| 2026-08-25 | SSDLite-MobileDet on the mainline board, delegate and CPU interpreter | `performance` 199.4 and 198.0 ms, `ondemand` 252.3 and 198.2 ms | `rocket` 1.3.0, kernel 7.2, that date's delegate build |
+| 2026-10-09 | pix2pix, `performance` over `ondemand` | CPU EP 0.928, ConvTranspose claim 0.892, both claims 0.884 | ~816 MHz, before the per-call worker placement change |
 
 ### Excluded causes
 

@@ -67,9 +67,13 @@ both hold [HW sweep]. Every check passes its bound on every case of the sweep:
 | Partition of unity | A constant input upsamples to the same constant | 0.05 |
 | Linear exactness | A y-ramp upsamples to the half-pixel ramp | 0.05 |
 
-For `scale=2` the kernel is `[0.25, 0.75, 0.75, 0.25]`, which is exact in fp16, so the
-upsample is expected to be bit-exact [expected]. For `scale=3` the kernel is `[⅓,⅔,1,⅔,⅓]`,
-where ⅓ rounds in fp16, so the error is expected near 1e-3 [expected].
+At scales 2 and 4 the bilinear upsample is bit-exact against the gather rounded once to fp16
+[HW sweep 2026-11-07]. Their kernels, `[0.25, 0.75, 0.75, 0.25]` and the eighths, are exact in
+fp16. At scale 3 the kernel is `[⅓,⅔,1,⅔,⅓]`, where ⅓ rounds in fp16. The largest error there is
+0.0020, one fp16 ulp at magnitudes from 2 to 4 [HW sweep 2026-11-07].
+
+**Conditions:** RK3588 (Turing RK1), `rocket` 1.3.0, NPU clock 928 MHz, 2026-11-07. 32 or 64
+channels, inputs of 8×8 to 16×16, integer values from -3 to 3. Scales 2×2, 3×3, 4×4 and 2×1.
 
 ## Performance
 
@@ -90,3 +94,8 @@ See also: [conv-transpose.md](conv-transpose.md), [depthwise-conv.md](../depthwi
 The test is `tests/resize_rocket.c` (CTest `resize_rocket`). Its references are independent
 of the NPU path. The NPU runs a transposed-conv *scatter* and the references run a *gather*,
 so a kernel or coordinate bug cannot hide. All sweep cases pass.
+
+The scale measurements are `resize_rocket 1 C IH IW SY SX` runs. The reference is computed in
+double precision and rounded once to fp16. Scales 2×2, 4×4 and 2×1 read a largest absolute
+error of 0 at 8×8, 16×16 and 10×7, with 32 and 64 channels. Scale 3×3 read 0.0020 at 8×8, 16×16
+and 10×12. The planner refused the 16-channel shapes, so those are not data.

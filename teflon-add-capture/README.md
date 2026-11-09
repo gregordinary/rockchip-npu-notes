@@ -26,6 +26,22 @@ frontend), not vendored here; point the `.../` paths at your Mesa tree. The comm
 `regcmd.decoded.txt` is the decoded result, so the analysis below is reproducible by
 inspection without re-running the capture.
 
+## Capture requirements
+
+Teflon runs a convolution on the NPU, and dumps its BOs, only under these conditions. Otherwise
+the op runs on the CPU and nothing is dumped [HW sweep, RK3588, 2026-06-20]:
+
+- Every tensor of the op is quantized per tensor. Teflon rejects per-axis quantization, so the
+  TFLite converter needs `_experimental_disable_per_channel = True` [source-confirmed: Mesa
+  `rkt_ml.c`].
+- The interpreter is built with `OpResolverType.BUILTIN_WITHOUT_DEFAULT_DELEGATES`. Otherwise
+  XNNPACK claims the op before the external delegate does.
+- The convolution's dilation is 1 [source-confirmed: Mesa `rkt_ml.c`].
+
+On a board with both the Mali GPU (`panthor`, `/dev/dri/renderD128`) and the NPU
+(`/dev/accel/accel0`), Teflon opens the device whose DRM driver name is `rocket`. It needs no
+setting to select the NPU [HW sweep, RK3588, 2026-06-20].
+
 ## What the decode shows (the baseline)
 
 The dumped task is a **plain conv**: Teflon's TFLite partitioner only claimed one
@@ -63,12 +79,11 @@ add tensor). MRDMA is never simultaneously a flying main and an operand feed.
 That is Mesa's program, not a requirement of the datapath. A pure flying-MRDMA-main plus
 ERDMA-operand program computes a two-buffer EW op exactly, with no conv
 [HW sweep, RK3588, `tests/ew_int_probe.c`], once `DATA_CUBE_CHANNEL` carries `ORIG_CHANNEL`
-and `COMB_USE` bit 0 is clear. `gen_ew_mul_fp16` carries both wrong, which is why it
-fails. The fields are in
+and `COMB_USE` bit 0 is clear. With either field wrong, the program fails. The fields are in
 [../encodings/sdp-stage-precision.md](../encodings/sdp-stage-precision.md) §"Two-buffer EW op without a convolution".
 
 Feeding the EW operand path with an **identity matmul** as the main (the fp16 K-accum
-machinery, `gen_matmul_fp16` `accumulate=1`) and switching the EW op add->mul
+machinery, `gen_gemm_fp16` `accumulate=1`) and switching the EW op add->mul
 (`DPU_EW_CFG` `0x108202C0` -> **`0x108003C4`**, i.e. `EW_OP_TYPE(1)`) computes `A*B`
 **bit-exact** on the NPU [HW sweep] (`tests/ew_mul_rocket.c`; ADD reproduces `A+B` on the
 same datapath). This is wired into `rocket_ew_mul_fp16` and the fully-on-NPU

@@ -96,6 +96,15 @@ fp16, half the int8 group).
 > scrambled spatially and across channels. Setting only the `CONV_MODE`/`DW_EN` mode bits gives
 > the same failure signature.
 
+The pad field's 4-bit limit applies to depthwise as well (Erratum E8,
+[matmul-as-conv.md](matmul-as-conv.md) §"Per-tile geometry limits"). A dilated depthwise
+convolution with "same" padding reaches it: kernel 3 at dilation 16 pads 16.
+
+> [!CAUTION]
+> An int8 depthwise task is bit-exact at pad 15 and incorrect at pads 16 and 17 [HW sweep,
+> RK1, ~816 MHz, 2026-09-30]. No error is reported. Software must program a pad of at most 15,
+> and must write a larger pad into the input as the input zero point.
+
 ## int8 depthwise
 
 int8 DW uses an int8-output writer with on-chip requant, not an int32-raw writer followed by
@@ -330,6 +339,22 @@ delegate uses `rocket_conv2d_dw_int8` and `rocket_conv2d_dw_int8_perc` under
 `rocket_conv2d_dw_int8`, with COCO mAP unchanged.
 
 ## Evidence
+
+### Datapath model
+
+The pad measurement ran `tests/conv_dw_int8_runtime` and `tests/conv_dw_int8_perc_runtime` on
+`rocket` 1.3.0 and kernel 7.2.8, against each test's exact host model. Pads 15, 16 and 17 ran on
+planes that fit one CBUF pass. The per-tensor test adds a kernel-3, dilation-16, pad-16 "same"
+convolution with an asymmetric weight zero point. With the pad programmed into `CNA_PAD_CON0`,
+pad 15 is exact and the other cases have these elements incorrect:
+
+| Case | Per-tensor | Per-channel |
+|---|---:|---:|
+| Pad 16 | 10416 of 92416 | 9694 of 92416 |
+| Pad 17 | 16107 of 153216 | 14132 of 153216 |
+| Dilation 16, pad 16 | 17501 of 25600 | Not run |
+
+With the pad written into the input and a programmed pad of 0, every case is exact.
 
 ### int8 depthwise
 

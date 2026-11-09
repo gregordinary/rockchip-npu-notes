@@ -50,14 +50,16 @@ Every RK3576 difference from the RK3588 map is one of the six edit operations be
 | **Widen a count field**, with the control bits above it shifted up | `PC_TASK_CON.TASK_NUMBER` 12 bits -> 16. The three control bits above it move up by four, and the RK3588 word `0x7001` becomes a task count of 28673. |
 | **Compact**: one register per field -> two fields per register | The four CVT scales: RK3588 `CNA_CVT_CON1..4`, one each -> RK3576 `0x104C`/`0x1050`, `scale1<<16 \| scale0`. Burst lengths likewise fold into `0x108C` as `weight_burst<<16 \| data_burst`. |
 | **Add**: live on the new SoC, a gap on the old | `0x1018` precision/ARGB word, `0x101C` total weight bytes, `0x1094`/`0x1098`, `0x118C`. |
-| **Collide**: same offset, unrelated meaning | RK3576 `0x1090` is the input line stride. RK3588 `0x1090` is a clock-gating register. The RK3588 writes its line stride at `CNA_DMA_CON1` `0x107C`. |
-| **Duplicate**: one quantity at two offsets | CBUF data entries at both `0x103C` hi and `0x1044` lo. |
+| **Collide**: same offset, unrelated meaning | RK3576 `0x1090` is the input line stride, which advances the feature address once every four rows. RK3588 `0x1090` is a clock-gating register. The RK3588 writes its line stride at `CNA_DMA_CON1` `0x107C`. |
+| **Split**: one value in every capture, two quantities | `0x103C` hi, the fetch length, and `0x1044` lo, the DDR row advance. Both are `ceil(iw*ic/64)` for a tight plane, and they differ for a plane inside wider rows. |
 
 A single address-translation layer cannot express widened fields, compaction, or collisions,
 so each revision needs its own regcmd encoder, not an offset table.
 
-A value that appears twice is a Duplicate: the SoC expects both, and software must program
-both.
+Two registers that contain the same value in every capture are not thereby one quantity.
+Software must program each from its own function. A read of a plane inside wider rows moves
+`0x1044` low to the pitch and keeps `0x103C` high at the plane ([rk3576.md](rk3576.md) §"A plane
+inside wider rows").
 
 ## Matching registers by value and by function
 
@@ -106,7 +108,7 @@ correctness constraints invert outright.
 
 | Axis | RK3588 | RK3576 |
 |---|---|---|
-| Matmul precision | fp16 is faster in the whole-tile program. Resident int8 prefill is 0.60x fp16 at ~816 MHz | int8 is faster. A resident fp16 GEMM costs 2.0-2.2x the resident int8 one. The convolution-form fp16 program contracts 16 input channels a task, and is 30-299x slower |
+| Matmul precision | fp16 is faster. Resident int8 prefill with streamed weights is 0.95-0.99x resident fp16, and 0.61-0.66x with the whole-tile plan | int8 is faster. A resident fp16 GEMM costs 2.0-2.2x the resident int8 one. The convolution-form fp16 program contracts 16 input channels a task, and is 30-299x slower |
 | int8 matmul output | Raw int32 accumulators | int8 through the DPU requant, or raw int32 through the dense writer |
 | Multiple cores | 3 cores, per-fd entities, scheduling implemented and correct | 2 cores. Two jobs in flight at once produce incorrect output on 96-100% of calls |
 | Completion | maskable completion interrupt | `PC_DONE` read-only in `INTERRUPT_MASK`, so the driver polls it. The DPU's completion interrupt does reach the GIC |

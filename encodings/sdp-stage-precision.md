@@ -55,9 +55,9 @@ allbilly/rk3588 project measures the same on the same silicon [source-confirmed]
 program: the main operand on a flying MRDMA feed (`FEATURE_MODE_CFG` bit 0) and the second
 operand on the ERDMA, both from memory. A 4096-element cube.
 
-**Not characterized:** the conv's CACC result as the main feed at an integer
-`proc_precision`, which an int32 K-accumulation needs. Also ABS and NEG, the broadcast operand
-modes, a cube taller than one row, the RK3576, and the cost of any op.
+**Not characterized:** ABS and NEG, the broadcast operand modes, a cube taller than one row, the
+RK3576, and the cost of any op. A convolution as the main feed is in §"The EW stage with a
+convolution main feed".
 
 The bundle that selects integer mode is five settings:
 
@@ -94,6 +94,41 @@ The same DPU-only program computes fp16 ADD, MAX, MIN, MINUS and MUL exactly on 
 | `FEATURE_MODE_CFG` | `COMB_USE[10:8]` | Bit 0 clear. At `4` the op is exact | At `1` or `5`, the program never completes |
 | `DPU_EW_CFG` | `[8]`, the EW input converter bypass | Op-dependent at fp16: the converter live for ADD, bypassed for MUL | ADD with the converter bypassed passes the main operand through on about half the elements. MUL with it live times out |
 
+## The EW stage with a convolution main feed
+
+With an int8 convolution's int32 result as its main feed, the EW ALU adds in integer
+arithmetic. Its ERDMA operand, though, is read as 16-bit elements [HW sweep 2026-11-07]. No
+configuration tested adds a 32-bit operand to the convolution's result. An int32
+K-accumulation through this stage is therefore not available on these configurations.
+
+**Conditions:** RK3588 (Turing RK1), `rocket` 1.3.0, NPU clock 928 MHz, 2026-11-07. One int8 ×
+int8 -> int32 convolution task at 64×2048×64, with the EW ALU at ADD. `EDATA_SIZE` and
+`ERDMA_DATA_SIZE` at 3 (32-bit), and DPU_RDMA `FEATURE_MODE_CFG` at int32 in and proc precision.
+The operand is an int32 cube in the output's layout, and each configuration runs in its own
+process.
+
+| `FEATURE_MODE_CFG` | DPU `0x4010` precision | EW input converter | Result |
+|---|---|---|---|
+| `COMB_USE` 5, MRDMA enabled | out int32, in int8, proc int8 or int32 | Live | Completes. Each output is the convolution's result plus one 16-bit element of the operand, exact in integer arithmetic |
+| `COMB_USE` 5, MRDMA enabled | out int32, in int8, proc int8 or int32 | Bypassed | Never completes |
+| `COMB_USE` 5, MRDMA enabled | All int32 | Live or bypassed | Never completes. 16 of 4096 elements are written |
+| `COMB_USE` 0, MRDMA disabled | out int32, in int8, proc int8 | Live | Never completes, and its DMA is still running when the core is reset |
+
+The live converter's 16-bit operand matches the DPU-only program's int32 MUL, which reads its
+second operand as signed int16 (§"The EW stage in integer mode"). The 32-bit operand read of
+the DPU-only ADD needs the converter bypassed, and with a convolution feed that program never
+completes. `COMB_USE` 5 completes here, though it never completes on the DPU-only program.
+
+> [!CAUTION]
+> A convolution-fed EW program with the MRDMA disabled in `FEATURE_MODE_CFG` never completes,
+> and the core's DMA is still active when the driver resets it. The core's IOMMU then fails to
+> stall, and further timeouts on that core wedge the NPU until a power cycle
+> ([../chips/rk3588.md](../chips/rk3588.md) Erratum E13). Software must not submit it.
+
+**Not characterized:** the operand halfword each output element reads, and `COMB_USE` 0 or 4
+with the converter bypassed. Also a K split over several tasks, and the int4 convolution's int16
+output as the main feed.
+
 ## Accumulator lifetime across conv ops
 
 The CORE's accumulator, CACC, does not persist across conv ops. It accumulates
@@ -110,8 +145,9 @@ must use an SDP read-modify-write stage. With the whole weight tile resident the
 above the weight minimum ([../matmul-as-conv.md](../matmul-as-conv.md) §"CBUF weight
 streaming").
 
-An int32 K-accumulation on the EW stage in integer mode removes int8's per-K-pass readback of its
-int32 partials (∝ M·N·nKt). Its effect on prefill throughput is in
+An int32 K-accumulation on the EW stage would remove int8's per-K-pass readback of its int32
+partials (∝ M·N·nKt). The configurations in §"The EW stage with a convolution main feed" add only
+a 16-bit operand to a convolution's result. The readback's effect on prefill throughput is in
 [k-accumulation.md](k-accumulation.md) §"Integer and float paths".
 
 ## The CNA DCOMP block
@@ -157,3 +193,30 @@ models. Leaving BRDMA and NRDMA enabled changed no result.
 
 The fp16 results come from the same `tests/ew_int_probe.c`, on both drivers. Each of the three
 fields was moved alone on the working program, on the vendor driver.
+
+### The EW stage with a convolution main feed
+
+The measurement is `tests/kacc_int32_probe.c` on the mainline RK1. It takes the int8 matmul generator's accumulate program and rewrites three of its fields per
+configuration. They are the precision triple in DPU `0x4010`, the EW converter bypass bit and
+the `FEATURE_MODE_CFG` word. The EW surface stride and
+notch are programmed at M. Each process first runs the plain int32-output task as a control, and
+the control was exact on all 4096 elements in every process. The interrupt counters show that
+the control ran on core 0 and the configuration under test on core 1.
+
+The data make sums of about 2.9e7-4.8e7, past 2^24. With a constant operand `0x01234567`, every
+output of the completing configuration equals the convolution's result plus `0x4567` or
+`0x0123`, alternating with the output channel. The sums are odd and exact, which no fp32 add
+produces. With an operand of distinct 32-bit words, only 64 of 4096 outputs match the halfword
+at their own position in a 16-bit cube. The mapping is therefore not characterized.
+
+Of the seven configurations, the table's first row completed in every clean run. The
+converter-bypassed and all-int32 rows each timed out once, and the board recovered from each.
+The `COMB_USE` 0 row timed out, and its reset logged `rk_iommu: Enable stall request timed out`.
+A kernel warning in `iommu_detach_group`, called from `rocket_job_run`, followed it.
+
+Results on core 1 after that point are excluded. There, the converter-bypassed configurations
+with `COMB_USE` 0 and 4 wrote nothing or garbage, with no timeout logged. The as-generated
+configuration then completed on that core in 3 of 8 runs. About ten timeouts later the board
+wedged
+([../chips/rk3588-validation.md](../chips/rk3588-validation.md) §"E13: a core stops completing jobs after job timeouts"). The K-split
+chain and the timing comparison did not run.

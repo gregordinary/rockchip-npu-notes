@@ -23,7 +23,7 @@ venv: `python3 -m venv --without-pip /tmp/rknnvenv`; `get-pip.py`; then
 
 ## The decoded PPU pooling program (vendor, byte-level; max-pool 2×2 s2, in 1×8×4×4)
 
-Each is one `NPUOP(target,value,reg)`. Geometry fields are **(value − 1)**; strides are
+Each is one `REGCMD(target, reg, value)`. Geometry fields are **(value − 1)**; strides are
 **bytes** (regs hold a [31:4] field = bytes, 16-aligned). C2 = 8 (fp16 cube).
 
 | reg | field(s) | meaning |

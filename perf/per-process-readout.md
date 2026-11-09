@@ -161,6 +161,23 @@ set walking less. The two models differ in graph and in IPC (1.46 against 1.93).
 walk counts are close, 322M against 417M, while their cycles differ 5.9x. A per-cycle rate
 across the two therefore compares two different workloads.
 
+On gpt-oss-20b, 245.9M of the walks, 59.6% of the placed configuration's, scale with the
+15197 MB resident set. Those are the walks a 2 MB page can coalesce. At 15-100 cycles a walk
+they are 0.49-3.27% of A76 busy cycles [host-computed]. The PMU has no walk-latency event, so the
+band cannot be narrowed on this board. Transparent huge pages therefore remove at most that share
+of the host's cycles, and less of prefill time:
+
+- Prefill time also contains device time.
+- Transparent huge pages cover shmem and anonymous memory, not the file-backed GGUF the CPU reads.
+- The NPU reaches its buffers through the IOMMU, so its DMA does not change.
+- A 2 MB page removes only the walks it coalesces.
+
+> [!NOTE]
+> If transparent huge pages are enabled for the NPU's shmem buffers, set `enabled=madvise` and
+> `shmem_enabled=advise`, not `always`. `always` applies huge pages, and khugepaged's background
+> collapsing, to every process's anonymous memory on the board [source-confirmed: the kernel's
+> `admin-guide/mm/transhuge` documentation].
+
 ## Limits
 
 Neither half reads IOVA. The mainline `rocket` accel node exposes only `name` under debugfs,
@@ -249,6 +266,22 @@ The control forces `llama-bench` onto each cluster with `taskset`
 
 The memory columns got their contrast on a real workload rather than a synthetic one, with
 three rotated passes per configuration.
+
+### Transparent huge pages
+
+The walk counts are `dtlb_walk` system-wide on the A76 PMU, gpt-oss-20b at
+`-p 2048 -b 2048 -ub 2048` [HW sweep 2026-08-28, RK1, ~816 MHz, governor `performance`]. The
+model is held constant, and only the resident set varies:
+
+| Configuration | `dtlb_walk` | A76 cycles | Walks per cycle |
+|---|---:|---:|---:|
+| `ROCKET_MOE=0`, no resident set | 166.5M | 2390.4G | 6.97e-05 |
+| `ROCKET_MOE=1`, 15197 MB resident | 412.4M | 751.2G | 5.49e-04 |
+
+`l2d_tlb_refill` follows `dtlb_walk` within 1.3% in both configurations, so these are table walks.
+The cycle band is `coverable walks × cycles per walk / A76 cycles`. An A76 walk costs ~15 cycles
+when it hits in cache and over 100 when it misses to DRAM [expected]. During the run, `free`
+reported 16 G of shared memory against 188 MB idle: the NPU buffers are `drm_gem_shmem` objects.
 
 ### Placement columns and the L3 covariate
 

@@ -19,8 +19,8 @@ K-accumulation on. `512×3840×4096` unless a table states another shape. Measur
 |---|---:|---|---:|
 | fp16, streamed weights (the default) | 947-966 | 1x | 1x |
 | fp16, whole-tile | 706-721 | 1x | 0.73-0.76x |
-| int8, streamed weights (`ROCKET_MM_STREAM_INT8=1`) | 1098-1107 | 2x | 1.14-1.17x |
-| int8, whole-tile (the default) | 506-574 | 2x | 0.52-0.61x |
+| int8, streamed weights (the default) | 1098-1107 | 2x | 1.14-1.17x |
+| int8, whole-tile (`ROCKET_MM_STREAM_INT8=0`) | 506-574 | 2x | 0.52-0.61x |
 | int4, whole-tile (it has no streamed plan) | 1121-1140 | 4x | 1.16-1.20x |
 
 **Not characterized:** the comparison at other shapes on the current library.
@@ -47,16 +47,83 @@ DMA's bytes, which is consistent with int4's 1.16-1.20x.
 
 ### In-model int8 and int4 prefill
 
-In a model, int8 prefill is slower than fp16. On Gemma-4-12B F16 at pp2048, resident int8
-prefill is ~9.1 t/s against resident fp16's ~15.1 t/s, 0.60x [HW sweep 2026-06-17, ~816 MHz].
+In a model, resident int8 prefill with streamed weights runs at 0.95-0.99x resident fp16 at
+3 B [HW sweep 2026-11-06]. At 8 B it runs at about resident fp16's rate [HW sweep 2026-11-07].
+With the whole-tile plan it runs at 0.61-0.66x. The int8 rows quantize an F16 GGUF's weights to int8 once, at the first prefill,
+and hold them resident.
+
+**Conditions:** RK3588 (Turing RK1), kernel 7.2.9, `rocket` 1.3.0, NPU clock 928 MHz, CPU
+governor `performance`. llama.cpp b11539 through `ggml-rocket`, `llama-bench -n 0 -r 3 -t 8` at
+the default `-b` and `-ub`. fp16 resident is `ROCKET_F16_RESIDENT=auto`, and int8 is
+`ROCKET_INT8=1 ROCKET_INT8_RESIDENT=1` without the Hadamard rotation. Every int8 weight is
+resident: the 3 B models fit the default 4096 MB budget, and the 8-9 B rows set
+`ROCKET_INT8_CACHE_MB=0`. The fp16 route fuses the QKV and gate-up projections, and the int8
+route does not. The 3 B rows were measured 2026-11-06 and the 8-9 B rows 2026-11-07.
+
+The 8-9 B int8 columns sum the K passes in an int64 accumulator. The readback paragraph below
+gives the rate with the library's current readback.
+
+| Model, F16 GGUF | Test | fp16, t/s | fp16 resident, t/s | int8 whole-tile, t/s | int8 streamed, t/s | int8 streamed against fp16 resident |
+|---|---|---:|---:|---:|---:|---:|
+| Llama-3.2-3B-Instruct | `pp512` | 95.6-96.1 | 113.2-113.8 | 69.4-70.5 | 107.5-109.5 | 0.948-0.967x |
+| Llama-3.2-3B-Instruct | `pp2048` | 84.4-84.7 | 97.0-97.6 | 60.8-61.3 | 94.1-94.8 | 0.964-0.978x |
+| Ministral-3-3B-Instruct | `pp512` | 85.8-86.3 | 101.1-101.8 | 63.6-64.1 | 98.8-100.1 | 0.971-0.990x |
+| Ministral-3-3B-Instruct | `pp2048` | 74.4-74.9 | 85.1-86.1 | 56.0-56.2 | 83.3-83.7 | 0.968-0.984x |
+| Ministral-3-8B-Instruct | `pp512` | 43.8-44.0 | 51.7-52.0 | 31.7-31.8 | 46.2-46.8 | 0.893-0.899x |
+| Ministral-3-8B-Instruct | `pp2048` | 39.5-39.6 | 45.7-46.2 | 29.5-29.8 | 42.0-42.1 | 0.908-0.921x |
+| Qwen3.5-9B | `pp512` | 36.0-36.4 | 41.3-41.8 | not measured | 38.2-38.3 | 0.914-0.927x |
+| Qwen3.5-9B | `pp2048` | 35.5-35.9 | 39.7-40.8 | not measured | 37.6-37.7 | 0.921-0.949x |
+
+Streaming makes the int8 route 1.41-1.57x faster than the whole-tile plan. It is 1.11-1.16x
+faster than the default fp16 route at 3 B and 1.05-1.07x at 8-9 B. The default route converts
+and scatters each weight on every call.
+
+The int8 route's gap to resident fp16 is the per-call
+work only int8 does. It quantizes each activation on the host, reads back an int32 partial for
+each K pass, and dequantizes the output. The gap widens with the K passes. The streamed int8
+plan takes two at K 4096, where 3 B's K 3072 takes one [host-computed, M 512]. At the 8-9 B FFN
+down projections (K 12288 and 14336) it takes six or seven.
+
+The readback is most of that gap at 8 B. In one Ministral-3-8B-Instruct `pp512` process, the
+int8 route's readback took 22.7 s summed over its workers, against resident fp16's 1.5 s [HW
+profile 2026-11-07, `ROCKET_MM_PROFILE`]. Its device wait took 27.9 s against 46.7 s. Past one K
+pass the table rows above summed each pass into a zeroed int64 accumulator. They then copied it
+into C, ~60 bytes of host traffic an output at two passes.
+
+The library now adds each pass straight into C in wrapping 32-bit arithmetic, ~20 bytes an
+output. That equals the int64 sum truncated to int32, so the output is unchanged. It raises the
+int8 rows 1.07-1.12x on Ministral-3-8B-Instruct and 1.01-1.03x on Llama-3.2-3B-Instruct [HW sweep
+2026-11-07, paired within each of three passes]. Perplexity is equal at every chunk. At 8 B that
+is 51.5-52.0 t/s at `pp512` and 45.5-46.4 at `pp2048`, the resident fp16 rates in the table,
+measured in separate processes.
+
+At the default 4096 MB budget the 8-9 B models hold 58-62% of their int8 weights resident
+[host-computed, from the GGUF shapes]. The rest take the fp16 route. Against an unbudgeted run
+that costs 3-5% of the prefill rate on Ministral-3-8B-Instruct, at 0.952-0.969x [HW sweep
+2026-11-07]. On Qwen3.5-9B it costs 1-3%, at 0.966-0.992x.
+
+Llama-3.2-3B-Instruct's wikitext perplexity (8 chunks of 512) is 11.0729 on both int8 plans,
+equal at every chunk, against 10.9114 for resident fp16, 1.5% higher [HW sweep 2026-11-06]. At
+8-9 B it is 0.73% above the fp16 route on Ministral-3-8B-Instruct and 2.83% on Qwen3.5-9B
+[HW sweep 2026-11-07].
+
+The Hadamard rotation (`ROCKET_INT8_HADAMARD=1`) rotates only a projection whose K is a power of
+two or 60 times one. At 8-9 B it therefore skips the FFN down projections. With it, the two models
+read 0.93% and 0.97% above fp16 [HW sweep 2026-11-07]. It lowers Qwen3.5-9B's perplexity at
+every chunk and does not lower Ministral-3-8B-Instruct's.
+
+**Not characterized:** int4 in a model on the current library, the prefill rate with the
+Hadamard rotation, and models above 9 B.
 
 The fp16 path has on-NPU K-accumulation (`read ∝ M·N`), and int8 does not. An integer
 K-accumulation on the EW ALU is not characterized, and fp32 cannot hold int8's int32 partials
 exactly (see
-[../encodings/k-accumulation.md](../encodings/k-accumulation.md)). The un-K-accumulated int32
-readback of int8 (`∝ M·N·nKt`, 2x the bytes of fp16) costs more than its MAC advantage gains.
-Making int8 *resident* removes the per-call requant and packB overhead (+25-58% over the
-non-resident int8 path). The readback cost is unchanged, and it holds int8 below fp16.
+[../encodings/k-accumulation.md](../encodings/k-accumulation.md)). The whole-tile plan reads
+back an int32 partial per K pass (`∝ M·N·nKt`, 2x the bytes of fp16), which costs more than
+int8's MAC advantage gains. The streamed plan removes most of those passes. At Llama-3.2-3B's
+K of 3072 it takes one, and at its FFN down projection four against thirteen (§"The int8
+readback limit"). Making int8 *resident* removes the per-call requant and packB overhead
+(+25-58% over the non-resident int8 path).
 
 A same-weights precision sweep shows the same in a model. It runs the Gemma-4-12B F16 GGUF
 through the *one-shot* paths, which re-quantize on each prefill. The sweep runs at pp512 under
@@ -71,8 +138,7 @@ the `performance` governor [HW sweep, 2026-06-24, RK1 7.1.0-1, ~816 MHz]:
 
 Prefill throughput falls with each step down in precision, because the one-shot quantization
 and the integer readback add to the datatype-independent limit. These paths re-quantize
-on every call. The *resident* int8 path above amortizes the requant and measures higher (0.60x), still
-below fp16.
+on every call, and the resident int8 route above does not.
 
 A quantized `Q8_0` GGUF, dequantized to fp16 on the fly and at half the RAM (11.8 GB), runs at
 5.7 t/s. The Q8_0 model is slower than native F16, because of the per-call dequantization, and
@@ -94,6 +160,51 @@ therefore holds int4 back further, because finer groups mean more readback.
 
 The resident int4 weights are ¼ the NPU-BO bytes of fp16 (2634 MB against ~10.5 GB for the
 offloaded set). The resident path keeps that memory saving and raises int4 to half fp16's speed.
+
+On Gemma-4-12B, W4A4 with the Hadamard rotation generates text character-identical to fp16's on
+the prompts tested [HW sweep 2026-06-24]. Its per-matmul cosine against fp16 is ~0.978 with
+per-channel weight scales, ~0.987 with a scale per K-group of 128 and ~0.989 per group of 64.
+Without the rotation the cosine falls to ~0.79.
+
+### Integer datatypes at vision-encoder shapes
+
+At a small vision encoder's projection shapes, the resident fp16 matmul is faster than resident
+int8 and resident int4 at every shape measured. At RF-DETR's DINOv2 ViT-S backbone shapes, fp16
+runs 1.1-4.0x faster than int8 and 1.8-3.4x faster than int4 [HW sweep 2026-07-17]. The int8 gap
+is widest at K 384, where every datatype takes K in one pass [host-computed]. There the int8
+matmul reads back int32, twice fp16's output bytes, and at this little work per call the readback
+outweighs the narrower operands [hypothesis].
+
+**Conditions:** RK3588 (RK1), NPU clock ~816 MHz, K-accumulation on, each datatype through its
+resident prepacked matmul, the best time of a warm series, 2026-07-17. The library had no
+streamed int8 plan.
+
+**Not characterized:** the K 1536 rows on the current library. The whole-tile fp16 and int8 plans
+take three K passes there [host-computed], and the streamed int8 plan fewer.
+
+| Shape, M × K × N | Layer | fp16, ms | int8, ms | int4, ms |
+|---|---|---:|---:|---:|
+| 580 × 384 × 1152 | nano Q, K and V | 1.62 | 6.19 | 5.47 |
+| 580 × 384 × 384 | nano attention output | 1.07 | 2.31 | 2.53 |
+| 580 × 384 × 1536 | nano FFN up | 2.21 | 8.76 | 6.56 |
+| 580 × 1536 × 384 | nano FFN down | 3.60 | 4.73 | 7.11 |
+| 1616 × 384 × 1152 | base Q, K and V | 4.50 | 12.21 | 12.37 |
+| 1616 × 384 × 1536 | base FFN up | 6.76 | 15.35 | 15.38 |
+| 1616 × 1536 × 384 | base FFN down | 10.30 | 11.21 | 18.27 |
+
+At K 384 the streamed int8 plan removes no K pass, so the ordering there is expected to hold on
+the current library [expected].
+
+The fp16-over-int8 ordering holds end to end on RF-DETR nano through ort-rocket. Running the encoder's
+projections as native W8A8 takes 1.75-1.80x the fp16 path's time [HW sweep 2026-10-27, 928 MHz].
+A quantized QDQ model of the same detector scores better with its weights dequantized to fp16
+than on the ONNX Runtime CPU EP. Its COCO mAP is 0.443 against 0.408 over 500 images, with 0.505
+for the fp32 model [HW sweep 2026-10-09]. The fp16 path leaves the activations unquantized, which
+is the likely cause [hypothesis].
+
+The W8A8 path takes the model's static per-tensor activation scales. A dynamic per-row activation
+scale did not keep the detector's accuracy [HW sweep 2026-07-18]. A ViT's outlier channels set
+each row's scale, which is the likely cause [hypothesis].
 
 ### Vendor-stack int8 prefill
 
@@ -141,10 +252,13 @@ vendor's utilization figures [hypothesis].
 
 ### Quantization's benefits
 
-Quantization on this hardware reduces memory use, not prefill time:
+Quantization on this hardware reduces memory use. At equal residency it does not reduce
+prefill time:
 
 - **Model size.** A model that does not fit in fp16 can run. The int4 Gemma weights are ~¼ the
   bytes, and the int4 matmul is complete and bit-exact.
+- **Residency in half the memory.** Resident int8 weights take half the bytes of resident fp16,
+  and their prefill runs at 0.95-0.99x resident fp16's (§"In-model int8 and int4 prefill").
 - **IOVA residency.** A quantized model fits the per-fd IOVA windows whole (see
   [iova-and-multicore.md](iova-and-multicore.md)).
 - **Decode alongside prefill.** A quantized GGUF serves CPU decode alongside NPU prefill.
@@ -242,6 +356,12 @@ call's. Measured 2026-10-21.
 The int8 gain follows the K passes that the streamed plan removes, because the host reads and
 sums every pass's int32 partial. A single K pass at K 1024 gives 2.20-2.43x. A plan that keeps
 Kt at 1024 against a slice of N 2464-3072 gives 0.99-1.06x.
+
+At the small 1x1 convolutions `tflite-rocket` routes to the same resident int8 matmul (M 1-1600,
+K and N up to 1280 and 960), the streamed plan computes byte-identical outputs. A detector
+inference then takes 0.985-1.007x the whole-tile plan's time [HW sweep 2026-11-06]. The
+detectors are SSDLite MobileDet, SSD MobileNet v2 and EfficientDet-Lite0, with `native_int8=1`
+and the governor at `performance`.
 
 Within the streamed plans, the K-tile and the M-tile it leaves set the time [HW sweep
 2026-10-21]:
@@ -557,15 +677,40 @@ analytical model"). The host scatter moves a whole cache line per sub-line chunk
 the scatter runs at ~3.4 GB/s, against a ~17 GB/s ceiling, so pack is still not
 bandwidth-bound.
 
+The library's NEON weight scatter runs ~13.5 GB/s on one A76, counting the bytes read and
+written, against `memcpy`'s ~21.7 GB/s [HW sweep 2026-07-24]. Under four workers' contention it
+runs ~7.4 GB/s a worker. It reads each source row contiguously and writes full 64-byte lines at a
+1 KiB stride, the order the `(N/16,K/32,16,32)` weight cube dictates.
+
+> [!NOTE]
+> Do not cache-block the weight scatter. A blocked or destination-sequential order trades the
+> contiguous reads for strided ones, and runs 25-70% slower [HW sweep 2026-07-24]. The A76
+> already streams the full-line writes without allocating them, and non-temporal stores measure
+> neutral. The remaining limit is the strided store pattern, which the store buffer cannot merge
+> [hypothesis].
+
 ### The int8 readback limit
 
 The model makes the int8 readback cost concrete. Take the same shape in int8, with no on-NPU
-K-accumulation and int32 out. The int8 planner tiles it at Kt 640 (`nKt`=6), so `oWDMA` +
-`readback` = `nKt·M·N·4` *each* = 48 MiB + 48 MiB = 96 MiB of output traffic. The fp16-KACC
+K-accumulation and int32 out. The whole-tile plan tiles it at Kt 640 (`nKt`=6), so `oWDMA` +
+`readback` = `nKt·M·N·4` *each*, 96 MiB of output traffic. The fp16-KACC
 path moves `4 MiB + 4 MiB`, and its EW re-reads 28 MiB of running partials. The int8 total is
 144.75 MiB, against fp16's 133.50 MiB at its whole-tile plan, although the int8 weights are half the bytes
 [host-computed]. The un-K-accumulated int32 readback (`∝ M·N·nKt`) is
-why int8 prefill is slower (§"In-model int8 and int4 prefill").
+why whole-tile int8 prefill is slower (§"In-model int8 and int4 prefill").
+
+The streamed int8 plan, the default, deepens Kt and removes most of those passes [host-computed]:
+
+| Shape, M × K × N | Whole-tile Kt, `nKt` | Streamed Kt, `nKt` |
+|---|---|---|
+| 512 × 3840 × 4096 | 640, 6 | 1920, 2 |
+| 512 × 3072 × N 1024-128256 (Llama-3.2-3B projections) | 640, 5 | 3072, 1 |
+| 512 × 8192 × 3072 (Llama-3.2-3B FFN down) | 640, 13 | 2048, 4 |
+| 512 × 4096 × N 1024-14336 (8-9 B projections) | 640, 7 | 2048, 2 |
+| 512 × 12288 × 4096 (Qwen3.5-9B FFN down) | 640, 20 | 2048, 6 |
+| 512 × 14336 × 4096 (Ministral-3-8B FFN down) | 640, 23 | 2048, 7 |
+
+At `512×3840×4096` the output traffic falls from 96 MiB to 32 MiB.
 
 The DDR PMU shows the int8 figure as a lower bound: the model's `KACC` sensitivity misses the
 read side ([hw-byte-counters.md](hw-byte-counters.md) §"5.2 Bytes moved by a tiled matmul,
@@ -596,6 +741,31 @@ with the memory reset before each and `ROCKET_PERF_DT` selecting one datatype. A
 eight calls, drops the first and keeps the fastest of the rest. Three passes ran with the order
 rotated. The fp16 streamed range is two processes: the third, the campaign's first process,
 read 623 GOP/s with the clock still parked.
+
+### In-model int8
+
+The four configurations of §"In-model int8 and int4 prefill" ran on one build of `ggml-rocket`
+and `librocketnpu`, selected by environment alone. Each process followed a memory reset
+(`drop_caches`, `compact_memory`) and a discarded warm-up process. Three passes ran with the
+configuration order rotated, and each ratio pairs two configurations within one pass. The
+whole-tile int8 rate reproduces the earlier reading of that plan, 0.60x [HW sweep 2026-06-17,
+~816 MHz]. That reading was Gemma-4-12B F16 at `pp2048`, resident int8 ~9.1 t/s against
+resident fp16's ~15.1 t/s.
+
+The 8-9 B rows ran the same way on a later build of the same sources. Ministral-3-8B-Instruct
+ran five configurations, and Qwen3.5-9B ran four, without whole-tile int8. The
+fifth is the default 4096 MB int8 budget. All 27 processes completed with no kernel job
+timeout.
+
+Resident fp16 places at these sizes because a prefill-only process drops each F16
+source page once its weight is resident. The perplexity rows are eight chunks of 512 on
+wikitext-2 test. Their error estimate is ~5% per arm, so the per-chunk ordering carries the
+sign of each difference.
+
+The detector comparison ran three passes with the order rotated, 25 inferences a process on
+seeded random input, and took the median of inferences 6-25. Each detector's saved output hashed
+the same in all six processes, and every inference matched the process's first. COCO mAP over
+100 val2017 images was equal in both plans.
 
 ### CBUF weight streaming
 
@@ -659,6 +829,33 @@ The current library ran the same plan on one fd, with `ROCKET_MM_STREAM=0`, `ROC
 and KACC on [HW sweep 2026-11-02, two processes each, resident weights]. It waits ~39 ms a call
 with DATA_REUSE and 49-54 ms without. The 600 MHz request (~816 MHz) and the 900 MHz request
 (928 MHz) read alike. The 84 is therefore not a clock effect, and no current configuration reproduces it.
+
+### Weight scatter
+
+The scatter comparison is an isolation microbenchmark that asserts bit-identical output
+[HW sweep 2026-07-24, RK1]. It reads `perf_event_open` PMU counts, warm, on an A76 pinned under
+the `performance` governor. The real path is `matmul_tiled_rocket 512 15360 3840` under
+`ROCKET_MM_PROFILE`, where the scatter was ~17% of host time and the NPU `wait` of 141 ms the
+larger term:
+
+| Square weight | Current order | Blocked order |
+|---|---:|---:|
+| 4096 × 4096 | 4.97 ms | 6.87 ms |
+| 8192 × 8192 | 20.3 ms | 34.8 ms |
+
+The A76's L2 write-backs are ~0.09 of the 64-byte lines written, for the scatter and for
+`memcpy` alike, so neither write allocates. `STNP` stores and a single `ld1`/`st1` of four
+registers per 64-byte block measure neutral, and a source prefetch slightly slower. Those
+results exclude write allocation and instruction count as the limit.
+
+### Integer datatypes at vision-encoder shapes
+
+The shape table is `matmul_dtype_perf_rocket`, each datatype through its resident prepacked path.
+The pass counts are the current planner's tiling from `bytes_moved_rocket`. The end-to-end ratio
+is a median over four passes with the configuration order rotated, at 4 intra-op threads on the
+A76 cores. On a July 2026 build the W8A8 path measured 853 ms against the fp16 path's 477 ms.
+Its mAP there was 0.456 against the fp16 path's 0.458, over 200 images. On that build and slice the
+dequantized QDQ model scored 0.458 and the CPU EP's int8 run 0.428, against 0.516 for fp32.
 
 ### Revision history
 

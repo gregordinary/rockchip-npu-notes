@@ -10,8 +10,8 @@ the write DMA (WDMA) writes the sum back. `DPU_EW_CFG`, `DPU_RDMA_ERDMA_CFG` and
 `DPU_RDMA_FEATURE_MODE_CFG` select it.
 
 The two places the sum can run differ in readback. A host sum reads every output tile `nKt`
-times (`read ∝ M·N·nKt`), in fp32 for fp16 and in int64 for the integer types. The EW path reads
-each output tile once (`read ∝ M·N`).
+times (`read ∝ M·N·nKt`), in fp32 for fp16 and in integer arithmetic for the integer types. The
+EW path reads each output tile once (`read ∝ M·N`).
 
 These are the only two places, because the CORE's accumulator, CACC, reduces K only within one
 CBUF-resident tile ([sdp-stage-precision.md](sdp-stage-precision.md) §"Accumulator lifetime
@@ -27,12 +27,13 @@ cannot hold per-pixel K-partials (see [sdp-stage-precision.md](sdp-stage-precisi
 | Datatype | On-NPU K-accumulation | Status |
 |---|---|---|
 | fp16 | The EW add, `ROCKET_KACC` | Supported (default). `ROCKET_KACC=0` sums on the host in fp32, byte-exact |
-| int8, int16, int32 | None | Not supported. Software sums the partials on the host in int64, bit-exact |
+| int8, int16, int32 | None | Not supported. Software sums the partials on the host, bit-exact: in int64, or for int8 out in wrapping int32, which equals the int64 sum truncated to the int32 output |
 | int4 | None | Not supported. int4 reaches single-pass K (`nKt=1`) by shrinking the output tile |
 
 The EW ALU adds int8, int16 and int32 exactly when the whole precision bundle is integer
 [HW sweep] ([sdp-stage-precision.md](sdp-stage-precision.md) §"The EW stage in integer mode").
-An integer K-accumulation built on it is not characterized.
+With an int8 convolution as its main feed, though, the EW stage reads its operand as 16-bit
+elements. No tested configuration adds an int32 partial [HW sweep 2026-11-07].
 
 ## Registers
 
@@ -48,8 +49,8 @@ geometric value `<< 4` [source-confirmed: Mesa `registers.xml`]:
 | `DPU_RDMA_ERDMA_CFG` | `0x40000008` | ERDMA per-pixel mode (bit30), `DATA_SIZE=2` (16-bit fp16) |
 | `DPU_RDMA_FEATURE_MODE_CFG` | `0x17D40` | `COMB_USE(5)` combines the convolution's main data with the ERDMA operand. The MRDMA is enabled here, unlike on the plain path |
 | `SURF_NOTCH`, `EW_SURF_STRIDE` | `(out_w·out_h) << 4` | The planar pointer advance, from the third surface on |
-| ERDMA `EW_BASE` | `add_dma + out_w·out_h·16` | One surface offset: 16 B per position, which is 8 fp16 channels, the atomic K block |
-| MRDMA `SRC_BASE` | `add_dma` | No offset |
+| ERDMA `EW_BASE` | `add_iova + out_w·out_h·16` | One surface offset: 16 B per position, which is 8 fp16 channels, the atomic K block |
+| MRDMA `SRC_BASE` | `add_iova` | No offset |
 
 Mesa's `add_tensor` residual-add is int8 with `EDATA_SIZE=1`, so its exact values do not
 transfer to the 16-bit fp16 path. The allbilly EW encodings are another reference, listed in
@@ -117,9 +118,11 @@ int16 and int32 [HW sweep, both drivers]. ADD and MINUS saturate. allbilly/rk358
 same [source-confirmed]. The bundle and the per-op table are in
 [sdp-stage-precision.md](sdp-stage-precision.md) §"The EW stage in integer mode".
 
-**Not characterized:** an int32 K-accumulation on that ALU. It needs the convolution's CACC
-result as the EW main feed at an integer `proc_precision`, with the running partial on the
-ERDMA.
+An int32 K-accumulation needs the convolution's result as the EW main feed, with the running
+partial on the ERDMA. With that feed the EW ALU adds in integer arithmetic, but its live input
+converter reads the partial as 16-bit elements. With the converter bypassed, the program never
+completes [HW sweep 2026-11-07]. The configurations and the hazard one of them raises are in
+[sdp-stage-precision.md](sdp-stage-precision.md) §"The EW stage with a convolution main feed".
 
 An fp32 EW add has the pieces it needs. The int8-convolution -> fp32 output cast is bit-exact
 (it still needs `size_e=7`). A 32-bit fp32 EW operand read works too (`EDATA_SIZE(3)`=32-bit,

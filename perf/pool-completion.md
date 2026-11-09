@@ -7,6 +7,12 @@ raise. Nothing signals, `drm_sched` retires the job at its 500 ms deadline, and 
 reset. The output is correct: the hardware finishes in microseconds, and the output BO holds
 the right values. Only wall-clock time shows the delay.
 
+> [!CAUTION]
+> Without the flag, every pool submit is a job timeout. Repeated job timeouts have wedged the
+> NPU until a power cycle ([../chips/rk3588.md](../chips/rk3588.md) Erratum E13). How many
+> pool timeouts, whose output is complete, a board survives is not characterized. Software
+> should use the flag where the kernel offers it, or pool on the CPU.
+
 `DRM_ROCKET_JOB_PPU_DONE` enables the PPU pair for a job whose last program is a PPU program.
 With the flag, the same submits cost microseconds. The flag comes with DRM interface version
 1.3, which userspace reads to tell a kernel that honors the flag from one that rejects it.
@@ -108,15 +114,23 @@ the same thing on both SoCs, which is what the RK3588 series gains by skipping 1
 ## Kernels that report below 1.3
 
 Do not submit a pool per inference on such a kernel. There, `rocket_ppu_done_supported()`
-returns 0, the flag is never set, and every pool submit incurs the deadline. The `tflite-rocket`
-delegate's on-NPU pool is opt-in (`pool_npu`) and off by default. Leave it off against such a
-kernel: the host pool kernel costs microseconds against the half second a submit costs.
+returns 0, the flag is never set, and every pool submit incurs the deadline. A host pool costs
+microseconds against the half second a submit costs.
+
+`librocketnpu` checks this before it submits. Where `rocket_pool_npu_supported()` returns 0, its
+pool entries refuse and its global pools compute on the host. The `tflite-rocket` delegate then
+keeps every pool on the host, on both SoCs. Software that submits its own pooling program must
+make the same check.
 
 The RK3576 series includes the same change as `patches/rk3576/npu/0021`. Its prose states that
 "RK3588 takes a completion interrupt and does not poll, so it is untouched". The completion
 interrupt an unpatched RK3588 takes is DPU-only, so the same class of program cannot be retired
 by its completion there. The deadline it falls back on is 500 ms rather than the RK3576's
 `dpu_grace_us` (213-641 us measured).
+
+The upstream RK3576 series (v14 and v15) reports interface 1.0 and enables only the DPU
+completion interrupts, with no grace period. A pool on that driver is expected to take the
+500 ms deadline and a core reset, as on an unpatched RK3588 [expected].
 
 ## The `dmesg` timeout count as an instrument
 

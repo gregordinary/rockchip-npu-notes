@@ -62,7 +62,7 @@ from three pieces:
   use it, because a fused `[M,2I]` cube interleaves gate/up by N-tile, so the on-cube `act⊙up`
   would need a strided pair-up. Two separate cubes (identical layout) keep the activation and
   mul flat.
-- **matmul -> activation epilogue** (`gen_conv2d_task` / `conv_params_t.act`) is an
+- **matmul -> activation epilogue** (`gen_conv2d_fp16` / `conv_params_t.act`) is an
   alternative to a separate cube op. The fused FFN instead reuses the standalone 2-pass
   activation over the cube (accurate, no x~0 glitch).
 

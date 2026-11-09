@@ -77,9 +77,13 @@ The architectural spec requires four ports. Those are a "read port for feature d
 port for weight data, **write port for feature data, write port for weight data**". When
 weights are compressed, bank 15 is reserved for WMB. Otherwise data and weight share all 16.
 
-Two properties follow for this silicon. First, the allocation is by bank count from the
-bottom. NVDLA has no CBUF base register at all, and a layer stages implicitly from zero. The
-RK's `CNA_CBUF_CON0` is that count, plus a granule allowance on the RK3576. Neither is an
+Two properties follow for this silicon. First, the allocation is a bank count from the bottom.
+CDMA and CSC `D_BANK` give the number of banks allocated for data and for weight. NVDLA has no
+CBUF base register at all, and a layer stages implicitly from zero. A layer reuses data by
+skipping its release (`DATA_SKIP_RELEASE`, `D_RELEASE`), not by moving a pointer
+[source-confirmed: nvdla.org programming guide].
+
+The RK's `CNA_CBUF_CON0` is that count, plus a granule allowance on the RK3576. Neither is an
 address partition, which is the architectural reason
 [no partition was found on the RK3576](chips/rk3576.md).
 

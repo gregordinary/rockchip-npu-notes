@@ -18,11 +18,11 @@ C2=8, matching the fp16 input C2=8:
 
 | op | output cube | next-op input cube | alias? |
 |---|---|---|---|
-| fp16×fp16 (`fp32tofp16=1`) | fp16, C2=8 | fp16, C2=8 | yes |
+| fp16×fp16 (`fp16_out=1`) | fp16, C2=8 | fp16, C2=8 | yes |
 | int8×int8 | int32, C2=4 | int8, C2=16 | no |
 | int4×int4 | int16, C2=8 | int4, C2=32 | no |
 | bf16×bf16 | fp32, C2=4 | bf16, C2=8 | no |
-| fp16 (`fp32tofp16=0`) | fp32, C2=4 | fp16, C2=8 | no |
+| fp16 (`fp16_out=0`) | fp32, C2=4 | fp16, C2=8 | no |
 
 The integer datatypes would also need a host requant between ops, and bf16 has no narrowed
 output cube. fp16-narrowed is the one self-aliasing case.
@@ -31,7 +31,7 @@ output cube. fp16-narrowed is the one self-aliasing case.
 
 ### Shared output and input cube layout
 
-For an fp16 matmul whose output is the default fp16-narrowed cube (`fp32tofp16=1`), the
+For an fp16 matmul whose output is the default fp16-narrowed cube (`fp16_out=1`), the
 output cube and the input feature cube are the same layout. Both are `feat_idx`, channel
 atom C2=8, `(dim/8, M, 8)` (see [tile-layouts.md](tile-layouts.md)).
 

@@ -3038,8 +3038,9 @@ therefore unbiased in the median and far off per column
 The bootstrap's median per-column error on the device is 0.28-0.48% at every `M`, against the
 host simulation's 0.30% / 0.31%.
 
-**Conditions:** H96 MAX M9, 2026-08-11. The operands are pseudorandom, with a deliberate ~30x
-spread of `sum|w|` across the columns of one tile. No rotation is applied, because the
+**Conditions:** H96 MAX M9, 2026-08-11, the shift-0 ramp (`ROCKET_RK3576_MM_PC_SHIFT=0`). The
+operands are pseudorandom, with a deliberate ~30x spread of `sum|w|` across the columns of one
+tile. No rotation is applied, because the
 rotation's job is to make a real activation Gaussian and these operands already are. The
 reference is the exact int32 accumulator on the host, which no frontend has.
 
@@ -3068,9 +3069,9 @@ Nothing in `librocketnpu` refuses a shift past the field. `rocket_rk3576_requant
 no bound check, and the RK3576 emitter writes `out_cvt_shift` unmasked, where the RK3588 path
 masks it with `& 0x3F`.
 
-On this path `M` has no shape constraint and a large accuracy one. A call at `M`=1 runs with no
-row rule (the height<4 rule is the RK3588's), and its composed error is 6.9-8.6x the prefill
-figure. The cause is the tile rather than the estimator. A column's frozen colmax is a maximum
+On this path `M` has no shape constraint. A call at `M`=1 runs with no row rule (the height<4
+rule is the RK3588's). On the shift-0 ramp its composed error is 6.9-8.6x the prefill figure.
+The cause is the tile rather than the estimator. A column's frozen colmax is a maximum
 over `M` accumulator rows: tight at a prefill `M`, and one Gaussian draw at `M`=1. The entry
 plans one `(MUL, SHIFT)` per output-channel tile, so the spread of `scale_n` inside a tile sets
 every column's `C` resolution.
@@ -3079,8 +3080,8 @@ The `ggml-rocket` frontend sends no call with `M` below `rocket_min_m()` (`ROCKE
 default 32, never below 4). `M`=1 is therefore reachable only through the library entry, and
 not through the frontend. **Not characterized:** `M` 32-255, which the frontend does reach.
 
-At `M`=1, freezing from the exact column maximum is 13x worse than the bootstrap. The table
-crosses the colmax source with the `N` tile:
+At `M`=1 on the shift-0 ramp, freezing from the exact column maximum is 13x worse than the
+bootstrap. The table crosses the colmax source with the `N` tile:
 
 | `M` | `K` | colmax source | `NT` 2048 | `NT` 256 | `NT` 32 |
 |---|---|---|---|---|---|
@@ -3088,6 +3089,8 @@ crosses the colmax source with the `N` tile:
 | 1 | 1536 | exact | 201% | 148% | **70.7%** |
 | 1 | 2048 | bootstrap | 18.1% | 18.1% | **14.5%** |
 | 1 | 2048 | exact | 181% | 121% | **63.4%** |
+
+**Conditions:** H96 MAX M9, 2026-08-11, the shift-0 ramp (`ROCKET_RK3576_MM_PC_SHIFT=0`).
 
 The bootstrap's readback has a minimum of one code: a column that reads back zero is credited
 one. That minimum bounds its colmax from below, and so bounds `scale_n` from above. The exact
@@ -3103,6 +3106,33 @@ effect. A smaller tile
 lowers the error monotonically and does not close it. Sorting the columns and tiling them
 therefore reduces the `M`=1 composed error ~1.43x at 64 tiles on this path.
 [HW sweep, H96 MAX M9, 2026-08-11]
+
+### The default shift ramp at `M`=1
+
+On the default shift ramp, the DPU shift word gives a tile a 32767:1 span of column scales.
+The shift-0 ramp gives it a few hundred. The `M`=1 composed error is then close to the
+prefill figure:
+
+| `M` | `K` | colmax source | composed RMS rel |
+|---|---|---|---|
+| 1 | 1536 | bootstrap | 2.1% |
+| 1 | 1536 | exact | 31% |
+| 1 | 2048 | bootstrap | 2.4% |
+| 1 | 2048 | exact | 7.9% |
+
+**Conditions:** H96 MAX M9, `rocket` 1.6.0, 2026-09-27, the default `N` tile.
+
+The exact column maximum's composed error is 3.3-15x the bootstrap's [host-computed]. At `M` 256
+and 512 the two ramps measure within 0.02 points of each other [HW sweep, H96 MAX M9, `rocket`
+1.6.0, 2026-09-27]. At those `M` the int8 rounding sets most of the error.
+
+A 4-chunk device perplexity does not separate the two ramps. Through the W8A8 path,
+`llama-perplexity --chunks 4` over Qwen2.5-1.5B measures 8.7848 on the shift ramp and 8.7433 on
+the shift-0 ramp. Each repeats to every printed digit. With `ROCKET_RK3576_MM_NT=1024` they
+measure 8.7625 and 8.8576, so a change of `N` tile alone reverses their order [HW sweep, H96 MAX
+M9, 2026-09-27]. The `--chunks 4` figure of 8.7433 quoted elsewhere in this note is the shift-0
+ramp's. A 32-window host simulation does separate the ramps on SmolLM2-1.7B
+([../chips/rk3576.md](../chips/rk3576.md) §"Shift-0 ramp accuracy").
 
 ## The `rk_hadamard_ok()` shape check
 

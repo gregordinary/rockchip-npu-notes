@@ -170,12 +170,28 @@ each [TRM: `RKNN_cna_data_size0` bits 26:16 and 10:0, `RKNN_cna_data_size2` bits
 [source-confirmed: Mesa `registers.xml`]. One task therefore reads at most 1022 input rows by
 2047 columns. The DPU's cube fields are 13 bits wide, so they do not limit a convolution.
 
+The pad fields are narrower still. `CNA_PAD_CON0` holds `PAD_TOP` and `PAD_LEFT` in 4 bits
+each, so one task pads at most 15 ([encodings/conv-transpose.md](encodings/conv-transpose.md)
+§"Pad field"). A dilated convolution with "same" padding passes 15 at a small kernel. At kernel
+7 and dilation 12 the pad is 36.
+
 > [!CAUTION]
 > Erratum E8: a value past its field wraps, and the task writes a complete output of the
 > wrapped extent. An int8 conv tile 2500 columns wide programs as 452. The task writes the
 > first 452 columns correctly and the other 2048 incorrectly, and the call returns success
 > [HW sweep, RK3588, `rocket` 1.3.0, 2026-09-26]. Software must keep each task within 1022
 > input rows by 2047 columns.
+>
+> A pad past 15 wraps the same way. The task writes an output of the correct size at the wrong
+> offset, and no error is reported. Software must program a pad of at most 15. For a larger
+> pad, software must write the pad into the task's input and program a pad of 0.
+
+**Conditions:** RK3588 (Turing RK1), kernel 7.2.8, `rocket` 1.3.0, NPU clock ~816 MHz (the
+600 MHz request), 2026-09-29. Convolutions that fit one CBUF pass: 3×3 over an 8×8 plane at 32
+channels, and a 1-D convolution over 200 rows at 64 channels.
+
+At pad 16, an fp16 direct convolution has 5176 of 46208 output elements incorrect. The 1-D convolution
+at kernel 7, dilation 12 and pad 36 has 12719 of 12800 incorrect [HW sweep 2026-09-29].
 
 A CBUF budget bounds a tile's area and not its axes. A thin-channel convolution, 32 channels
 or fewer after padding, with one short axis can therefore pass the limit on the other.
@@ -465,13 +481,15 @@ The `ggml-rocket` backend offloads a matmul only at M >= `ROCKET_MIN_M` (default
 below 4).
 
 `librocketnpu`'s convolution tilers cap each tile at 1022 input rows by 2047 columns, the
-bound of Erratum E8. A plan refuses a layer whose smallest tile passes either.
+bound of Erratum E8. A plan refuses a layer whose smallest tile passes either. A convolution
+with a pad past 15 takes the tiler even where it fits one CBUF pass. The tiler writes the pad
+into each tile's input and programs a pad of 0.
 
 `librocketnpu`'s fp16 and int8 generators stream a weight cube larger than its banks. They
 refuse a task below the weight-bank minimum, which `npu_stream_weight_banks()` computes (the
 int8 generator one bank above it), and refuse `WEIGHT_REUSE` on a streamed cube. The fp16
 planner chooses a streamed plan by default (`ROCKET_MM_STREAM`, `=0` selects the whole-tile
-plan). The int8 planner streams under `ROCKET_MM_STREAM_INT8=1`.
+plan). The int8 planner streams too, and `ROCKET_MM_STREAM_INT8=0` selects its whole-tile plan.
 
 The convolution generators write the signed stride `width × (H − 4)`. The library still pads a
 sub-input below four rows up to four with zero rows, a rule of its own (§"Feature surface
@@ -585,6 +603,18 @@ separate the alignment of the atom from K%64, because both failing K are odd mul
 
 At 32 input channels a 2×2300 plane comes back incorrect on 147199 of 147200 elements. The
 test is `tests/conv_width_gate`.
+
+The pad test is `tests/conv_pad_field_gate`, run through the library's public entries. Every
+element is scored exactly: int8 against an int64 accumulation, and fp16 against a CPU reference
+on integer fills whose sums fp16 holds exactly. Its eight cases are these:
+
+- fp16 direct at pads 15, 16 and 17, the last on the top edge only
+- fp16 depthwise at pads 15 and 16
+- The fp16 1-D convolution at pad 36, time on the height axis
+- int8 direct at pads 15 and 16
+
+With the pad programmed into `CNA_PAD_CON0`, 3 of the 8 cases are exact. With the pad written
+into each tile's input and a programmed pad of 0, all 8 are.
 
 ### Row-major activation and output
 

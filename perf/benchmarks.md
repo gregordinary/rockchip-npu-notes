@@ -189,14 +189,15 @@ encoder-output cosine is 0.9998.
 | Model | enc d_model / layers | CPU -> NPU | speedup |
 |---|---|---:|---:|
 | tiny.en | 384 / 4 | 697.7 -> 591.9 ms | 1.18x |
-| base.en | 512 / 6 | 1580.0 -> 1223.4 ms | 1.29x |
+| base.en | 512 / 6 | 1513.5 -> 1015.8 ms | 1.49x |
 | small.en | 768 / 12 | 5711.5 -> 3718.9 ms | 1.54x |
 | medium.en | 1024 / 24 | 19268.2 -> 10444.9 ms | 1.84x |
 | large-v3 | 1280 / 32 | 36399.9 -> 17013.5 ms | 2.14x |
 | large-v3-turbo | 1280 / 32 | 32957.2 -> 15544.1 ms | 2.12x |
 
 **Conditions:** NPU clock ~816 MHz, encoder latency from `whisper-bench` encode-only, warm
-[HW sweep 2026-07-04].
+[HW sweep 2026-07-04]. The base.en row was measured 2026-09-26, with the CPU governor at
+`performance` and both configurations under `taskset -c 4-7 -t 4`, flash attention on.
 
 The CPU encoder's thread count does not move these ratios. At 8 unpinned threads it measures
 within 2% of 4 threads on the A76 cores [HW sweep 2026-11-02, whisper.cpp v1.9.5]. Base measures
@@ -1511,14 +1512,16 @@ encoder latency, CPU against NPU, across the model sizes. Faithfulness is the tr
 the encoder-output cosine [HW sweep 2026-07-04].
 
 **Conditions:** RK3588 on the RK1, NPU clock ~816 MHz, stock whisper.cpp with ggml-rocket, the
-encoder timed alone by `whisper-bench -w 0`, the warm mean of reps 2-4, 2026-07-04.
+encoder timed alone by `whisper-bench -w 0`, 2026-07-04. The base.en row was measured
+2026-09-26, with the CPU governor at `performance` and both configurations under
+`taskset -c 4-7 -t 4`, flash attention on.
 
 **Encoder latency, ms (the NPU's job).**
 
 | model | encoder d_model / layers | CPU -> NPU |
 |---|---|---|
 | tiny.en        | 384 / 4  |   697.7 ->   591.9 (1.18x) |
-| base.en        | 512 / 6  |  1580.0 ->  1223.4 (1.29x) |
+| base.en        | 512 / 6  |  1513.5 ->  1015.8 (1.49x) |
 | small.en       | 768 / 12 |  5711.5 ->  3718.9 (1.54x) |
 | medium.en      | 1024 / 24 | 19268.2 -> 10444.9 (1.84x) |
 | large-v3       | 1280 / 32 | 36399.9 -> 17013.5 (**2.14x**) |
@@ -1529,7 +1532,10 @@ to 2.1x at large. The matmul work grows as d_model², while the CPU-side host pa
 grow ~linearly, so the NPU gains as the encoder grows
 ([encodings/whisper-encoder.md](../encodings/whisper-encoder.md)). Fixed per-op host cost,
 interleaved with the CPU-only conv/LayerNorm/softmax front end, dominates a small encoder
-(tiny/base). A large encoder is dominated by matmuls, where the NPU gains most.
+(tiny). A large encoder is dominated by matmuls, where the NPU gains most.
+
+At the 20 s window that `whisper-cli -ac 1000` sets, base.en encodes in 619.0 ms on the NPU
+against 883.6 ms on the CPU, 1.43x [HW sweep 2026-09-26].
 
 Without KACC, and with an fd opened per call, base.en is slower on the NPU than on the CPU.
 
@@ -1566,10 +1572,10 @@ have real names (`blk.N.*`) and never match, so LLM resident caching and prefill
 unchanged. Llama-3.2-3B F16 pp512 stays at ~61 t/s, within run-to-run noise of its section's
 61.79 at ~816 MHz.
 
-**Verdict.** Whisper encoder offload is faithful to the CPU, and its speedup grows with model size:
-~1.2x at tiny/base and ~2.1x at large-v3 and large-v3-turbo. Its transcripts are byte-identical to
-the CPU's. Stock `whisper-bench` and `whisper-cli` load the `.so` through `GGML_BACKEND_PATH`, with
-no fork. The raw data and full per-rep timings are in
+**Verdict.** Whisper encoder offload is faithful to the CPU, and its speedup grows with model size.
+It is ~1.2x at tiny, ~1.5x at base and small, and ~2.1x at large-v3 and large-v3-turbo. Its
+transcripts are byte-identical to the CPU's. Stock `whisper-bench` and `whisper-cli` load the
+`.so` through `GGML_BACKEND_PATH`, with no fork. The raw data and full per-rep timings are in
 [data/whisper-encoder.md](data/whisper-encoder.md).
 
 ## ASR, multi-model (transcribe.cpp via ggml-rocket)
@@ -1834,8 +1840,9 @@ model's single-stream speedup and faithfulness against the CPU EP [HW sweep 2026
 **Conditions:** for the vision rows, RK1, NPU clock 928 MHz (the 900 MHz request), governor
 `performance`, one image per run, warm medians. The EP and the CPU EP both run under
 `taskset -c 4-7` at 4 intra-op threads. The CPU EP runs at `ORT_ENABLE_ALL`, and the EP session at
-`ORT_DISABLE_ALL`, which a family claim needs, with spinning off. The pix2pix row runs both sessions
-at `ORT_ENABLE_ALL` with spinning off. The Laya rows use ONNX Runtime's default thread pool and the
+`ORT_DISABLE_ALL`, which a family claim needs, with spinning off. The pix2pix and SAM mask decoder
+rows run both sessions at `ORT_ENABLE_ALL` with spinning off. The mask decoder row runs with the
+NPU cores held on (`power/control=on`). The Laya rows use ONNX Runtime's default thread pool and the
 default session (§"ONNX Runtime thread spinning").
 
 **Not characterized:** the Depth Anything rows under the `Conv` cost rule's current estimate.
@@ -1850,7 +1857,10 @@ default session (§"ONNX Runtime thread spinning").
 | Depth Anything v2 Small | DINOv2 ViT-S, global attention over 1370 tokens | 1.63-1.65x | depth cosine 0.9999998 |
 | SAM ViT-B | ViT-Det, d=768, 4096 tokens | 1.08-1.10x | encoder cosine 0.9999996, mask IoU 0.9998 |
 | Laya English | ModernBERT-large, d=1024, 48-512 tokens | 2.34-5.05x | 4 of 4 answers agree |
-| pix2pix generator | ConvTranspose and Conv nodes | 3.09x at 4 threads, 1.92x with the ConvTranspose claim alone | PSNR 77.3 dB |
+| Laya typed decisions | ModernBERT-large, d=1024, 58-639 tokens | 2.68-5.36x | 3 of 3 answers agree, option probabilities within 3.3e-4 |
+| Laya multilingual | mmBERT-base, d=768, 56-726 tokens | 1.50-3.57x | 6 of 6 answers agree, option probabilities within 3.3e-4 |
+| pix2pix generator | ConvTranspose and Conv nodes | 3.09x at 4 threads, 1.92x with the ConvTranspose claim alone | PSNR 77.3 dB, and 80.8 dB with the ConvTranspose claim alone |
+| SAM ViT-B mask decoder | ConvTranspose nodes | 1.06x at 1 point, 1.11x at 64 points | Mask IoU 0.9975 or better at 1 point, and 0.9931 the worst of 192 masks at 64 points |
 
 A model's single-stream ratio falls as its attention-to-projection ratio, `ntok / 4d`, rises. The
 ratio is averaged over the layers, with a windowed layer counted at its window length:
@@ -1880,6 +1890,40 @@ an encoder shape").
 
 ONNX Runtime's CPU kernels run the Laya graph at ~77 GOP/s, which places Laya's ratio above what the
 vision models predict.
+
+### Per-node claims
+
+A `ConvTranspose` or `Conv` claim gains in proportion to the claimed op's share of the model. On
+pix2pix the CPU EP takes 146.6 ms, the `ConvTranspose` claim 76.4 ms and both claims 47.4 ms
+[HW sweep 2026-10-27]. On Depth Anything v2 Small, the `Conv` cost rule claims 16 of the DPT head's
+30 convs. The model then runs in 0.931-0.948x the time it takes with the `Conv` claim off
+[HW sweep 2026-10-29].
+
+**Conditions:** RK1, NPU clock 928 MHz (the 900 MHz request), governor `performance`, 4 intra-op
+threads on the A76 cores, spinning off. pix2pix runs both sessions at `ORT_ENABLE_ALL`. Depth
+Anything runs at the `ORT_DISABLE_ALL` that its family claim needs.
+
+### Multi-stream throughput
+
+One process per stream adds throughput, because a single stream is partly host-bound. The NPU
+pool's best is ~1.5x the single-stream rate on RF-DETR nano and ~1.6x on SAM's image encoder
+[HW sweep 2026-10-27/29]. The CPU EP's own pool runs at 0.98-1.10x its single stream.
+
+**Conditions:** RK1, NPU clock 928 MHz (the 900 MHz request), governor `performance`, spinning
+off. Each EP process runs 4 intra-op threads at `ORT_DISABLE_ALL`. RF-DETR nano's EP processes run
+unpinned, and SAM's each on its own A76 core. The CPU EP runs at `ORT_ENABLE_ALL` as 2 processes of
+4 threads, 4 of 2 or 8 of 1. The table gives its best layout.
+
+**Not characterized:** RF-DETR base, RF-DETR nano above five processes, and SAM's CPU EP at 8
+processes of 1 thread, which does not fit in 32 GB.
+
+| Model | NPU pool, best | NPU processes | CPU EP pool, best | CPU EP processes x threads | NPU pool over the CPU EP's best pool |
+|---|---:|---:|---:|---|---:|
+| RF-DETR nano | 7.57-7.61 img/s | 5 | 2.85-3.20 img/s | 8 x 1 | 2.36-2.67x |
+| SAM ViT-B image encoder | 0.157-0.164 img/s | 4 | 0.090-0.095 img/s | 4 x 2 | 1.72-1.75x |
+
+SAM's pool peaks at four processes, one per A76 core, and falls to 0.126-0.129 img/s at five.
+RF-DETR nano's pool still rises 1.04-1.06x from four processes to five.
 
 ### The CPU EP baseline on the RK3588
 
@@ -2336,6 +2380,19 @@ per-submit overhead take every model size above 1x.
 The per-step decoder costs of large-v3 and large-v3-turbo are from whisper-bench's full timing, in
 the same NPU run as the encoder figures.
 
+The 2026-07-04 figures are the warm mean of repetitions 2-4 of four. The base.en figures of
+2026-09-26 are five interleaved repetitions a configuration, the order alternating, with the page
+cache dropped and memory compacted before each. They ran whisper.cpp `eacbd82` and `rocket` 1.3.0,
+with `ROCKET_KACC=1`. The 30 s window is `whisper-bench`, and the 20 s window `whisper-cli -ac 1000`
+on `jfk.wav`, whose transcript was identical across all ten runs. The per-repetition timings are in
+[data/whisper-encoder.md](data/whisper-encoder.md).
+
+#### Revision history
+
+| Measured | Quantity | Value | Conditions |
+|---|---|---|---|
+| 2026-07-04 | base.en encoder, 30 s window, CPU -> NPU | 1580.0 -> 1223.4 ms, 1.29x | ~816 MHz, `whisper-bench -t 4`, governor and pinning not recorded |
+
 ### ASR, multi-model (transcribe.cpp via ggml-rocket)
 
 Each speed figure is a CPU-against-NPU A/B.
@@ -2399,6 +2456,12 @@ the host requant on every conv. It measured SSD-MobileDet mAP@[.5:.95] over 500 
 0.3321, against the CPU int8 reference's 0.3318. The Δ is +0.0002, so on that build the two
 depthwise approximations cost ~0 mAP.
 
+A persistent worker pool for the delegate's host transforms saves at most 0.83% of an inference
+[host-computed]. On a build of 2026-07-01 at ~816 MHz, SSDLite-MobileDet took ~380 ms an
+inference, with 39 parallel host regions [HW sweep 2026-07-01]. Creating and joining their
+threads takes ~3.1 ms, which is that bound. The serial input conversion writes at most 6.5 MB, in
+~2-3 ms.
+
 ### ONNX Runtime (ort-rocket)
 
 Each vision figure in the table is a warm median over four passes with the configuration order
@@ -2414,8 +2477,9 @@ change, and the outputs are bit-identical.
 On the 2026-10-11 build (rocket-userspace `ffd4ccc`, ort-rocket `3c50635`) at ~816 MHz (the 600 MHz
 request), the table's ratios were SigLIP 2.64-2.67x and CLIP 2.58-2.64x. They were RF-DETR nano
 1.65-1.70x and base 1.77-1.79x, SAM 1.03-1.04x, Depth Anything Small 1.58-1.61x and Laya English
-2.03-4.16x. The hidden-state cosines were 0.9999864 (SigLIP) and 0.9999955 (CLIP), and the depth
-cosine 0.9999999. On the 2026-10-10 build at ~816 MHz the pix2pix row measured 2.91x and 1.86x.
+2.03-4.16x. Laya's typed decisions measured 2.29-4.18x and multilingual 1.32-2.59x. The hidden-state
+cosines were 0.9999864 (SigLIP) and 0.9999955 (CLIP), and the depth cosine 0.9999999. On the
+2026-10-10 build at ~816 MHz the pix2pix row measured 2.91x and 1.86x.
 
 The 2026-10-27 table is a newer library (CBUF weight streaming as the fp16 default and
 the K-accumulation stride, both in rocket-userspace `88cae6d`) at the 900 MHz request, and the two changes are not separated.
@@ -2427,6 +2491,26 @@ The current estimate, refitted at 928 MHz, admits 16 of Small's 30 head convs wh
 admits 10. It runs Small in 0.975-1.008x the earlier one's time [HW sweep 2026-10-29].
 
 Each CPU EP process in §"The CPU EP baseline on the RK3588" started after a memory reset.
+
+The Laya rows are two passes with the configuration order rotated, a process per configuration.
+The multilingual checkpoint's EP time differed between the passes by up to 1.27x, so its range is
+wide. The SAM mask decoder figures are medians over six passes, four at 64 points, with paired
+ratios of 1.01-1.08x and 1.11-1.12x.
+
+The per-node pix2pix figures are medians over five passes with the configuration order and the
+governor order rotated. The Depth Anything ratio is one five-pass A/B of the claim off against the
+cost rule's current estimate.
+
+An fp32-input entry for the per-node claims removes only their input narrowing. On pix2pix
+that is 0.59 ms for the `Conv` claims and 1.34 ms for the `ConvTranspose` claims [host-computed].
+Against the 52.6 ms pinned time, that is 1.1% for the `Conv` claims alone and 3.7% for both. The
+profile ran at 4 threads under `performance` on a build of 2026-10-08, before the per-call worker
+placement change.
+
+The pool figures are two passes, each pool size and CPU EP layout in its own process, after a page
+cache drop and memory compaction. The order of the two pools is reversed between the passes, and
+each ratio pairs the pools of one pass. Pass 0 ran on 2026-10-27 and pass 1 on 2026-10-29. On July
+2026 builds, SAM's NPU pool measured 1.44x the CPU EP's best pool.
 
 ### ONNX Runtime thread spinning
 

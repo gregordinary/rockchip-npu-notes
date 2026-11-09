@@ -13,16 +13,18 @@ with the max and min methods.
 
 | Reduction | Shape | Status |
 |---|---|---|
-| Mean, max, min | H, W <= 16 | Supported: one PPU pool |
-| Mean, max, min | Both axes 16-smooth (every prime factor <= 16), with the same factor count | Supported: a chain of PPU pools |
+| Mean, max, min | H, W <= 8 | Supported: one PPU pool |
+| Mean, max, min | Both axes 8-smooth (every prime factor <= 7), with the same factor count, and every pass within its window's output-width allowance | Supported: a chain of PPU pools |
 | Mean, max, min | Any other shape | Supported: an exact host reduction |
 | Sum | Any | Not supported as a native pass |
 
 ## The single-pool window limit
 
 The PPU `POOLING_KERNEL_CFG` kernel and stride fields are 4-bit (value−1), so a single pool
-window is capped at 16×16 ([ppu-pooling.md](ppu-pooling.md)). A global pool over, say,
-56×56 cannot run as one pool. A large or global pool must be lowered into many small ops.
+window is capped at 16×16. On the RK3588 a window past 8 on either axis computes incorrect
+output from one or two output columns ([ppu-pooling.md](ppu-pooling.md) §"Output-width
+allowance"). A pass therefore uses windows to 8×8. A global pool over, say, 56×56 cannot run as one
+pool. A large or global pool must be lowered into many small ops.
 The reproducible rknn-toolkit2 capture harness shows the same: the `gavgpool_c16` /
 `avgpool_4x4` cases decompose into many ops rather than one PPU pool (see
 [../ppu-rknn-capture/README.md](../ppu-rknn-capture/README.md)).
@@ -37,12 +39,12 @@ mean over (k1·k2·…·kn) equal groups  ==  (…((mean_k1) mean_k2) …) mean_
 
 The average of equal-sized group-averages is the grand average. Each pass tiles the current
 extent exactly (`kernel | size`, `stride = kernel`, `pad = 0`), so the product of the
-per-pass divisors is exactly `H·W`. The library factors each axis into kernels in `[2,16]`,
+per-pass divisors is exactly `H·W`. The library factors each axis into kernels in `[2,8]`,
 and a pass pools `(kh_i, kw_i)`.
 
 The PPU's per-axis reciprocal `fp16(65536/k)` applies the divisor (there is no hardware
 divider). A symmetric kernel uses the exact validated per-axis value. An asymmetric kernel
-(e.g. a 14×10 final pass of a 28×20 map) splits the divisor geometrically across the two
+(e.g. a 7×5 final pass of a 28×20 map) splits the divisor geometrically across the two
 axes. The product `recip_h·recip_w·2⁻³²` then still equals `1/(kh·kw)`.
 
 Intermediates stay resident in the NC1HWC2 cube between passes (input scattered once, the
@@ -118,10 +120,28 @@ has a pass past it: the pass that opens the chain at 256, 288 and 512, and the 9
 error is the fp16 reciprocal's rounding, so its absolute size follows the input's magnitude.
 
 > [!CAUTION]
-> `rocket_global_avgpool_plan` admits every 16-smooth map with equal factor counts up to 8192,
-> and checks no pass against the output-width allowance. A map with a pass past it, such as
-> 256×256, 288×288 or 512×512, computes an incorrect result through
-> `rocket_global_avgpool_fp16`, `rocket_global_maxpool_fp16` and `rocket_global_minpool_fp16`.
+> A pass past its window's output-width allowance writes a complete, incorrect cube, and the
+> passes after it reduce it into a plausible incorrect result. Software must keep every pass
+> of a chain within the allowance, and use windows to 8×8.
+
+### Wide maps within the allowance
+
+**Conditions:** RK3588 (Turing RK1), `rocket` 1.3.0, NPU clock 928 MHz, 2026-11-06. C 8 and 16,
+mean, max and min, the library's pass order.
+
+With windows to 8×8 and every pass within its allowance, the maps above compute correctly
+[HW sweep 2026-11-06]:
+
+| Map | Passes (window, output width) | Result |
+|---|---|---|
+| 216×216 | 8×8 to 27 wide, then 3×3 to 9, 3, 1 | Max and min exact, mean within 0.004 |
+| 256×256 | 4×4 to 64 wide, then 8×8 to 8, then 8×8 to 1 | Max and min exact, mean within 0.001 |
+| 288×288 | 6×6 to 48 wide, then 6×6 to 8, then 8×8 to 1 | Max and min exact, mean within 0.004 |
+| 480×480 | 8×8 to 60 wide, then 6×6, 5×5 and 2×2 | Max and min exact, mean within 0.002 |
+| 512×512 | 8×8 to 64 wide, then 8×8 to 8, then 8×8 to 1 | Max, min and mean equal to the reference |
+
+A map no pass order fits, such as 1024×1024 (its first pass is past the allowance at 2×2 or
+8×8), takes the host reduction.
 
 ## ReduceMax / ReduceMin (GlobalMaxPool / GlobalMinPool)
 
@@ -142,31 +162,41 @@ correctness: a max or min reduce would be correct under any grouping.
 `librocketnpu` implements the mean as `rocket_global_avgpool_fp16` (`src/rocket_reduce.c`,
 `include/rocket_reduce.h`). `rocket_global_maxpool_fp16` / `rocket_global_minpool_fp16`
 (same file/header) are the spatial ReduceMax / ReduceMin. They share the mean's
-decidability check (`rocket_global_avgpool_plan`) and factor order.
+decidability check (`rocket_global_avgpool_plan`) and pass order
+(`rocket_global_pool_passes`).
 
-### Keeping every chained intermediate >= 4
+### Pass order and chained intermediates
 
 The library applies the axis factors smallest-kernel-first. The running quotient after pass
-*i* is then the product of the remaining (larger) factors, hence >= the largest factor. For
-any axis > 16 the largest factor is >= 4 (the greedy <=16 decomposition always grabs a
-chunk >= 4, verified for every 16-smooth size 18..), so no intermediate spatial dim is
-ever < 4.
+*i* is then the product of the remaining (larger) factors. It is therefore >= the largest
+factor, which is >= 3 for any axis > 8. That order can put a pass past its allowance: 216
+opens with 3×3 to 72, and 480 with 2×2 to 240.
+
+The library then applies the factors largest-first, which narrows the opening pass most. The intermediates are then >= the last
+factor, so 2 or more, and never 1 wide. The plan checks each pass's output width against the
+allowance for its window (`rocket_pool_fp16_max_ow`) before it admits the map.
 
 The NPU path additionally requires H and W to have the same factor count. Every pass then
 pools both axes, and neither axis collapses to 1, which would create a height-1/width-1
 intermediate in the tail passes. The rule holds for every square map (`H==W`, the usual
-GlobalAvgPool case) and equal-count rectangles. Both rules keep the library off the two shapes
-the sub-4 measurement did not reach. One is a 1-wide intermediate, and the other an
-intermediate below 4 in a chain past two passes. The shared plan keeps the equal-count rule for max and min for
-the same reason.
+GlobalAvgPool case) and equal-count rectangles. It keeps the library off a 1-wide intermediate,
+which no measurement reached. The shared plan keeps the equal-count rule for max and min for
+the same reason. An intermediate below 4 in a chain past two passes is measured at 216 (3) and
+480 (2), each exact (§"Wide maps within the allowance").
 
 ### Decomposability and fallback
 
-`rocket_global_avgpool_plan(C,H,W)` returns 0 (NPU) iff both axes are 16-smooth (every
-prime factor <= 16, covering all powers of two and 7,14,28,56,49,98,…), have equal factor
-count, and `C`, `H` and `W` are each at most 8192. Otherwise it returns a negative
-`rocket_status`: `ROCKET_E_TILING` for a non-16-smooth axis (prime factor 17,19,23,…) or an
-unequal factor count (e.g. 56×8), and `ROCKET_E_UNSUPPORTED` past 8192. Every such shape
+`rocket_global_avgpool_plan(C,H,W)` returns 0 (NPU) under four conditions:
+
+- Both axes are 8-smooth: every prime factor is <= 7, which covers all powers of two and
+  7,14,28,56,49,98,112,224,….
+- The two axes have equal factor counts.
+- Every pass is within its allowance in one of the two orders.
+- `C`, `H` and `W` are each at most 8192.
+
+Otherwise it returns a negative `rocket_status`. `ROCKET_E_TILING` covers a non-8-smooth axis
+(prime factor 11,13,17,…), an unequal factor count (e.g. 56×8) and a map neither order fits
+(e.g. 1024×1024). `ROCKET_E_UNSUPPORTED` covers a dimension past 8192. Every such shape
 takes an exact host reduction (`rocket_global_avgpool_ref_fp16`): always the correct answer,
 on the CPU.
 
@@ -201,7 +231,8 @@ The probe's method could not have found a failure in these cases:
 `tests/reduce_mean_rocket.c` (CTest `reduce_mean_rocket`) runs on the RK1 at ~816 MHz and holds
 these checks:
 
-- Factor-axis unit checks (16-smooth detect, products in `[2,16]`)
+- Factor-axis unit checks (8-smooth detect, products in `[2,8]`)
+- Every pass of the library's schedule within its window's allowance
 - An off-device schedule + cube-layout self-check (true-division telescoping == direct mean)
 - On-hardware runs vs the fp64 oracle, in the Accuracy table
 
@@ -213,6 +244,13 @@ and [−4, 4] for max and min. At 125, 216 and 343 they were in [−4, 4] for al
 on a freshly booted board. At 216, 256, 288 and 512 nearly every channel differs, and the
 max at 216 returns NaN. Every chain at 256 and 512, all but one at 288, and two at 216 retired
 at the 500 ms timeout. The chains at 125 and 343 completed normally.
+
+### Wide maps within the allowance
+
+The 216 to 512 maps are rows of `tests/reduce_mean_rocket.c`. It runs the library's own pass
+schedule (`rocket_global_pool_passes`) in its host self-check, then the three entries on the
+NPU. The kernel log had no job timeout. Its inputs are a per-channel offset in [0.5, 2.5]
+plus noise in [−1, 1]. The mean's tolerance is 0.004 + 0.4% of the reference. One run each.
 
 ### ReduceMax / ReduceMin
 

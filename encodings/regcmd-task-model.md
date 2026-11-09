@@ -3,21 +3,21 @@
 A [submit](../GLOSSARY.md) (one `DRM_IOCTL_ROCKET_SUBMIT`, `struct drm_rocket_submit`)
 contains one or more jobs (`struct drm_rocket_job`). A job contains one or more tasks, each a
 `{regcmd IOVA, regcmd_count}` descriptor (`struct drm_rocket_task`) [source-confirmed: the
-`rocket` uAPI, `rocket_accel.h`]. The [PC](../GLOSSARY.md) executes a task's [register program](../GLOSSARY.md), a stream of [regcmds](../GLOSSARY.md), `NPUOP(op, value, reg)` words, ending in the control
+`rocket` uAPI, `rocket_accel.h`]. The [PC](../GLOSSARY.md) executes a task's [register program](../GLOSSARY.md), a stream of [regcmds](../GLOSSARY.md), `REGCMD(target, reg, value)` words, ending in the control
 trailer:
 
 ```
-NPUOP(OP_NONE, 0, 0)
-NPUOP(OP_REG_PC, 0, PC_REGISTER_AMOUNTS)   # driver patches PC_DATA_AMOUNT from regcmd_count
-NPUOP(OP_40, 0, 0)
-NPUOP(OP_ENABLE, 0x1D, PC_OPERATION_ENABLE)   # 0x1D = bits 0,2,3,4 -> fires CNA+CORE+DPU+DPU_RDMA
+REGCMD(TARGET_NONE, 0, 0)
+REGCMD(TARGET_PC, PC_REGISTER_AMOUNTS, 0)   # driver patches PC_DATA_AMOUNT from regcmd_count
+REGCMD(TARGET_PRE_ENABLE, 0, 0)
+REGCMD(TARGET_ENABLE, PC_OPERATION_ENABLE, 0x1D)   # 0x1D = bits 0,2,3,4 -> fires CNA+CORE+DPU+DPU_RDMA
 ```
 
 Each task's register program opens with `DPU_S_POINTER = 0xE` and `DPU_RDMA_S_POINTER = 0xE`
 (`POINTER_PP_MODE | EXECUTER_PP_EN | POINTER_PP_EN`), which enables the NVDLA-style
 ping-pong register groups in those two blocks. The kernel sets the CNA and CORE pointers the
 same way before every task, writing `0xE | (0x10000000 * core index)` [source-confirmed,
-mainline `rocket_job.c`, `rocket_job_hw_submit()`]. A full int8 matmul task is 126 NPUOP words.
+mainline `rocket_job.c`, `rocket_job_hw_submit()`]. A full int8 matmul task is 126 regcmd words.
 
 Each regcmd word is 64 bits, `(target << 48) | (value << 16) | offset`: a 16-bit target, a
 32-bit value and a 16-bit register offset [source-confirmed: Mesa `rkt_regcmd.c`,
@@ -29,6 +29,18 @@ Each regcmd word is 64 bits, `(target << 48) | (value << 16) | offset`: a 16-bit
 | Target | `0x0101` | `0x0201` | `0x0801` | `0x1001` | `0x2001` | `0x4001` | `0x8001` |
 
 The trailer's enable word has target `0x0081`.
+
+The PC takes a task's register-program address from bits 31:4 of `PC_BASE_ADDRESS`
+[source-confirmed: the `rocket` driver's submit validation, Linux 7.4]. Bit 0 selects slave
+mode. Software must start each task's register program on a 16-byte boundary, which is an even word
+offset in a regcmd BO. `PC_DATA_AMOUNT` is 16 bits holding `(regcmd_count + 1) / 2 - 1`, so one
+task holds at most 131072 regcmds. From Linux 7.4, `rocket` refuses a submit that breaks either
+rule with -EINVAL.
+
+> [!CAUTION]
+> Before Linux 7.4, `rocket` accepts an unaligned task address, and the PC is expected to fetch
+> from the 16-byte boundary below it [expected]. The task then runs one regcmd of whatever
+> precedes it. At an even `regcmd_count` it also stops one word short, before its enable.
 
 ## `PC_OPERATION_ENABLE` as a block bitmap
 
@@ -154,19 +166,19 @@ IRQs. Batched submit collapses them into one kick, in three steps:
 
 1. Lay the tasks' regcmds contiguously (stride = the even-rounded word count).
 2. Rewrite each task's trailer to redirect the PC to the next task. The redirect is an
-   embedded `PC_BASE_ADDRESS` op that repurposes the inert `OP_NONE` filler at count-4,
+   embedded `PC_BASE_ADDRESS` op that repurposes the inert `TARGET_NONE` filler at count-4,
    plus the next segment's `PC_REGISTER_AMOUNTS` length.
 3. Set `PC_TASK_CON.TASK_NUMBER = N`, so the PC streams all N and fires a single
    completion IRQ.
 
 The `PC_BASE_ADDRESS` redirect is required: without it the PC runs task 0 and stops
 [HW sweep]. `TASK_NUMBER = N` ends the chain: the PC retires N tasks and halts, whatever the
-trailer chain holds. Clear the final task's forward link back to `OP_NONE` (the chain seal).
+trailer chain holds. Clear the final task's forward link back to `TARGET_NONE` (the chain seal).
 With that link left dangling into the slot past the chain, the kick still completes correctly
 [HW sweep 2026-06-30].
 
 The chained layout is datatype-independent. Every `gen_*` ends in the same
-`[OP_NONE, PC_REGISTER_AMOUNTS, OP_40, OP_ENABLE]` trailer. The matmul tile op count is a
+`[TARGET_NONE, PC_REGISTER_AMOUNTS, TARGET_PRE_ENABLE, TARGET_ENABLE]` trailer. The matmul tile op count is a
 data-independent 126 words for fp16, int8 and int4 alike (even, so stride == count, no gap).
 
 | Datatype | Self-chained in one kick |
@@ -188,7 +200,7 @@ In a chained kick, one task's WDMA output is visible to a later task's ERDMA rea
 write-after-read between tasks. An fp16 EW K-accumulation chained across ki is byte-identical to
 the per-ki fenced path across nKt=2…43. A chain can therefore express a cross-task dependency.
 
-The redirect fires after each task's `OP_ENABLE`. The likely mechanism is that `OP_ENABLE`
+The redirect fires after each task's `TARGET_ENABLE`. The likely mechanism is that `TARGET_ENABLE`
 retires the task's whole CNA→CORE→DPU->WDMA pipeline before the next task's ERDMA issues
 [hypothesis].
 
@@ -226,10 +238,66 @@ so chained and gapped jobs share one process.
 > chained. A gapped job there streams task 0 into the gap, and garbles or times out after its
 > first task.
 
+## Submitting through the vendor `rknpu` driver
+
+The vendor `rknpu` BSP driver runs the same register programs as `rocket`. A matmul program's
+output is byte-identical through the two drivers at 4×32×16 and 64×256×256 [HW sweep
+2026-08-23]. A vendor job is one `struct rknpu_submit`, which names a task BO holding an array
+of `struct rknpu_task`. The driver programs the PC from the job's first and last task only
+[source-confirmed: `rknpu_job.c` in `rknpu` 0.9.8]:
+
+| `rknpu_task` field | Task | Use |
+|---|---|---|
+| `regcmd_addr` | First | `PC_BASE_ADDRESS` (`0x10`), the register program's IOVA |
+| `regcfg_amount` | First | `PC_DATA_AMOUNT` (`0x14`), after the driver adds `RKNPU_PC_DATA_EXTRA_AMOUNT` (4) |
+| `int_mask` | First and last | The last task's value goes to `INT_MASK` (`0x20`) and is the job's completion condition. The first task's goes to `INT_CLEAR` (`0x24`) |
+| `int_status` | Last | Written back: the interrupt status at completion |
+| `flags`, `op_idx`, `enable_mask`, `int_clear`, `regcfg_offset` | None | Never read |
+
+**Conditions:** RK3588 (Turing RK1), `rknpu` 0.9.8 on a 6.1 vendor kernel, against mainline
+`rocket` 1.1.0.
+
+The driver completes a job when `INT_STATUS`, with each block's two group bits folded together,
+equals the last task's `int_mask` exactly [source-confirmed]. The group that raises a block's
+bit varies with the program. The DPU raised `0x100` at 4×32×16 and `0x200` at 64×256×256
+[HW sweep 2026-08-23].
+
+Software must program a vendor job as follows:
+
+- Set `int_mask` to both group bits of the block that ends the program, `0x300` for a program
+  that ends in a DPU write. A mask with one group bit never equals the folded status, and the
+  job times out.
+- Set `regcfg_amount` to the task's regcmd count minus 4. On the RK3588 the driver writes
+  `PC_DATA_AMOUNT` as `(regcfg_amount + 4 + 1) / 2 - 1`, which adds back the 4-word trailer. The
+  full count fetches 4 regcmds past the program's end [host-computed].
+- Create the task BO with `RKNPU_MEM_KERNEL_MAPPING`, and pass the `obj_addr` that `MEM_CREATE`
+  returns as `task_obj_addr`. The handle does not identify the BO here.
+- Set `RKNPU_JOB_PC` in the submit flags. The driver refuses a job without it.
+- Set `task_base_addr`, which the driver writes to `PC_TASK_DMA_BASE_ADDR` (`0x34`), to 0
+  [HW sweep 2026-08-23].
+
+> [!CAUTION]
+> The driver reads the task array through the task BO's kernel mapping. A task BO created
+> without `RKNPU_MEM_KERNEL_MAPPING` has none, and the driver dereferences a null pointer
+> instead of refusing the submit [source-confirmed].
+
+> [!CAUTION]
+> An `int_mask` naming a block that finishes before the program's last stage retires the job
+> when that block finishes, with no error. With `0x3`, the CNA feature pair, at 64×256×256, the
+> driver's `hw_elapse_time` falls from 121 to 79 µs [HW sweep 2026-08-23]. The output was still
+> correct at that size. Software must name the block that writes the program's output.
+
+**Not characterized:** an early-retired job with a larger output, where the DPU can still be
+writing when the driver completes the job.
+
 ## Software support
 
 The resident int8 and int4 matmuls in `librocketnpu` submit gapped (`rocket_prepacked_int8.c`,
 `_int4.c`).
+
+`librocketnpu` checks each task's address alignment and `regcmd_count` before every submit, so
+a violation fails on every kernel version. Its RK3576 convolution places tasks at
+`RK3576_CONV_TASK_SLOT`, the 175-word program rounded up to 176 words.
 
 ## Evidence
 
@@ -286,6 +354,18 @@ The measurement is the fp16 EW K-accumulation chained across ki
 (ki-outer) is laid in one chain, with two ping-pong output BOs. Each `ki>0` task EW-adds the
 prior ki's partial, which an earlier task in the same kick just wrote. Each ki reads the prior
 partial (read-after-write), and the ping-pong reuses a buffer two ki later (write-after-read).
+
+### Submitting through the vendor `rknpu` driver
+
+The field table is read from `rknpu_job_subcore_commit_pc()` and the job's wait and interrupt
+paths in `rknpu` 0.9.8. The device runs used one probe source with two submit backends, so the
+inputs, the host scatter and the register program were shared code. Both drivers matched the
+host reference, and the two outputs hashed identically. The vendor board ran a 6.1.115 vendor
+kernel, and the mainline board kernel 7.1.7-1-arm64. The `int_status` values are the driver's
+write-back on those two runs.
+
+The early retirement compares `int_mask` `0x3` against `0x300` at 64×256×256, through the
+driver's `hw_elapse_time`.
 
 ### Excluded causes
 

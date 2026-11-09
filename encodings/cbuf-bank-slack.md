@@ -32,18 +32,18 @@ control at the identical `(Mtile=144, Ktile=672)` tile is bit-exact while int8 c
 
 ## Software support
 
-The matmul generator is `gen_matmul_int8`, run as a 1×1 convolution. The int8 matmul plans
+The matmul generator is `gen_gemm_int8`, run as a 1×1 convolution. The int8 matmul plans
 withhold one bank from the tiling budget (`bank_slack` in `mm_geom`, `src/rocket_matmul.c`),
-and `gen_matmul_int8` refuses a feature whose `fd_banks + 1` exceeds 11 rather than clamping it.
+and `gen_gemm_int8` refuses a feature whose `fd_banks + 1` exceeds 11 rather than clamping it.
 
 The int8 and uint8 convolution path has the same exact-fit sizing and the same fix. Its
-generator is `gen_conv2d_int8_fill`, shared by `gen_conv2d_int8` and `gen_conv2d_dw_int8`. Its
+generators are `gen_conv2d_int8` and `gen_conv2d_dw_int8`, which share one bank split. Its
 direct-convolution tiler is `conv2d_int8_plan`. Without the slack bank, both use
 `data_bank = ceil(feat_bytes/bank)`, and the tiler budgets feature and weight to all 12 banks.
 The fix mirrors the matmul:
 
-- `gen_conv2d_int8_fill`: `data_bank = fd_banks + 1`, `weight_bank = 12 − data_bank` (shared
-  by direct and depthwise), and a refusal where `fd_banks + 1` exceeds 11.
+- `gen_conv2d_int8` and `gen_conv2d_dw_int8`: `data_bank = fd_banks + 1`,
+  `weight_bank = 12 − data_bank`, and a refusal where `fd_banks + 1` exceeds 11.
 - `conv2d_int8_plan` (direct tiler): reserve the matching bank,
   `feat_budget = (12 − 1 − weight_banks)·32 KB`, int8 feature ceiling `CONV_FEAT_BUDGET_I8
   = 7` banks (fp16 stays 8, it is immune).
@@ -127,7 +127,7 @@ all 12 banks with no slack. Without the slack bank, the convolution path is safe
 by design.
 
 With `datain_width = 1`, the convolution feature DMA descriptor matches the matmul's exactly
-(`gen_matmul_int8` sets `datain_width=1, datain_height=M, datain_channel=K`). A single-job int8
+(`gen_gemm_int8` sets `datain_width=1, datain_height=M, datain_channel=K`). A single-job int8
 1×1 convolution at `IW=1`, whose feature cube is the matmul's, shows the identical signature
 [HW sweep]. At `IC=1184`, `IH=189..193` and `216..221` (97.6-99.8 % of the last bank), the last
 output rows garble (~3e5-9e5) and all else is bit-exact. The output is clean at <=97 % fill,

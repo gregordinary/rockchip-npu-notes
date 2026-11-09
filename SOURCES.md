@@ -169,7 +169,9 @@ Three of their failures involve state left between tasks or submits. A two-task 
 split with `WEIGHT_REUSE` produced exact INT8 output, but the first following known-good DPU
 add returned a stale `48576`. Only a second add recovered, and they therefore never submitted
 `DATA_REUSE` speculatively. Their `EW_CVT`/`OUT_CVT` probes are QUARANTINED after a reported
-crash with no retained kernel fault record.
+crash with no retained kernel fault record. The stale follower does not reproduce after a matmul
+reuse run whose followers write every register they read
+([encodings/cbuf-reuse.md](encodings/cbuf-reuse.md) §"The job after a reuse run").
 
 > [!CAUTION]
 > In their sweep, LUT reuse across separate rocket submissions fails. A second task without
@@ -217,6 +219,18 @@ redistributed.
 The same offline output is the source of the RK3576 register encoding. The RK3576 TRM has no
 NPU register chapter, so the formulas in [chips/rk3576-regcmd.md](chips/rk3576-regcmd.md) are
 transcribed from RKNN-Toolkit2 register programs compiled for `rk3576` at known geometries.
+
+Version 2.5.0 (commit `2c723177a9`, 2026-10-13, with no release tag), read 2026-10-19, changes
+nothing these notes use on the RK3588. Its `rknn_matmul_api.h` is byte-identical to 2.3.2's,
+and its quantization menu lists w4a8 as "not supported yet". The build options
+`disable_first_conv` and `enable_core0_only_mode` appear only in the Python API document's change
+history, not in its body.
+
+The toolkit compiles structured weight sparsity for the RK3576, and from the 2.5.0 Developer
+Guide (§4.1.7) also for the RV1126B. It offers 4:2 along the input or the output direction (50%),
+and 16:4 along both (75%). The User Guide has documented it since 2.0.0-beta0 (V2.3.2 §5.11,
+RK3576 only), and it applies only past 32 sparse weight channels. These notes have not reverse
+engineered its register fields.
 
 ### RKNN-Toolkit2 SDK documentation
 
@@ -382,6 +396,37 @@ At least three out-of-tree patches now have upstream equivalents, so a rebase on
 mainline will conflict or silently duplicate. To test a patch's application, fetch the base for
 its kernel version from `raw.githubusercontent.com/torvalds/linux/<tag>/drivers/accel/rocket/`.
 
+#### Submit validation and changes after v7.3
+
+Linux 7.4-rc1 validates every task on submission. Sidong Yang's `725953d4` refuses a regcmd
+address that is not 16-byte aligned, and a `regcmd_count` above 131072, with -EINVAL
+[source-confirmed: the commit, read 2026-11-06]. Both bounds come from the register layout.
+The PC takes the address from `PC_BASE_ADDRESS` bits 31:4, and `PC_DATA_AMOUNT` is 16 bits.
+The rule is in [encodings/regcmd-task-model.md](encodings/regcmd-task-model.md).
+The same merge adds Igor Paunovic's two core-slot fixes for unbinding a core (`6eff1d69`,
+`89c2c777`).
+
+drm-misc-next has four further submit-path changes for the following release, applied
+2026-11-03:
+
+- A BO-handle count above `INT_MAX` is refused (`a4569e3b`)
+- Implicit dependencies are collected before the job is armed (`ce9f7650`)
+- The ioctl returns the first failing job's error and stops, and the jobs queued before it
+  stay queued (`3185975d`)
+- Two allocation checks in `rocket_job_open()` (`be22e979`, `91c7da1f`)
+
+A kernel without `3185975d` returns 0 from a submit of several jobs even when a job fails.
+
+Two more series were in review on 2026-11-06. Gyeyoung Baek's "Fix drm_mm UAF on close vs
+in-flight job" v2 moves the `drm_mm` and its lock into a refcounted VM object. It is the same
+use-after-free, fixed the same way, as the out-of-tree `patches/rocket/084`, which anchors the
+allocator to the refcounted IOMMU domain.
+
+Sidong Yang's "Report NPU usage through fdinfo" v4 adds `drm-engine-npu`, a client's job time in nanoseconds summed over
+the cores, and `drm-engine-capacity-npu`, the core count. It has a Reviewed-by from Tomeu
+Vizoso. Heiko Stuebner is a reviewer for the driver from 2026-10-13. Mainline reports DRM
+interface 1.0, and its `drm_rocket_job` has no flags word.
+
 #### DVFS series
 
 An upstream DVFS series for the RK3588 NPU is in review. It is Igor Paunovic's "accel/rocket:
@@ -394,7 +439,7 @@ DVFS core, and add:
 - devfreq `simple_ondemand` at a 50 ms window
 - A cooling device and an 85 C passive trip
 
-The author conceded five review findings on patch 9, and a v3 waits on review.
+The author conceded five review findings on patch 9. v2 is the latest posting on 2026-11-06.
 
 The series sets the clock in the runtime-PM callbacks, so it replaces the out-of-tree clock
 and voltage patches rather than combining with them. Its table pairs the 900 MHz request with
@@ -631,7 +676,13 @@ its bisects judge a following job run in a separate process (see its entry).
 
 #### Upstream series
 
-Their upstream series is at v14, posted 2026-09-24 with 15 patches against next-20260914
+Their upstream series is at v15, posted 2026-11-01 with 15 patches against next-20261030
+([v15](https://lore.kernel.org/all/20261101082307.151957-1-gahing@gahingwoo.com/)). It is
+v14 rebased onto the submit validation in the mainline `rocket` entry. That validation adds two
+defines where v14's 12/15 adds its `PC_TASK_CON` defines, and the other fourteen patches and
+every tag are v14's.
+
+The v14 posting was 2026-09-24, against next-20260914
 ([v14](https://lore.kernel.org/all/20260924102135.92217-1-gahing@gahingwoo.com/)). At v13
 (2026-09-15) it had an Acked-by from Conor Dooley on both dt-bindings and a Reviewed-by
 from Abel Vesa on both pmdomain patches. It also had a Tested-by from Igor Paunovic on
@@ -656,6 +707,31 @@ its run count in [chips/rk3576-validation.md](chips/rk3576-validation.md) §"Pow
 Board log r421 boots the v14 series as sent, and both cores probe. Every numerics check matches
 the previous kernel to the last digit, perplexity included. Decode measures 2.8% lower from one
 unpinned reading per kernel, which the log declines to call a regression.
+
+Armbian's `rockchip64-7.3` edge kernel includes v14 from 2026-11-02 (`armbian/build`
+`ed1e1cc5`). Its board configurations enable the NPU on the ArmSoM CM5-IO, the Radxa ROCK 4D
+and the DshanPi-A1-CM5. That driver reports DRM interface 1.0 and enables only the DPU
+completion interrupts. A pooling program raises no DPU completion. Each pooling job is
+therefore expected to retire at the 500 ms job timeout with a core reset, as on the RK3588
+([perf/pool-completion.md](perf/pool-completion.md)) [expected].
+
+Board logs r422 and r424 run `charsiu`'s regression on the Armbian image, on the CM5-IO and the ROCK 4D. Its perplexity is
+identical on both boards to the last digit.
+
+A QoS fix left the series as a patch of its own on 2026-11-01, "pmdomain: rockchip: do not
+restore QoS that was never saved". On its first power-on, a power domain that was off at
+registration has its QoS registers written with the zeroed save array. Board log r423 reads
+the registers inside the power-on path on a CM5-IO. The NPU domains are saved before their
+first power-on and keep their values, but the GPU's QoS reads all zeros, on plain mainline
+too.
+
+> [!CAUTION]
+> Reading the QoS registers from user space panics or hangs the SoC (board log r422). Read them
+> inside the power-domain driver with the domain's clocks on, as r423 does.
+
+On the RK3588, mainline's device tree gives the `NPUTOP`, `NPU1` and `NPU2` domains QoS
+registers. A domain off at registration is expected to take the same zeros [expected]. The
+effect on NPU throughput is not characterized.
 
 The reading that follows was done against v7, posted 2026-08-12 with 10 patches as
 `accel/rocket: RK3576 NPU (RKNN) enablement`
@@ -820,6 +896,12 @@ Two of its results corroborate findings in these notes. M=1/2/3 exact through th
 `rocket_matmul_rk3576.c`. Its 32-task chained jobs at ~26.3 us/task marginal (~172
 us/submit removed) corroborate the one-kick mechanism that `patches/rk3576/npu/0015`-`0016`
 implement.
+
+Their latest fit is `us a call = 119 + 12.4*tasks + 123.5*MB` on the busier core, with 21% of
+the decode hardware path dispatch rather than weight bytes. The weights stream at 16.19 GB/s
+across two cores. Llama-3.2-1B Q4_0 decodes at 17.02 tok/s [their HW sweep, ROCK 4D]. The
+fit is from board log r424 (2026-11-01, 594 MHz, Armbian 7.3.1 with the v14 series). The fits
+below are their earlier ones.
 
 Their cost model is a fixed cost (2026-08-31), refitted over five stages on the busier core.
 It is `us a call = 128.7 + 36.8*tasks + 110.0*MB`, with RMS 9 us on a 540 mean, inside 2.4% at
@@ -1149,6 +1231,44 @@ layer from it, and adds those and a rewritten shim. Its `rocket_interface.c` pas
 A ggml backend skeleton. `*-matmul.cpp` returns -1 (CPU fallback), and `*-dequant.cpp` is
 unimplemented. It covers the structure of a backend and has no working model path.
 
+### phhusson/llama.cpp `main-npu` and the fence uAPI
+
+Pierre-Hugues Husson's llama.cpp branch `main-npu` (backend commit `4aadc74282`, 2026-10-13)
+and his `rocket` kernel commit `f3c247c6a1` on v7.3-rc4 (github.com/phhusson/linux), both read
+2026-10-19. The branch is a ggml backend that runs bf16 matmuls on the RK3588 NPU through
+`rocket`. His earlier reverse-engineering repository has its own entry
+(§"`rknpu-reverse-engineering`").
+
+The backend's design, none of it reproduced here [external: phhusson/llama.cpp, not
+reproduced]:
+
+- bf16 operands, with DPU `OUT_PRECISION` 3, a bf16 output. K is tiled at 768, and the GPU sums
+  each tile's bf16-rounded partial in fp32.
+- One DRM fd per core, with N split across the three cores in 16-channel atoms, and at most 32
+  tasks a job.
+- A minimum batch of 32 rows, and M at most 4096.
+- A Vulkan helper on the Mali GPU that does every layout step on each call. It converts the
+  weights to bf16 and scatters them into the tile layout, converts the activations, and de-tiles
+  the output. No weight stays resident.
+
+The commit message states that the NPU "accumulates in BF16 and cannot honor F32". A bf16 matmul
+measured here accumulates in fp32, and its fp32 output is `OUT_PRECISION` 5
+([encodings/precision-field.md](encodings/precision-field.md) §"bf16 (precision value 3)"). The
+branch publishes no RK3588 throughput.
+
+The kernel commit adds `DRM_IOCTL_ROCKET_IMPORT_BO` (dma-buf import), a dma-buf exporter, and
+per-job `in_fence_fd` and `out_fence_fd` sync files. It includes patches 9 and 10 of the DVFS
+series unchanged (§"DVFS series"). It uses `DRM_ROCKET_JOB_EXPLICIT_SYNC` and does not define it,
+so it does not build as pushed.
+
+Its fence flags are a `__u32 flags` at offset 40 of `drm_rocket_job`, with `IN_FENCE_FD` at
+bit 0 and `OUT_FENCE_FD` at bit 1. The batched-submit patch
+(`patches/rocket/086-rocket-drv-batched-submit.patch`, github.com/gregordinary/patches) appends
+its `flags` at the same offset, with `DRM_ROCKET_JOB_BATCHED` at bit 0
+([perf/iova-and-multicore.md](perf/iova-and-multicore.md)). The two uAPIs therefore collide. His
+userspace is expected to be refused by the batched-submit kernel, and the batched-submit
+userspace to run unbatched on his [expected].
+
 ### mtx512 / jas-hacks `rocket-userspace`
 
 The original RKNN-reverse-engineering repository, with its blog (jas-hacks.blogspot.com,
@@ -1177,6 +1297,35 @@ Their figures, none reproduced here: 0.12-0.26 s for a short request and 2.25 s 
 ~13 GB of `.rknn` files. The fp16 drift grows from 0.0055 to 0.36 mean error over 22 layers.
 Three cores measure 1.57x over one. Their CPU comparison is PyTorch in eager mode, a weak
 baseline.
+
+Their operator profile agrees with the RKNN encoder reads in these notes. On a 1024-token
+sliding layer `exSDPAttention` takes 83 ms, 48% of the operator time, with transposes at 15%
+and the dense projections at 22%. Whisper-base's encoder spends 70% of its operator time in
+the same op and SigLIP's 60% ([encodings/whisper-encoder.md](encodings/whisper-encoder.md),
+[perf/data/siglip-encoder.md](perf/data/siglip-encoder.md)).
+
+They record three vendor-stack defects, none reproduced here:
+
+- RKNN places the vocabulary `Gather` on the CPU and rounds float token IDs wrongly there.
+  Their service therefore looks up the embedding rows itself and feeds them to the graph.
+- Binding one graph's output memory to the next graph's input returned zeros with
+  `librknnrt` 2.3.2.
+- RKNN-Toolkit2 2.3.2 refuses the `w8a16` weight-only format for the RK3588 before
+  conversion.
+
+### NandhaKishorM/laya
+
+The Laya model's own repository (Apache-2.0, release 0.3.21, read 2026-09-28). It holds the
+PyTorch model and its training, and an ONNX export with an `ONNXAgent` runner. Its checkpoints
+are `convaiinnovations/laya` and `convaiinnovations/laya-multilingual` on Hugging Face. The
+`ort-rocket` figures run graphs from that export.
+
+Its `scripts/export_onnx.py` traces a batch-1 dummy input. From torch 2.9 `torch.onnx.export`
+defaults to the dynamo exporter, which bakes that batch into the head's reshape. A request with
+more than one question then fails inside ONNX Runtime, and so does the repository's own
+three-question ONNX test [host-computed, torch 2.13.0]. The legacy exporter (`dynamo=False`)
+keeps the batch dynamic, as does a dynamo trace with a batch-2 dummy and explicit dynamic
+shapes.
 
 `rknpu-submit` refuses `rknpu` 0.9.2 at open. The vendor's memory-create ioctl grew from 40
 to 48 bytes at 0.9.6, and the open provider accepts only the later form. The same model
@@ -1369,6 +1518,13 @@ and unlike the rest of that repository it is expected to port to `rocket` unchan
 [expected]. It is a different layer from the MCIF per-client 2-bit QoS at `0x8000` in
 [nvdla-lineage.md](nvdla-lineage.md), and neither layer has been measured here.
 
+At their two small shapes, `librocketnpu` on `rocket` 1.1.0 with the nodes unprogrammed
+measures 0.45 ms (`64x768x64`) and 0.37 ms (`64x64x768`) at best [HW sweep 2026-08-21, RK1].
+Both are faster than their unprogrammed vendor-driver times, and 1.4x and 1.6x their times with
+QoS [host-computed]. The drivers, kernels and clocks differ, so the comparison does not isolate
+the QoS term. The state of the nodes under `rocket` is in [chips/rk3588.md](chips/rk3588.md)
+§"SoC integration".
+
 Their write-up reads the null result at 1 MB as proof that the limit is the internal DMA
 engine's ("definitively proves"). A null result at one priority bounds bus arbitration, and does
 not isolate the engine. The 1 GB/s limit it argues for is also the figure their own README
@@ -1517,6 +1673,17 @@ These notes take five facts from them:
 
 The vendor driver runs one task across the three cores, which `rocket` does not offer. The
 decode rate therefore does not transfer to `rocket` as it stands.
+
+Two later results, read 2026-11-06:
+
+- An int4 task 8192 wide is int4-exact, but corrupts the int8 jobs that follow it, at any K.
+  Their int4 tile stops at N 8128 [source-confirmed: `rknpu2_matmul_open` `f7ba205b`,
+  2026-10-21]. `librocketnpu` tiles N at 256, or 4096 when streaming.
+- Their lossless W8A8 weight compression takes Qwen3-4B's NPU allocation from 4034.5 to
+  3574.7 MiB, 1.13x [their HW sweep, RK3588 at 1 GHz, 2026-10-27]. Prefill throughput falls
+  1-2.5%. That is close to the 1.11-1.12x per-tensor ratio in
+  [encodings/cna-dcomp-weight-decompression.md](encodings/cna-dcomp-weight-decompression.md),
+  over a whole model's allocation rather than its weights alone.
 
 ### Seeed-Solution/openvoicestream
 
@@ -1878,6 +2045,18 @@ standalone driver library, Mesa optimization patches and a QEMU model of the NPU
 report counts kernel calls per inference on both stacks. RKNN makes 63 IOCTLs and 1 submit,
 and Mesa's Teflon driver over `rocket` makes 634 and 10.
 [perf/iova-and-multicore.md](perf/iova-and-multicore.md) cites that count.
+
+### AlexanderDhoore/rfdetr-on-rockchip-npu
+
+RF-DETR on the RK3588 NPU through RKNN-Toolkit2 at int8, with the NPU clock at up to 1 GHz, read
+July 2026. It splits the model where `ort-rocket` does. The DINOv2 backbone runs on the NPU as a
+`.rknn` file. The detection decoder runs on the CPU as a separate, dynamically quantized ONNX
+file.
+
+Their figures are RF-DETR nano at 198 ms, small at 395 ms and large at 1011 ms
+[external: AlexanderDhoore/rfdetr-on-rockchip-npu, not reproduced]. Nano is 1.66x faster than
+the whole model on the CPU in ONNX. `ort-rocket` runs the unmodified ONNX graph at fp16 instead, and
+its figures are in [perf/benchmarks.md](perf/benchmarks.md) §"ONNX Runtime (ort-rocket)".
 
 ### t-firefly ROC-RK3588S NPU wiki
 

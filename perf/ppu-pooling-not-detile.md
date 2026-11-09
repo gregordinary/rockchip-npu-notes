@@ -1,14 +1,13 @@
 # PPU pooling engine and the output de-tile
 
 The PPU is the NPU's pooling processor, the NVDLA PDP analog. Its register pages are `0x6000`
-(PPU) and `0x7000` (PPU_RDMA), in `include/npu_hw.h`, and the register set is
-reverse-engineered from Mesa's `rocket/registers.xml` [source-confirmed]. The PPU reads a cube
+(PPU) and `0x7000` (PPU_RDMA), and the register set is Mesa's `rocket/registers.xml`
+[source-confirmed]. The PPU reads a cube
 and writes a cube, and has no layout or reshape function. It cannot write a row-major output
 layout on-chip, so it cannot replace the A76 NEON output de-tile (~76 ms of a single-fd
 `512×15360×3840` fp16 matmul, [not-mac-bound.md](not-mac-bound.md)).
 
-**Conditions:** RK3588, the register map of Mesa `registers.xml` and `librocketnpu`'s
-`npu_hw.h`.
+**Conditions:** RK3588, the register map of Mesa `registers.xml`.
 
 ## The PPU register set
 
@@ -26,7 +25,7 @@ layout on-chip, so it cannot replace the A76 NEON output de-tile (~76 ms of a si
 
 The table is the complete set. The map has no `TRANSPOSE`, `RESHAPE`, `PERMUTE`, `SPLIT`,
 `MERGE`, or `CONTRACT` register. The NPU has no NVDLA-RUBIK functionality, and no RUBIK
-register page exists (Mesa `registers.xml`, `librocketnpu`'s `npu_hw.h`). In NVDLA, layout
+register page exists (Mesa `registers.xml`). In NVDLA, layout
 reshape is a dedicated engine (RUBIK), separate from pooling (PDP). The RK3588's rocket NPU
 has the PDP (PPU) but not RUBIK.
 
@@ -66,5 +65,5 @@ an NHWC↔cube transpose.
 
 ### The PPU register set
 
-The sources are Mesa `rocket/registers.xml`, `librocketnpu`'s `include/npu_hw.h`, and
+The sources are Mesa `rocket/registers.xml` and
 [NVDLA hwarch](https://nvdla.org/hw/v1/hwarch.html) (PDP against RUBIK).

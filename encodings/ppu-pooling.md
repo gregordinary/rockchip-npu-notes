@@ -15,7 +15,8 @@ method, and `PPU_POOLING_KERNEL_CFG` the window and the stride. The PPU cannot d
 | MAX, AVG | int8, uint8, computed on the fp16 program | Supported |
 | MAX, MIN, AVG | int8, native | Bit-exact on hardware. No library entry |
 | A window past 16×16, a stride past 16, or a pad past 7 | Any | Not supported. The kernel and stride fields are 4 bits, and the pad fields 3 |
-| An output wider than its window's allowance (§"Output-width allowance") | Any | Not supported. The PPU writes incorrect output |
+| An output wider than its window's allowance (§"Output-width allowance") | Any | Not supported in one task. The PPU writes incorrect output. Software runs it as column bands |
+| A window past 8×8, or a stride past the window | Any | Not supported. The PPU writes incorrect output at an output width of 8 or less |
 | AVG with padding, divided by the valid count as TFLite defines it | Any | Not supported. The PPU divides by `kh·kw` |
 
 ## Registers
@@ -28,8 +29,8 @@ The program below comes from a reproducible rknn-toolkit2 capture harness
 ### The PPU pooling program (fp16, C2=8)
 
 Every geometry field (kernel, stride, dims) is **(value − 1)**, and cube strides are bytes
-(16-aligned). Pad counts are not. Each line is one `NPUOP(target, value, reg)`. The PPU target
-is `BLOCK_PPU|0x01` = `0x4001`, and PPU_RDMA is `0x8001`.
+(16-aligned). Pad counts are not. Each line is one `REGCMD(target, reg, value)`. The PPU target
+is `NPU_TARGET_PPU|0x01` = `0x4001`, and PPU_RDMA is `0x8001`.
 
 | reg | value |
 |---|---|
@@ -50,7 +51,7 @@ is `BLOCK_PPU|0x01` = `0x4001`, and PPU_RDMA is `0x8001`.
 | `PPU_RDMA_SRC_LINE_STRIDE` | iw·C2·2 bytes |
 | `PPU_RDMA_SRC_SURF_STRIDE` | ih·iw·C2·2 bytes |
 | `PPU_RDMA_DATA_FORMAT` | `IN_PRECISION`(2) = fp16 |
-| PC trailer | `OP_NONE` / `PC_REGISTER_AMOUNTS`=0 / `OP_40` / `PC_OPERATION_ENABLE`=0x60 |
+| PC trailer | `TARGET_NONE` / `PC_REGISTER_AMOUNTS`=0 / `TARGET_PRE_ENABLE` / `PC_OPERATION_ENABLE`=0x60 |
 
 Two of these fields need more than their values:
 
@@ -100,7 +101,9 @@ limits.
 
 A pooling task has an allowance on its output width. Past it the task writes incorrect output
 across the whole output [HW sweep 2026-11-02]. Most windows past it also raise no completion,
-and the job retires at the driver's timeout. The allowance depends on the kernel height and the
+and the job retires at the driver's timeout. Repeated timeouts wedge the NPU
+([../chips/rk3588.md](../chips/rk3588.md) Erratum E13), so a sweep past the allowance must bound
+how many configurations can time out. The allowance depends on the kernel height and the
 vertical stride. A 3×1 window has the 3×3 window's allowance, and a 1×3 window has none up to an
 output width of 256:
 
@@ -120,21 +123,72 @@ output width of 256:
 | 1×16 | 1×16 | 1 | 2 |
 | 12×12, 16×16 and 16×1 | Equal to the window | | 1 |
 | 16×16 | 1×1 | | 1 |
+| 2×2 | 3×3, 2×3 and 3×2 | | 8 or less |
 
 At one output row and a stride equal to the window, 10×10 to 16×16 windows are exact at
 width 1 [HW sweep 2026-11-02, one run]. They are incorrect from a width of 2. A 9×9 window at stride 9
 was incorrect at a 1×1 output in the same run.
 
+A stride past the window on either axis is not a narrower allowance. A 2×2 window at stride
+3×3, 2×3 or 3×2 writes zeros at an output width of 8, and the job retires at the driver's
+timeout. It is exact only at a 1×1 output [HW sweep 2026-11-06]. A 1×1 window at a horizontal
+stride of 2 was exact at width 8 [HW sweep 2026-11-06, one run].
+
+Every measured cell fits one rule for windows to 8×8 at a stride up to the window. The
+allowance follows `o = ceil(kh / sy)`, the output rows one input row feeds: 64 at `o` 1-2,
+32 at `o` 3-4 and 16 at `o` 5-8. The 2×2 window at stride 2 has 128, and a one-row window to
+1×3 at stride 1 has 256 or more. Each cell below is exact at the rule's width, MAX, and AVG
+where marked [HW sweep 2026-11-06]. The cells vary the kernel width, the horizontal stride and
+the pad. Each ran at the rule's width only, so its allowance can be wider:
+
+| Window (kh×kw) | Stride (sy×sx) | Pad | Exact at output width |
+|---|---|---|---:|
+| 6×6 (MAX, AVG), 7×7 | 1×1 | 0 | 16 |
+| 8×2 | 1×1 | 0 | 16 |
+| 5×5 | 1×1 | 2 | 16 |
+| 5×5, 6×6, 7×7, 8×8 (MAX, AVG) | 2×2 | 0 | 32 |
+| 8×8 | 3×3 | 0 | 32 |
+| 4×2 | 1×1 | 0 | 32 |
+| 3×3 | 1×2 | 0 | 32 |
+| 3×3 | 1×1 | 1 | 32 |
+| 3×3 | 2×2 | 1 | 56 |
+| 4×4, 5×5, 6×6 (MAX, AVG) | 3×3 | 0 | 64 |
+| 7×7, 8×8 | 4×4 | 0 | 64 |
+| 2×8 (MAX, AVG) | 1×1 | 0 | 64 |
+| 1×5, 1×8 | 1×1 | 0 | 64 |
+| 1×8 | 1×8 | 0 | 64 |
+
 > [!CAUTION]
 > A pool past its allowance produces a complete, correctly sized, incorrect output. Software
 > must keep each pooling task's output width within the allowance for its window and vertical
-> stride. A wider pool must run as column bands, each band its own task.
+> stride. A wider pool must run as column bands, each band its own task (§"Column bands").
 
 The RK3576's PPU has an allowance of the same kind with different values
 ([../chips/rk3576.md](../chips/rk3576.md) §"The pooling output-width allowance").
 
-**Not characterized:** a model of the allowance that predicts the table. Also windows from 9×9
-to 16×16 at more than one output width or row, padded windows, and the native int8 program.
+**Not characterized:** a mechanism for the rule above, and windows from 9×9 to 16×16 at more
+than one output width or row. Also a stride past the window at widths 2 to 7, a pad past 2,
+and the native int8 program.
+
+### Column bands
+
+**Conditions:** RK3588 (Turing RK1), `rocket` 1.3.0, NPU clock 928 MHz, 2026-11-06. fp16.
+
+A pool wider than its allowance computes correctly as column bands [HW sweep 2026-11-06]. Each
+band produces a run of output columns within the allowance and reads the input columns its
+windows reach. It takes the left pad only at the plane's left edge, and the right pad only where
+its windows reach past the right edge. Each band's input is its own dense cube, and the bands
+run as the tasks of one job with the PPU completion. These shapes are exact, MAX bit-exact and
+AVG within fp16 rounding:
+
+| Window, stride, pad | Plane (H×W) | Output width | Bands |
+|---|---|---:|---:|
+| 2×2 s2 | 4×512 | 256 | 2 |
+| 3×3 s1, AVG | 4×130 | 128 | 4 |
+| 7×7 s7, AVG | 7×896 | 128 | 2 |
+| 5×5 s1 pad 2 (YOLO's SPPF) | 20×20 | 20 | 2 |
+| 3×3 s2 pad 1 | 8×224 | 112 | 2 |
+| 3×3 s1 pad 1, all-negative input | 6×80 | 80 | 3 |
 
 ### Cube dimensions at the field maximum
 
@@ -240,16 +294,17 @@ The native int8 path is exact on these shapes [HW sweep, 2026-09-20]:
 The fp16 generator is `gen_pool_fp16` (`src/npu_regcmd.c`, params `include/npu_pool.h`). The
 runtime entry is `rocket_pool_fp16` (`src/rocket_pool.c`, `include/rocket_pool.h`).
 `ppu_recip_kernel_fp16` computes the average reciprocal. `gen_pool_fp16` refuses a window or
-stride past the 4-bit fields. A pool is a single job, per-channel, with no channel or spatial
-tiling. Pooling has no weights, so CBUF pressure is low.
+stride past the 4-bit fields. A pool is a single job, per-channel, with no channel tiling.
+Pooling has no weights, so CBUF pressure is low.
 
-> [!CAUTION]
-> `rocket_pool_fp16_plan` checks the field widths and not the output-width allowance
-> (§"Output-width allowance"). It admits pools past the allowance, which compute incorrect
-> output, and so do the int8 and uint8 entries that run on it. The library's own tests pool
-> no output wider than 64.
+`rocket_pool_fp16_max_ow` returns the rule's allowance for a window (§"Output-width
+allowance"). It returns 0 for a window past 8×8 or a stride past the window.
+`rocket_pool_fp16` runs an output wider than the allowance as up to 256 evenly sized column
+bands in one job (`rocket_pool_fp16_bands`, §"Column bands"). `rocket_pool_fp16_plan` refuses
+a window the allowance gives 0, and a pool needing more bands. The int8 and uint8 entries run
+on the plan, and so does a frontend that asks it, so both decline those pools.
 
-The cube layout is the conv feature cube (`feature_data`, C2=8), so the input packB and the
+The cube layout is the conv feature cube (`feature_index`, C2=8), so the input packB and the
 output de-tile reuse the conv path.
 
 The `tflite-rocket` delegate's opt-in is `pool_npu`. The delegate sends an average to the NPU
@@ -323,6 +378,29 @@ it tested. A 1×3 window was exact at 254. The boundaries, last exact and first 
 Each exact configuration ran again after a failing one and was again exact. A failure
 therefore leaves no state for the next process. YOLO's SPPF pool, 5×5 at stride 1 and pad 2 over a 20×20 plane, is past
 the allowance: 10744 of 12800 elements were incorrect. The run had four job timeouts.
+
+The rule's cells and the stride-past-window cases ran on 2026-11-06 through `rocket_pool_fp16`,
+one process a configuration. Each ran exactly at the rule's width, so as one task, and the
+kernel log was read after each. The inputs were hashed small integers in [−6, 6] over a
+NaN-stamped output (`tests/pool_fp16_rocket`, single-shape mode), C 16, four or more output
+rows.
+
+MAX was compared exactly and AVG within 0.06. The AVG cells differed by at most 0.004.
+
+The sequence stopped at its first failure, the 2×2 window at stride 3 at width 64. Four
+further runs bounded it.
+
+Width 1 was exact. Width 8 was incorrect, with a job timeout, at
+strides 3×3, 2×3 and 3×2. The 1×1 window at stride 2 was exact at width 8. The cells after
+the stop then ran in fresh processes. The session had four job timeouts, each a stride past
+the window.
+
+The method could not have found a narrower allowance below a cell's tested width, because
+each cell ran at one width. It also ran each cell once.
+
+The column-band shapes are rows of `tests/pool_fp16_rocket` (CTest `pool_fp16_rocket`),
+which also checks on the host that the bands reassemble the reference exactly. The board ran
+the whole test with no job timeout in the kernel log.
 
 ### Cube dimensions at the field maximum
 

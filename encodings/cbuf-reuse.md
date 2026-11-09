@@ -74,6 +74,22 @@ did compute, against whatever operand the interleaving job left in the CBUF.
 > occurs on roughly a quarter of runs, so a test needs tens of repeats, with the reuse-on and
 > reuse-off configurations interleaved.
 
+### The job after a reuse run
+
+A job that follows a reuse run produces exact output when its register program writes every
+register it reads [HW sweep 2026-09-27]. The reuse run was a 512×2048×512 fp16 matmul with 2
+M-tiles, 4 K-tiles and 4 N-tiles, either reuse bit set, and the fp16 K-accumulation live. A
+64×64×64 integer-valued fp16 matmul and a sigmoid job then followed it, in either order. Neither
+follower differed from its reference in any element, under either bit.
+
+**Conditions:** RK3588 (Turing RK1), one board on mainline `rocket` 1.3.0 and one on the vendor
+`rknpu` 0.9.8, 2026-09-27. Each follower is a full register program, and the sigmoid program
+writes both LUT tables.
+
+**Not characterized:** a follower of a two-task CNA spatial split under `WEIGHT_REUSE`, and a
+follower that leaves registers unwritten. A third-party sweep reports a stale value in the first
+DPU job after that split ([SOURCES.md](../SOURCES.md#state-between-tasks-and-submits)).
+
 ## `FC_DATA_BANK[10:8]` on the matmul datapath
 
 `CNA_CBUF_CON0` (0x1040) also contains a 3-bit `FC_DATA_BANK` field at bits [10:8], above
@@ -152,10 +168,20 @@ Three independent single-threaded processes corrupt each other, which places the
 any one process. A multicore test with a period-11 column pattern ran for months and reported
 `max_abs=0.000` on every run.
 
+### The job after a reuse run
+
+The test is `tests/reuse_follower_rocket.c`, 20 trials per configuration, run with
+`ROCKET_REUSE` unset, at 1 (`WEIGHT_REUSE`) and at 2 (`DATA_REUSE`). The library logged the
+reuse run as WEIGHT or DATA at `nMt` 2 and `nNt` 4, its tiles chained. The two followers swap
+order every trial, so each takes the first slot in half of them. The matmul follower's inputs
+are integers in [-3, 3], exact in fp16, and it is scored against the CPU on every element. The
+sigmoid follower is scored against its own bytes from a solo run. The reuse run's own output is
+exact too. 0 wrong elements in 20 of 20 trials, in every configuration, on both boards.
+
 ### `FC_DATA_BANK[10:8]` on the matmul datapath
 
 The test is `tests/fc_data_bank_sweep_rocket.c`. It forces the field to 0..7
-(`ROCKET_FC_DATA_BANK` sentinel in `gen_matmul_task`). `fc=0` is byte-identical to the emitted
+(`ROCKET_FC_DATA_BANK`, which every matmul generator reads). `fc=0` is byte-identical to the emitted
 (unset) program. The test asserts that `fc=0` equals the unset program and that the default is
 correct. It records `fc=1..7` as the known-live result, not a failure.
 

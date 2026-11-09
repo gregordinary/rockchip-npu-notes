@@ -54,7 +54,7 @@ Software that drives `rocket` depends on three behaviors of the `drm_rocket_*` i
 ## Per-fd IOVA windows
 
 Each fd has its own independent 0…4 GB IOVA window [HW sweep, source-confirmed]. The regcmd
-encodes BO addresses as 32-bit fields (e.g. `weights_dma & 0xFFFFFFFF`), so every BO that a job
+encodes BO addresses as 32-bit fields (e.g. `weights_iova & 0xFFFFFFFF`), so every BO that a job
 references must lie in the low 4 GB of its fd's address space.
 
 On the RK3588 the 4 GB limit is the regcmd-field encoding, not the bus. The RK3588 NPU
@@ -182,6 +182,34 @@ validates against it. The driver passes `args->flags` straight to `rknpu_gem_obj
 and tests individual bits. On 0.9.6 and earlier the allocation therefore takes the generic path
 while the flag reads as set [source-confirmed].
 
+### `rknpu` uAPI versions
+
+The vendor uAPI changes at two releases [source-confirmed: `rknpu_ioctl.h` across 0.8.0-0.9.8]:
+
+| `rknpu` version | uAPI |
+|---|---|
+| 0.9.7 and later | The 0.9.6 structures, plus `RKNPU_MEM_IOMMU_LIMIT_IOVA_ALIGNMENT`. 0.9.7 and 0.9.8 are byte-identical |
+| 0.9.6 | `rknpu_mem_create` grows from 40 to 48 bytes, appending `iommu_domain_id` and a second 32-bit word. `rknpu_submit` keeps its size, and its 64-bit `regcfg_obj_addr` becomes `iommu_domain_id` plus a reserved word |
+| 0.9.5 and earlier | The 40-byte `rknpu_mem_create`, and `regcfg_obj_addr` in `rknpu_submit` |
+
+The releases are dated 2024-03-18 (0.9.6), 2024-04-24 (0.9.7) and 2024-08-28 (0.9.8). A second
+same-size change predates them: `rknpu_submit`'s `hw_elapse_time` is `user_data` before 0.9.3.
+`RKNPU_GET_DRV_VERSION` returns the version as `major * 10000 + minor * 100 + patch`.
+
+The ioctl request word encodes the structure size, but the dispatch does not compare it with
+the driver's own. DRM's `drm_ioctl()` selects the handler by ioctl number, copies the caller's
+size and zero-fills the rest [source-confirmed: `drm_ioctl.c`, Linux 6.6]. The 0.9.8 misc-device
+build does the same for `MEM_CREATE` [source-confirmed: `rknpu_mem.c` in `rknpu` 0.9.8]. A 0.9.8
+driver therefore accepts the 40-byte `rknpu_mem_create` and reads its two missing words as 0.
+
+> [!NOTE]
+> No ioctl check sees a same-size field change. Software built against 0.9.6 headers writes
+> `iommu_domain_id` where an older driver reads `regcfg_obj_addr`. Software must select the
+> structure layouts by the driver version.
+
+**Not characterized:** whether a 0.9.5-or-older driver refuses a 48-byte `rknpu_mem_create`. Its
+ioctl dispatch source was not read.
+
 ### The IOVA rcache mechanism
 
 The loss comes from the kernel's IOVA rcache, which the driver reaches by mixing two allocators
@@ -243,10 +271,17 @@ restores 255/63/31/21.
 
 `alloc_iova()` has no such flush. The flush helpers `free_cpu_cached_iovas()` and
 `free_global_cached_iovas()` are static to `iova.c` and unexported, so a driver allocating
-through `alloc_iova()` cannot ask for the parked space back. The tight path returns `-ENOMEM`
-while hundreds of megabytes sit in a cache that it cannot see or drain. The generic path, which
-causes the loss, can always recover it, and the tight path, which causes none, is the one that
-fails.
+through `alloc_iova()` cannot ask for the parked space back. The tight path refuses the
+allocation while hundreds of megabytes sit in a cache that it cannot see or drain. The generic
+path, which causes the loss, can always recover it, but the tight path, which causes none, is
+the one that fails.
+
+> [!NOTE]
+> An exhausted domain fails `MEM_CREATE` with `-EFAULT` ("Bad address") on either path, not
+> with `-ENOMEM`. `rknpu_gem_get_pages()` returns `-EFAULT` for any failed mapping
+> [source-confirmed: `rknpu_gem.c` in `rknpu` 0.9.8]. On the tight path the kernel log also
+> shows `failed to allocate IOVA: -12`. Software that detects exhaustion by `ENOMEM` must also
+> test for `EFAULT`.
 
 ### The vendor default path
 
@@ -282,6 +317,32 @@ Four properties of the two paths mislead a measurement of the loss:
   the generic path's first address.
 
 Take both halves of any comparison on one path.
+
+### Concurrent processes on the shared domain
+
+Concurrent processes share the vendor driver's one IOMMU domain without corrupting one another.
+Each of four concurrent detection processes returns the output hash that one process alone
+returns, with no allocation failure and no job timeout [HW sweep]. Their aggregate throughput is
+3.51x one process's on `rknpu`, against 3.61x on mainline `rocket` with its per-fd windows.
+
+The two drivers also produce the same output. An MD5 over every output tensor of
+SSDLite-MobileDet and EfficientDet-Lite0 matches between `rknpu` 0.9.8 and `rocket` [HW sweep].
+Warm single-inference latency on `rknpu` is 2.0-2.1% above `rocket`'s [host-computed]:
+
+| Model | `rknpu` | `rocket` |
+|---|---:|---:|
+| SSDLite-MobileDet | 202.1 ms | 197.9 ms |
+| EfficientDet-Lite0 | 299.6 ms | 293.6 ms |
+
+**Conditions:** two RK3588 (Turing RK1) boards, one per driver: `rknpu` 0.9.8 on a 6.1 vendor
+kernel, and mainline `rocket`. Both NPUs at the 600 MHz request, CPU governors pinned.
+`tflite-rocket` built from the same sources on both, 2026-08-25 and 2026-08-26.
+
+**Not characterized:** the physical NPU clocks, which follow each kernel's rail voltage, so the
+latency comparison is not clock-matched.
+
+The latency difference does not isolate the driver. The workload is host-bound, and the two
+boards' A76 maximum frequencies differ by 2.0% on their own.
 
 ## Multicore dispatch through worker fds
 
@@ -571,11 +632,11 @@ per job, and `librocketnpu`'s matmul puts up to 64 tiles in a job.
 
 The BSP `rknpu` driver fires a whole task list in one kick, through a self-chain
 [HW sweep, source-confirmed: `rknpu_job.c` `rknpu_job_subcore_commit_pc()` in `rknpu` 0.9.8].
-The N tasks' regcmds are laid contiguously in one buffer. Each task ends in an `OP_ENABLE`, and its trailer contains the
+The N tasks' regcmds are laid contiguously in one buffer. Each task ends in a `TARGET_ENABLE`, and its trailer contains the
 next task's address (an embedded `PC_BASE_ADDRESS` op) and stream length (its
 `PC_REGISTER_AMOUNTS` op). The kernel programs only the first task's
 `PC_DATA_ADDR`/`PC_DATA_AMOUNT`, sets `PC_TASK_CON.TASK_NUMBER = N`, and kicks once. The PC
-executes one `OP_ENABLE` per task and follows each `PC_BASE_ADDRESS` link to the next. With
+executes one `TARGET_ENABLE` per task and follows each `PC_BASE_ADDRESS` link to the next. With
 `TASK_NUMBER` set, a single completion IRQ fires after the last task, up to
 `max_submit_number` = 4095/chunk on the RK3588.
 
@@ -584,9 +645,22 @@ its length in `PC_REGISTER_AMOUNTS`. A contiguous layout with only the amount op
 zeroed trailer, runs task 0 and stops.
 
 > [!CAUTION]
-> `PC_TASK_STATUS` does not hold the completed task count. At IRQ time it reads `0x0000f000`
-> (`& 0xfff == 0`). Software must retire a chained job on the single completion IRQ that
-> `TASK_NUMBER` sets up, not on a `PC_TASK_STATUS` read.
+> At the completion IRQ of a chained job, `PC_TASK_STATUS` (`0x3c`) reads `0x0000f000`, whose
+> low 12 bits are 0 [HW sweep]. A test of that field against the job's task count never
+> passes, and the job times out with correct output. Software must retire a chained job on the
+> single completion IRQ that `TASK_NUMBER` sets up, not on a `PC_TASK_STATUS` read.
+
+On the RK3576 the same register holds two 16-bit counters, tasks started and tasks completed,
+each modulo `TASK_NUMBER`. It therefore reads 0 both before a kick starts and after it retires
+([../chips/rk3576-regcmd.md §"Per-task `PC_DONE` and the `PC_TASK_STATUS`
+counter"](../chips/rk3576-regcmd.md#per-task-pc_done-and-the-pc_task_status-counter)). The
+RK3588's zero low field at completion fits a completed count that has wrapped to 0
+[hypothesis]. The vendor `rknpu` driver retires a job on its interrupt. It reads the RK3588
+register's low 12 bits as its task counter only after a failed wait [source-confirmed:
+`rknpu_job.c` and `rknpu_drv.c` in `rknpu` 0.9.8].
+
+**Not characterized:** the RK3588 register's field layout, its value during a kick, and its bits
+15:12.
 
 `PC_TASK_DMA_BASE_ADDR` is not a kernel-walked task list. The BSP sets it to the regcmd buffer
 in one example and to `0` in another, so it is don't-care for the stream. The `rknpu_task` array
@@ -641,6 +715,27 @@ leaves it off by default. The K-accumulation path chains the tiles inside one K 
 steps still fence in order. The resident int8 and int4 matmuls submit gapped
 ([../encodings/regcmd-task-model.md](../encodings/regcmd-task-model.md)).
 
+### Chaining and core scheduling on the vendor `rknpu` driver
+
+A vendor job runs one register program or one chain, so an unchained matmul is one submit per
+task. Chaining the tasks, and letting the driver pick each job's core, raises fp16 matmul
+throughput from 208-236 to 581-617 GOP/s [HW sweep]:
+
+| Driver | Core selection | Layout | Best time | GOP/s |
+|---|---|---|---:|---:|
+| `rknpu` | Core 0 pinned | One submit per task | 68-77 ms | 208-236 |
+| `rknpu` | Core 0 pinned | Chained | 36.8-39.3 ms | 409-437 |
+| `rknpu` | Driver scheduler | One submit per task | 47.5-48.3 ms | 333-339 |
+| `rknpu` | Driver scheduler | Chained | 26.1-27.7 ms | 581-617 |
+| mainline `rocket` | Driver scheduler | `librocketnpu` default | 23.5-24.4 ms | 660-685 |
+
+**Conditions:** RK3588 (Turing RK1), a 512×3840×4096 fp16 matmul through `librocketnpu`'s
+resident multicore path on the whole-tile plan (`ROCKET_MM_STREAM=0`), 2026-08-23. `rknpu` 0.9.8
+at its 1000 MHz OPP, on a 6.1 vendor kernel.
+
+**Not characterized:** the NPU clock of the mainline row, so that row is not clock-matched. Also
+the weight-streamed plan on the vendor driver.
+
 ### Scope
 
 Batched submit helps where an op decomposes into many independent tasks.
@@ -681,7 +776,7 @@ phhusson's `rknpu-reverse-engineering` `hello2.c` (see [SOURCES.md](../SOURCES.m
 
 The bitmap shows two things:
 
-- The PPU that `npu_hw.h` defines is a real, separately completing block, with its own IRQ bits
+- The PPU is a real, separately completing block, with its own IRQ bits
   (10/11). [ppu-pooling-not-detile.md](ppu-pooling-not-detile.md) covers its use as a de-tile
   engine.
 - "group 0 / 1" means two register banks per block [hypothesis], the ping-pong that the BSP
@@ -693,41 +788,50 @@ The bitmap shows two things:
 
 On the `rocket` path the kernel controls the IRQ configuration, so this bitmap is informational.
 The `int_mask`/`int_clear` fields are in the BSP `rknpu_task`, not in the regcmd that userspace
-submits. The `0x14 PC_REGISTER_AMOUNTS` length and the `OP_ENABLE` block mask, which userspace
+submits ([../encodings/regcmd-task-model.md §"Submitting through the vendor `rknpu`
+driver"](../encodings/regcmd-task-model.md#submitting-through-the-vendor-rknpu-driver) gives the
+fields that driver reads). The `0x14 PC_REGISTER_AMOUNTS` length and the `TARGET_ENABLE` block mask, which userspace
 does drive, are a separate mechanism.
 
 ## Context-pool throughput
 
-**Conditions:** RK3588, kernel 7.1.0-1-arm64, NPU clock ~816 MHz, `performance` governor,
-2026-06-24. Each context runs a full "inference" of small prepacked fp16 matmuls (the
-1×1-conv-as-matmul detection unit), and each call is a real A-pack -> submit -> readback.
+**Conditions:** RK3588 (Turing RK1), mainline `rocket` on a 7.1 kernel, NPU clock ~816 MHz. An
+in-process pool: P threads in one process, each with its own context, fd and entity. Each
+context runs a full "inference" of small prepacked fp16 matmuls (the 1×1-conv-as-matmul
+detection unit), and each call is a real A-pack -> submit -> readback.
 
-The throughput pool is model 2 above: P independent contexts, each with its own fd and entity.
-Pool depth P is the swept variable.
+**Not characterized:** a pool of separate processes with every context on one core, and the
+CPU governor of the 2026-06-29 run.
 
-Software must pin each pool context to a distinct A76 core. The library's auto-affinity pins
-worker `idx` to `big[(base + idx) % n_big]`, where `base` is a per-thread value that is 0 unless
-the thread sets it with `rocket_affinity_set_base()`. A one-thread context (the natural pool
-unit) always has `idx == 0`. Left to the default, every independent pool context pins to the
-same big core (cpu4), and their host pack/readback serialize there [HW sweep].
+The throughput pool is model 2 above, and pool depth P is the swept variable. A pool of separate
+processes, one context each, is measured through the delegate in §"Model 2: multi-instance
+throughput".
 
-| workload | pool affinity | best speedup vs P=1 | where |
+The library's auto-affinity pins worker `idx` to `big[(base + idx) % n_big]`, where `base` is a
+per-thread value that is 0 unless the thread sets it with `rocket_affinity_set_base()`. A
+one-thread context (the natural pool unit) always has `idx == 0`. Left to the default, every
+independent pool context pins to the same big core (cpu4) [HW sweep].
+
+| Workload | Pool affinity | Speedup against P=1 | Measured |
 |---|---|---|---|
-| tiny 64×256×256 (submit/readback-bound) | colliding (default, all on cpu4) | ~2.1x | flat past P=3 |
-| tiny 64×256×256 | spread across A76 (`ROCKET_CPU_AFFINITY=off` + caller pins each ctx) | ~3.9x | peak P=4 |
-| large 512×1024×1024 (compute-bound) | spread across A76 | ~2.7x | still climbing at P=6 |
+| tiny 64×256×256 (submit/readback-bound) | Spread, `rocket_affinity_set_base()` per context | 4.43x at P=4 | 2026-06-29 |
+| tiny 64×256×256 | Collided, every context on cpu4 | ~4x at P=4, where the spread pool is ~1.1x faster | 2026-06-29 |
+| large 512×1024×1024 (compute-bound) | Spread, `ROCKET_CPU_AFFINITY=off` and the caller pins each context | ~2.7x at P=6, still climbing | 2026-06-24 |
 
-The sweep shows three results:
+Software should pin each pool context to a distinct A76 core, which fixes each context's host
+core. On an idle board the spread adds only ~1.1x at the submit-bound shape. The likely cause
+is that each context waits on its NPU fence, not on its host core [hypothesis].
 
-- The pool exceeds the 3-core count on submit-bound work (3.9x at P=4 > 3). With contexts on
-  separate cores, one context's host pack/readback overlaps another's NPU compute, which is the
-  "rknnpool" effect. P=4 (= the 4 A76 cores) is the best depth. P>=5 oversubscribes the big
-  cluster, and throughput fluctuates.
+The measurements show three results:
+
+- The pool exceeds the 3-core count on submit-bound work (4.43x at P=4). One context's host
+  pack/readback overlaps another's NPU work, which is the "rknnpool" effect. P=4 (= the 4 A76
+  cores) is the best depth. P>=5 oversubscribes the big cluster, and throughput fluctuates
+  [HW sweep 2026-06-24].
 - Compute-bound ops gain less (~2.7x, approaching the 3-core NPU ceiling). There is little host
   bubble to hide, so the cores are the limit.
-- The limit is the host core and the submit path, not the IRQ core. Applying the model-2 IRQ
-  binding (3 NPU IRQs -> cpu5/6/7) raised the P=1 baseline and left the aggregate plateau
-  unchanged. The colliding pool's limit is therefore the shared host core, not IRQ servicing.
+- The IRQ core does not limit the pool. The model-2 IRQ binding (3 NPU IRQs -> cpu5/6/7) raised
+  the P=1 baseline and left the aggregate plateau unchanged [HW sweep 2026-06-24].
 
 ### Delegate recipe
 
@@ -788,6 +892,21 @@ size either of them frees is far above the 128 KB bound, so neither can see the 
 A board 1 day 4 h into its uptime had run a full day of NPU work on the tight path. It still
 measured the fresh-boot row (255 / 63 / 31 / 21 buffers at 16 / 64 / 128 / 192 MB). One 153 s
 run on the generic path moved it [HW sweep, RK3588, `rknpu` 0.9.8 vs mainline `rocket` 1.1.0].
+
+The `-EFAULT` is read from the source. Only an IOMMU allocation with `RKNPU_MEM_NON_CONTIGUOUS`
+reaches `rknpu_gem_get_pages()`. On the tight path `rknpu_iommu_dma_map_sg()` logs `-ENOMEM` and
+then returns 0, and on the generic path `dma_map_sg()` returns 0 on failure. `rknpu_gem_get_pages()`
+turns that 0 into `-EFAULT`, which `MEM_CREATE` returns unchanged.
+
+The uAPI table comes from compiling every `rknpu_ioctl.h` release from 0.8.0 to 0.9.8, from
+Rockchip's `develop-6.1` kernel branch, for its structure sizes. The size handling is read from
+`drm_ioctl()` in Linux 6.6 and `rknpu_mem_create_ioctl()` in `rknpu` 0.9.8. No pre-0.9.6 driver
+was run.
+
+The concurrency and output comparison is `tflite-rocket` built unmodified against each driver.
+The MD5 matched in the CPU-only, `native_int8=1` and `native_int8=0` configurations, with every
+on-NPU auxiliary path enabled, and with `nchw_resident=1`. The delegate's `convert_test`, 220
+cases, and six driver-level probes passed on both drivers.
 
 ### Multicore dispatch through worker fds
 
@@ -867,11 +986,37 @@ The first table row is `matmul_tiled_rocket 512 3840 4096`.
 `patches/rocket/BATCHED_SUBMIT_FINDINGS.md` holds the full mechanism and the disproven
 kernel-only model.
 
+The `PC_TASK_STATUS` reading is from the chained-submit bring-up on 2026-06-24 (kernel 7.1,
+~816 MHz). A retire condition of `(PC_TASK_STATUS & 0xfff) >= N` never fired, and every job
+reached the timeout with its output already correct.
+
+Each vendor-driver throughput figure is the best of five repetitions after three warm rounds.
+The mainline board ran at the 600 MHz request (~816 MHz) in a prefill comparison the following
+day. The clock of the 2026-08-23 mainline row was not recorded.
+
 ### Context-pool throughput
 
 The probe is `rocket-userspace/tests/ctx_pool_throughput.c` (`ctx_pool_throughput`). The
 model-2 throughput path (queue depth > core count) is distinct from the model-1
 `multicore_threads` probe, which packs once and loops a bare submit (pure-NPU, saturates at 3).
+
+The probe runs the pool as threads of one process. Its default mode alternates the collided and
+the spread pool at each P. The 2026-06-29 figures are from that mode, with the spread set
+through `rocket_affinity_set_base()`. The 2026-06-24 sweep ran each affinity as a separate
+sweep, with the spread set by `ROCKET_CPU_AFFINITY=off` and the probe pinning each thread.
+
+#### Revision history
+
+On 2026-06-24, on kernel 7.1.0-1-arm64 with the `performance` governor, the same probe and shape
+gave these figures [HW sweep]:
+
+| Pool affinity | Best speedup against P=1 | Where |
+|---|---|---|
+| Collided, every context on cpu4 | ~2.1x | Flat past P=3 |
+| Spread, `ROCKET_CPU_AFFINITY=off` and the probe pins each thread | ~3.9x | Peak at P=4 |
+
+The 2026-06-29 alternating run did not reproduce the collided plateau. The cause of the
+difference is not isolated.
 
 ### Excluded causes
 

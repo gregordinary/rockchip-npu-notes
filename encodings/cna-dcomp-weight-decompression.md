@@ -16,7 +16,7 @@ the alternative [expected]. Neither format is characterized on hardware in these
 
 ## Registers
 
-Mesa `rocket/registers.xml` and `librocketnpu`'s `npu_hw.h` give the map [source-confirmed]. The
+Mesa `rocket/registers.xml` gives the map [source-confirmed]. The
 last column gives what the external codec programs [source-confirmed: `rknpu2_matmul_open`]:
 
 | Offset | Register | Fields | External codec |

@@ -6,8 +6,12 @@ gain from ~2K tokens up on Gemma-4-12B F16 [HW sweep 2026-06-26]. The two backen
 with context length, and the offload raises long-context prefill throughput on reasoning models
 (Gemma-4 and the like). The crossover is at ~2K with per-worker QK/AV submit chaining on, which
 is the default. Without chaining, the NPU's fixed per-head dispatch overhead moves the crossover
-out to between 4K and 8K. Within the attention the handler implements, the offload is
-bit-faithful: per-head cosine is 1.0, and differential perplexity FA-NPU == FA-CPU.
+out to between 4K and 8K.
+
+Within the attention the handler implements, the offload is bit-faithful: per-head cosine is 1.0.
+On Gemma-4-12B F16, the differential perplexity is equal with the offload and without it. On
+Ministral-3-3B F16, `llama-perplexity` measures 13.8994 with the offload and 13.9024 with
+attention on the CPU [HW sweep 2026-09-07].
 
 **Conditions:** RK3588, fp16, NPU clock ~816 MHz, `performance` governor, Gemma-4-12B F16,
 `llama-bench` prefill throughput (t/s), chaining on, the NPU offloading every prefill attention
@@ -458,6 +462,13 @@ changed since, each change bit-identical:
 ### Offload target
 
 A `supports_op` graph dump confirms that `-fa auto` presents one fused op per layer.
+
+### Accuracy
+
+The Gemma-4-12B perplexity is 532.9399 in both configurations, on a June 2026 build. Gemma-4-12B
+is a reasoning model, so its absolute wikitext perplexity is not a quality measure, and only the
+difference between the configurations is. The Ministral-3-3B figures are `llama-perplexity` runs
+at ~816 MHz. Two processes with the offload agreed to every digit.
 
 ### Prefill throughput by context
 
