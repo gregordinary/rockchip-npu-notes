@@ -71,7 +71,7 @@ if "int8broken" in WHICH or "int8calib" in WHICH:
     try_export("enc_op14.onnx", 14)
 
 if "int8broken" in WHICH:
-    # export_broken_int8.py verbatim: 16 uniform(-1,1) samples with element [0,0,0] = 1000.0,
+    # export_broken_int8.py's recipe: 16 uniform(-1,1) samples with element [0,0,0] = 1000.0,
     # asymmetric_quantized-8, optimization_level 3.
     os.makedirs("calib_broken", exist_ok=True)
     rng = np.random.default_rng(0)

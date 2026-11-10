@@ -50,10 +50,10 @@ if mode == "mono":
 else:
     sys.path.insert(0, os.environ["SHARD_SRC"])
     from smolvlm_infer.runner import RKNNBlockRunner  # SHARD's runner, unchanged
-    blocks = []
-    for i in range(12):  # HybridSplitEncoder.__init__: round-robin cores 0/1/2
-        blocks.append(RKNNBlockRunner(f"{target}/l{i}_attn.rknn", core_id=i % 3))
-        blocks.append(RKNNBlockRunner(f"{target}/l{i}_mlp.rknn", core_id=i % 3))
+    # The pack's 24 blocks in run order, attention then MLP for each of the 12 layers, layer i
+    # on NPU core i % 3 as SHARD assigns them (HybridSplitEncoder.__init__).
+    blocks = [RKNNBlockRunner(f"{target}/l{i}_{part}.rknn", core_id=i % 3)
+              for i in range(12) for part in ("attn", "mlp")]
 
     def forward(x):  # HybridSplitEncoder.forward, without the torch wrapper
         x = x * 0.1

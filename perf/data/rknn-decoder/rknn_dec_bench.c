@@ -104,7 +104,7 @@ typedef struct {
     int L, H, D, T, S, V;
     uint32_t n_in, n_out;
     rknn_tensor_attr ia[MAXIO], ina[MAXIO], oa[MAXIO], ona[MAXIO];
-    // Host-side state in their layouts. In res mode past/enc point into the bound memory.
+    // Host-side state in the graph's layouts. In res mode past/enc point into the bound memory.
     f16 **past_k, **past_v, **enc_k, **enc_v;
     f16 *m_attn, *m_ins, *m_ret, *logits, **pres_k, **pres_v;
     int64_t tok, pos;
@@ -112,7 +112,12 @@ typedef struct {
     int step;
 } dec_t;
 
+// The runtime's native layout for an fp16 [C][R][D] tensor (NC1HWC2): C in blocks of eight, each
+// block [R][D][8], a channel's position in its block innermost. The tail block is zero-filled.
 static size_t nc1hwc2_len(int c, int h, int w) { return (size_t)((c + 7) / 8) * h * w * 8; }
+static inline size_t c8_at(int c, int r, int j, int rows, int dd) {
+    return (((size_t)(c >> 3) * rows + r) * dd + j) * 8 + (c & 7);
+}
 
 // Indices into the flat input list.
 #define I_TOK 0
@@ -237,13 +242,14 @@ static void dec_open(dec_t *d, const char *path, const char *mask_s, int res, ui
     for (uint32_t i = 0; i < d->n_in; i++) CHECK(rknn_mem_sync(d->ctx, d->im[i], RKNN_MEMORY_SYNC_TO_DEVICE));
 }
 
-// Their pack: logical [S][H][D] into native [ceil(S/8)][H][D][8].
+// A cross-attention K or V, row-major [S][H][D], into the native layout with S as the channels.
 static void pack_enc(const f16 *src, f16 *dst, int s, int h, int dd) {
     memset(dst, 0, nc1hwc2_len(s, h, dd) * sizeof *dst);
+    size_t k = 0;
     for (int q = 0; q < s; q++)
         for (int i = 0; i < h; i++)
             for (int j = 0; j < dd; j++)
-                dst[(((size_t)(q / 8) * h + i) * dd + j) * 8 + q % 8] = src[((size_t)q * h + i) * dd + j];
+                dst[c8_at(q, i, j, h, dd)] = src[k++];
 }
 
 static void dec_set_enc(dec_t *d, f16 **ek, f16 **ev) {
@@ -272,16 +278,22 @@ static void dec_reset(dec_t *d) {
 
 typedef struct { double set, run, get, cpu; } step_t;
 
-// One decoder step, their arithmetic: masks, run, splice the new K/V into the cache at
-// pos % T. Logits land in d->logits as fp16.
+// One decoder step: masks, run, then the new K/V written into the cache. The cache is a ring of
+// T slots and this step's token goes to slot pos % T. Logits land in d->logits as fp16.
 static step_t dec_step(dec_t *d, int token) {
     step_t st;
     double c0 = CPU(), a = WALL();
     int T = d->T, pos = d->step, slot = pos % T;
+    // A slot is attended once it holds a token: every slot after the ring has wrapped, slots up
+    // to this step's before. The cache keeps every attended slot except the one this step
+    // overwrites, and the attention mask is fp16's lowest finite value where a slot is not
+    // attended.
+    const int wrapped = pos >= T;
     for (int i = 0; i < T; i++) {
-        d->m_attn[i] = (pos >= T || i <= pos) ? (f16)0 : (f16)-65504;
+        const int attended = wrapped || i <= pos;
+        d->m_attn[i] = attended ? (f16)0 : (f16)-65504;
         d->m_ins[i] = i == slot ? (f16)1 : (f16)0;
-        d->m_ret[i] = (i != slot && (pos >= T || i < pos)) ? (f16)1 : (f16)0;
+        d->m_ret[i] = (attended && i != slot) ? (f16)1 : (f16)0;
     }
     d->tok = token;
     d->pos = pos;
@@ -343,13 +355,12 @@ static step_t dec_step(dec_t *d, int token) {
             from_native(&d->ona[1 + d->L + l], d->om[1 + d->L + l]->virt_addr, d->H, 1, d->D, d->pres_v[l]);
         }
     }
-    // Their splice: present [H][D] into the cache [ceil(H/8)][T][D][8] at slot.
+    // This step's K/V, [H][D], into the cache's native layout (H as the channels, T rows) at slot.
     for (int l = 0; l < d->L; l++)
         for (int h = 0; h < d->H; h++)
             for (int j = 0; j < d->D; j++) {
-                size_t o = (((size_t)(h / 8) * T + slot) * d->D + j) * 8 + h % 8;
-                d->past_k[l][o] = d->pres_k[l][h * d->D + j];
-                d->past_v[l][o] = d->pres_v[l][h * d->D + j];
+                d->past_k[l][c8_at(h, slot, j, T, d->D)] = d->pres_k[l][h * d->D + j];
+                d->past_v[l][c8_at(h, slot, j, T, d->D)] = d->pres_v[l][h * d->D + j];
             }
     if (d->res)
         for (int l = 0; l < d->L; l++) {
@@ -491,20 +502,23 @@ static float *read_wav16k(const char *path, int *n) {
     exit(1);
 }
 
-// Their polyphase pre-process: reflect-pad 200 each side, pad to a multiple of 80, then
-// sample 80t + c to channel c, column t.
+// Where padded position k (k < 0 before the audio, k >= n after it) reads from: the audio
+// mirrored about its first and last samples without repeating them, and held at the far end
+// when the audio is shorter than the pad.
+static inline int mirror(int k, int n) {
+    if (k < 0) return -k < n ? -k : n - 1;
+    if (k >= n) return 2 * n - 2 - k > 0 ? 2 * n - 2 - k : 0;
+    return k;
+}
+
+// The mel model's input: the audio mirrored by PAD samples at each end, zero-filled to a multiple
+// of GCD, then split into GCD phases, phase c taking every GCD-th sample from c as one row.
 static float *polyphase(const float *in, int n, int *cols) {
-    int len = PAD + n + PAD;
-    len += (GCD - len % GCD) % GCD;
-    float *xp = calloc(len, sizeof *xp);
-    for (int i = PAD; i >= 1; i--) xp[PAD - i] = in[i < n ? i : n - 1];
-    memcpy(xp + PAD, in, n * sizeof *in);
-    for (int i = 0; i < PAD; i++) xp[PAD + n + i] = in[n > 1 + i ? n - 2 - i : 0];
-    *cols = len / GCD;
-    float *out = malloc(len * sizeof *out);
-    for (int c = 0; c < GCD; c++)
-        for (int t = 0; t < *cols; t++) out[c * *cols + t] = xp[t * GCD + c];
-    free(xp);
+    const int span = PAD + n + PAD;
+    *cols = (span + GCD - 1) / GCD;
+    float *out = calloc((size_t)GCD * *cols, sizeof *out);
+    for (int k = 0; k < span; k++)
+        out[(size_t)(k % GCD) * *cols + k / GCD] = in[mirror(k - PAD, n)];
     return out;
 }
 
