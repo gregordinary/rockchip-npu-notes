@@ -168,8 +168,8 @@ compressed RK3588 capture exists to compare it with.
 
 ### Performance
 
-The compression table comes from `rocket-userspace/tools/dcomp_ratio.py`, which computes each
-lane's stream size from the format above without writing the stream. Its sizes equal the
+The compression table comes from a host sizer that computes each lane's stream size from the
+format above without writing the stream. Its sizes equal the
 external encoder's output byte for byte on five shapes of synthetic int8 weights, K 64-4096 and
 N 32-512. The table's tensors are each decoder layer's attention and FFN projections, from the
 models' F16 and Q8_0 GGUF files. Over 14 FFN tensors of Llama-3.2-3B the per-tensor ratio at 127
