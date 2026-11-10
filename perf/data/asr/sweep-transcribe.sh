@@ -1,4 +1,6 @@
 #!/bin/bash
+# SPDX-License-Identifier: MIT
+# Copyright (C) 2026 The rockchip-npu-notes authors
 # Three arms, one binary: CPU, the NPU at the shipped quantized-offload floor
 # (ROCKET_MIN_M_QUANT=512, tuned for LLM prefill), and the NPU at 128. A CTC ASR
 # encoder's sequence length is well under 512 for a short clip, so the shipped

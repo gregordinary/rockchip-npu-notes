@@ -1,4 +1,6 @@
 #!/bin/bash
+# SPDX-License-Identifier: MIT
+# Copyright (C) 2026 The rockchip-npu-notes authors
 # f16-resident-readout.sh [MODEL_KEY ...]   -- what ROCKET_F16_RESIDENT=auto actually MOVES
 #
 # The matrix's f16 units are two arms each and three passes per unit, and unit 2 spent seven

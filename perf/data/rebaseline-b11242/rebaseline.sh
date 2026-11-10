@@ -1,4 +1,6 @@
 #!/bin/bash
+# SPDX-License-Identifier: MIT
+# Copyright (C) 2026 The rockchip-npu-notes authors
 # Re-baseline of the quantized README rows at llama.cpp b11242: CPU repack off / on, and the NPU
 # arm with --repack 0. Runs as ROOT (launched once through sudo -S) so bench-llm.sh's own sudo
 # calls (drop_caches, compact_memory, perf, pagemap, the clk read) need no password.

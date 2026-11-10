@@ -1,4 +1,6 @@
 #!/bin/bash
+# SPDX-License-Identifier: MIT
+# Copyright (C) 2026 The rockchip-npu-notes authors
 # M7 cap: what fraction of an encode's HOST cost is the weight scatter?
 # A streaming ASR host re-encodes against the same weights every window, and
 # rocket_weight_key() rejects whisper's ggml autonames, so every weight is

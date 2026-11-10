@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-# SPDX-License-Identifier: GPL-3.0-or-later
+# SPDX-License-Identifier: MIT
+# Copyright (C) 2026 The rockchip-npu-notes authors
 # Read the DPU LUT program out of a compiled .rknn: every register write, named from
 # Mesa's registers.xml, and the LUT table the program uploads.
 #

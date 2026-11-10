@@ -1,4 +1,6 @@
 #!/bin/bash
+# SPDX-License-Identifier: MIT
+# Copyright (C) 2026 The rockchip-npu-notes authors
 # THE SHAPE OF THE MoE ROUTE'S ROCKET_N_THREADS CURVE BETWEEN THE TWO MEASURED ENDS.
 #
 # WHAT IS ALREADY SETTLED, AND WHAT THIS DOES NOT RE-ASK. On this route the knob cannot buy

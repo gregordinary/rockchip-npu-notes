@@ -1,4 +1,6 @@
 #!/bin/bash
+# SPDX-License-Identifier: MIT
+# Copyright (C) 2026 The rockchip-npu-notes authors
 # THE FLASH-ATTENTION HANDLER'S CRITICAL-PATH INTERVAL, READ DIRECTLY, WITHOUT AN EXCHANGE RATE.
 #
 # WHAT IS SETTLED. On `gemma4-12b` F16 pinned and streamed, the attention path is 22.93% of

@@ -1,4 +1,6 @@
 #!/bin/bash
+# SPDX-License-Identifier: MIT
+# Copyright (C) 2026 The rockchip-npu-notes authors
 # WHAT ARE THE A55 INSTRUCTIONS? The per-thread instrument for the little-cluster share.
 #
 # WHAT IS ALREADY SETTLED, so this does not re-derive it. `librocketnpu` pins every worker to a

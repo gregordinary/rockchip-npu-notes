@@ -1,5 +1,6 @@
 #!/bin/bash
-# SPDX-License-Identifier: GPL-3.0-or-later
+# SPDX-License-Identifier: MIT
+# Copyright (C) 2026 The rockchip-npu-notes authors
 # Same-board whisper-base encoder comparison on the vendor RK1, 20 s window (1000 positions).
 # Arms: rknn3 (RKNN whole graph, cores 0-2), rknn1 (core 0), ours (whisper-cli + ggml-rocket
 # through rknpu-submit), cpu (whisper-cli alone). Clocks: NPU pinned at 1000 and 600 MHz.

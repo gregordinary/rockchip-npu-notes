@@ -1,4 +1,6 @@
 #!/bin/bash
+# SPDX-License-Identifier: MIT
+# Copyright (C) 2026 The rockchip-npu-notes authors
 # Track D's INTERVENTION arm. The twelve rows before this one say the per-process spread on
 # qwen35-08b-f16 is carried by l3ref_pki (rho -0.972) and by nothing upstream of the L3, and
 # that the four fastest processes are exactly the four whose a55_inst_share is lowest. Those two

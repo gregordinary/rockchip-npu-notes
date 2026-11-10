@@ -1,4 +1,6 @@
 #!/bin/bash
+# SPDX-License-Identifier: MIT
+# Copyright (C) 2026 The rockchip-npu-notes authors
 # THE A55 SYMBOL HISTOGRAM ON A PLAIN-TRANSFORMER MODEL. The out-of-sample half of trackd18.
 #
 # WHAT trackd18 SETTLED, so this does not re-ask it. On `qwen35-9b` the little cluster's retired

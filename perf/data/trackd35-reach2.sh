@@ -1,4 +1,6 @@
 #!/bin/bash
+# SPDX-License-Identifier: MIT
+# Copyright (C) 2026 The rockchip-npu-notes authors
 # TWO LOOSE ENDS FROM trackd34, BOTH OF WHICH ARE CONTROLS THAT WERE MISSING.
 #
 # ONE: IS THE PERPLEXITY DIFFERENCE REAL? trackd34 read 13.8994 with ROCKET_FLASH_ATTN=1 against

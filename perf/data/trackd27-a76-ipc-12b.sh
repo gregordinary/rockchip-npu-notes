@@ -1,4 +1,6 @@
 #!/bin/bash
+# SPDX-License-Identifier: MIT
+# Copyright (C) 2026 The rockchip-npu-notes authors
 # PER-SYMBOL IPC ON THE A76s, WHICH IS THE HALF OF EVERY HOST-SIDE CAP THAT IS STILL MISSING.
 #
 # WHAT IS ALREADY SETTLED. On this arm the A76 INSTRUCTION histogram reads the attention path at

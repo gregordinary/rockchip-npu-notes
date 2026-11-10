@@ -1,4 +1,6 @@
 #!/bin/bash
+# SPDX-License-Identifier: MIT
+# Copyright (C) 2026 The rockchip-npu-notes authors
 # qres512-9b-driver.sh -- the one class edge the unstacked-residency question never measured.
 #
 # `ROCKET_QUANT_RESIDENT=auto` at the DEFAULT -ub, against stock, on qwen35-9b. Every other

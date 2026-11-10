@@ -1,4 +1,6 @@
 #!/bin/bash
+# SPDX-License-Identifier: MIT
+# Copyright (C) 2026 The rockchip-npu-notes authors
 # LLM crossover re-check: Llama-3.2-3B F16, NPU at floor 4 against CPU.
 set -u
 L=/path/to/data/rebase/llama.cpp-b11242

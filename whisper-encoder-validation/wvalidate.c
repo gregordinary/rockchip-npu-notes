@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+// Copyright (C) 2026 The rockchip-npu-notes authors
 // Phase 1.2 NPU harness: run rocket_encoder_block_fp16 on REAL whisper weights
 // exported by wprep.py, in two modes:
 //   isolated: block L fed the golden's input gin[L]  (localizes per-block divergence)

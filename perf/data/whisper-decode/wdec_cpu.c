@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: MIT
+// Copyright (C) 2026 The rockchip-npu-notes authors
 //
 // wdec_cpu: what whisper.cpp's decoder step costs on the CPU, per call, at several thread counts.
 //   wdec_cpu <model.bin> <wav> <threads[,threads...]> <reps>

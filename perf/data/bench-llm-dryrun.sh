@@ -1,4 +1,6 @@
 #!/bin/bash
+# SPDX-License-Identifier: MIT
+# Copyright (C) 2026 The rockchip-npu-notes authors
 # bench-llm-dryrun.sh [-- extra bench-llm.sh env]
 #
 # Dry-run bench-llm.sh against STUBS, off the board, before it is trusted with board time.

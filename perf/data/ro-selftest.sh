@@ -1,4 +1,6 @@
 #!/bin/bash
+# SPDX-License-Identifier: MIT
+# Copyright (C) 2026 The rockchip-npu-notes authors
 # ro-selftest.sh -- the positive controls the per-process readout has to pass before any flat
 # column it produces is read as a null. Two parts, because the readout has two independent halves:
 #

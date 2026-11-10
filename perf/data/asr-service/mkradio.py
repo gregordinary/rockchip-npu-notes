@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+# Copyright (C) 2026 The rockchip-npu-notes authors
 """Build OpenWebRX+-shaped whisper-server request sets from LibriSpeech test-clean.
 
 The client (owrx/transcribe.py) accumulates squelch-gated 12 kHz PCM and posts whatever

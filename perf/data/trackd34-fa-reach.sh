@@ -1,4 +1,6 @@
 #!/bin/bash
+# SPDX-License-Identifier: MIT
+# Copyright (C) 2026 The rockchip-npu-notes authors
 # DOES llama-perplexity REACH THE FA HANDLER, OR IS ITS SUMMARY BEING DROPPED?
 #
 # THE OBSERVATION. llama-perplexity prints neither `ROCKET FA total` nor `ROCKET FA checksum`,

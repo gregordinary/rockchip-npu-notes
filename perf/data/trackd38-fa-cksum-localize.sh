@@ -1,4 +1,6 @@
 #!/bin/bash
+# SPDX-License-Identifier: MIT
+# Copyright (C) 2026 The rockchip-npu-notes authors
 # LOCALIZING THE MOVING FA CHECKSUM.
 #
 # WHAT IS MEASURED. Five runs on one build, one config, gave 8852206bf3ccda62 four times and

@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-# SPDX-License-Identifier: GPL-3.0-or-later
+# SPDX-License-Identifier: MIT
+# Copyright (C) 2026 The rockchip-npu-notes authors
 # Build one-op ONNX Sigmoid and Tanh models and compile each to an rk3588 .rknn with
 # rknn-toolkit2 (fp16, no quantization). The .rknn embeds the vendor's NPU command
 # stream, including the DPU LUT program and its table upload; decode_lut_rknn.py reads

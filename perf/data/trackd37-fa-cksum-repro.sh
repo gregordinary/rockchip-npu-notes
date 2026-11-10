@@ -1,4 +1,6 @@
 #!/bin/bash
+# SPDX-License-Identifier: MIT
+# Copyright (C) 2026 The rockchip-npu-notes authors
 # THE FA CHECKSUM GATE CAME BACK RED, AND THE FIRST QUESTION IS WHETHER IT REPRODUCES.
 # k=1 read 345a87c827fa972b where k=4 read 8852206bf3ccda62, and k=4 is the value the
 # previous build recorded for BOTH arms. Two candidates look identical from one run each:

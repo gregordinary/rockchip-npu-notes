@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: MIT
+# Copyright (C) 2026 The rockchip-npu-notes authors
 # Per-utterance marginal cost from the campaign: (10-file process - 1-file process) / 9, per pass.
 import sys, os, re, glob, statistics as st, collections
 R, C = sys.argv[1], sys.argv[2]

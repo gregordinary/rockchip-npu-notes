@@ -1,10 +1,5 @@
-# SPDX-License-Identifier: GPL-3.0-or-later
-#
-# Additional permission under GNU GPL version 3 section 7: if you modify this program, or any
-# covered work, by linking or combining it with Rockchip's rknn-toolkit2 or rknn-toolkit-lite2
-# (or a modified version of either), containing parts covered by the terms of Rockchip's license
-# for them, the licensors of this program grant you additional permission to convey the
-# resulting work.
+# SPDX-License-Identifier: MIT
+# Copyright (C) 2026 The rockchip-npu-notes authors
 #
 # Board-side runner for the SHARD reproduction (rknn-toolkit-lite2 2.3.2, vendor rknpu).
 #   run_board.py mono  <model.rknn> <data> <out> <mask 012|0>

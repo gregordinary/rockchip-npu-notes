@@ -1,9 +1,5 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
-//
-// Additional permission under GNU GPL version 3 section 7: if you modify this program, or any
-// covered work, by linking or combining it with Rockchip's librknnrt (or a modified version of
-// that library), containing parts covered by the terms of Rockchip's license for it, the
-// licensors of this program grant you additional permission to convey the resulting work.
+// SPDX-License-Identifier: MIT
+// Copyright (C) 2026 The rockchip-npu-notes authors
 //
 // rknn_dec_bench: time a whole-step RKNN Whisper decoder (boundarybitlabs/rkwhisper-models) on
 // the vendor runtime, the way rkwhisper calls it and with every input resident.

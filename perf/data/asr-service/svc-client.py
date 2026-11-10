@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+# Copyright (C) 2026 The rockchip-npu-notes authors
 """Drive a running whisper-server the way OpenWebRX+ does, and bill it.
 
 Posts each chunk as multipart form-data with a single `file` field (application/octet-stream

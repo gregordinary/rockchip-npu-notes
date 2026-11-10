@@ -1,5 +1,6 @@
 #!/bin/bash
-# SPDX-License-Identifier: GPL-3.0-or-later
+# SPDX-License-Identifier: MIT
+# Copyright (C) 2026 The rockchip-npu-notes authors
 # librknnrt 2.3.2 vs 2.3.0 on the same model, NPU pinned at 1000 MHz, CPU governor performance.
 set -u
 OUT=$1; mkdir -p "$OUT"

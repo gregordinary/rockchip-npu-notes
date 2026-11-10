@@ -1,4 +1,6 @@
 #!/bin/bash
+# SPDX-License-Identifier: MIT
+# Copyright (C) 2026 The rockchip-npu-notes authors
 # WHICH LIMIT DOES THE MoE PRE-FLIGHT NAME? The gate for pricing ROCKET_N_THREADS where the
 # advice applies.
 #

@@ -1,4 +1,6 @@
 #!/bin/bash
+# SPDX-License-Identifier: MIT
+# Copyright (C) 2026 The rockchip-npu-notes authors
 # bench-tuning-matrix.sh [MODEL_KEY ...]      -- one model family per unit, run them one at a time
 # bench-tuning-matrix.sh --list               -- the units, their arms, and their estimated cost
 #

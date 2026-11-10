@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+# Copyright (C) 2026 The rockchip-npu-notes authors
 """Word error rate of the service transcripts against each stream's reference.
 
 usage: wer.py --sets SETS_DIR --transcripts DIR [--tsv results.tsv]

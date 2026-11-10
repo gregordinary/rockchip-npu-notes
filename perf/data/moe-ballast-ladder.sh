@@ -1,4 +1,6 @@
 #!/bin/bash
+# SPDX-License-Identifier: MIT
+# Copyright (C) 2026 The rockchip-npu-notes authors
 # moe-ballast-ladder.sh -- INDUCE the MoE budget regime on a second model, and read the TURN.
 #
 # The MoE budget hypothesis is that the per-expert admission charge omits the shared expert

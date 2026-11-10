@@ -1,4 +1,6 @@
 #!/bin/bash
+# SPDX-License-Identifier: MIT
+# Copyright (C) 2026 The rockchip-npu-notes authors
 # M6 -- whisper.cpp model-and-length sweep on the vendor kernel.
 #
 # Two arms from ONE binary: the NPU arm offloads, the CPU arm declines every op

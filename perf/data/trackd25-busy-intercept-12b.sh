@@ -1,4 +1,6 @@
 #!/bin/bash
+# SPDX-License-Identifier: MIT
+# Copyright (C) 2026 The rockchip-npu-notes authors
 # THE RESIDENCY INGEST'S CPU COST, AND THE UNCONTAMINATED HOST SHARE OF A RESIDENCY KNOB.
 #
 # WHAT IS BEING TESTED. Four of five pinning-by-knob 2x2 cells on this board are reproduced with

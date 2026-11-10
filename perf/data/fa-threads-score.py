@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+# Copyright (C) 2026 The rockchip-npu-notes authors
 """Score the ROCKET_FA_THREADS A/B from a trackd33 output directory.
 
 WHAT IT READS, AND WHY NOT THE WALL. The deliverable is `G_k`, the handler's gather plus

@@ -1,4 +1,6 @@
 #!/bin/bash
+# SPDX-License-Identifier: MIT
+# Copyright (C) 2026 The rockchip-npu-notes authors
 # DOES PINNING INTERACT WITH A LARGE PUBLISHED KNOB? The 2x2 on qwen35-9b's biggest matrix cell.
 #
 # WHAT IT PRICES. Every ratio in perf/data/tuning-matrix.md takes both arms UNPINNED, which is

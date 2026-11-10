@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+# Copyright (C) 2026 The rockchip-npu-notes authors
 # Phase 1.2 compare: per-block cosine + max_abs of the NPU rocket encoder block
 # (rout_iso / rout_chn, fp16) vs the f64 whisper-exact golden (gout).
 import sys, os, numpy as np

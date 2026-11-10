@@ -1,4 +1,6 @@
 #!/bin/bash
+# SPDX-License-Identifier: MIT
+# Copyright (C) 2026 The rockchip-npu-notes authors
 # Neighbor experiment (tg64 x 3 runs): does an STT offload hand CPU to another task?
 # A continuous stream of b02 utterances (parakeet-cli, one process) runs beside llama-bench decode
 # (Llama-3.2-3B Q4_K_M, CPU only, repack on) on the same four A76 cores. Arms rotated per pass.

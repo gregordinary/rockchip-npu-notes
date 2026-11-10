@@ -1,4 +1,6 @@
 #!/bin/bash
+# SPDX-License-Identifier: MIT
+# Copyright (C) 2026 The rockchip-npu-notes authors
 # sherpa-onnx CPU baseline, both Parakeet TDT int8 exports.
 set -u
 S=/path/to/data/stt-short/sherpa

@@ -1,4 +1,6 @@
 #!/bin/bash
+# SPDX-License-Identifier: MIT
+# Copyright (C) 2026 The rockchip-npu-notes authors
 # THREADING THE FA HANDLER'S FIVE HOST WALKS: THE A/B THE CAP WAS WRITTEN FOR.
 #
 # WHAT IS SETTLED. The `FLASH_ATTN_EXT` handler runs on the ggml dispatch thread while the

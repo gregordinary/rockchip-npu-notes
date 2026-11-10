@@ -1,4 +1,6 @@
 #!/bin/bash
+# SPDX-License-Identifier: MIT
+# Copyright (C) 2026 The rockchip-npu-notes authors
 # Is the pinning lever the LITTLE CORES, or is it ggml's POLL LOOP?
 #
 # The pinning arm measured taskset 0xf0 -t 4 at 1.126x over six passes, and its instruction

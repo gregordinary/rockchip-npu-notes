@@ -1,4 +1,6 @@
 #!/bin/bash
+# SPDX-License-Identifier: MIT
+# Copyright (C) 2026 The rockchip-npu-notes authors
 # Does the A76-pinning lever read across? The 0.8B f16 unit measured pin76 1.103x and
 # pin76t4 1.126x over six rotated passes. That is one model, and one model's ratio does not
 # read across to another on this board. This runs the other end of the matrix under the

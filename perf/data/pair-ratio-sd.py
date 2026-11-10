@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+# Copyright (C) 2026 The rockchip-npu-notes authors
 """pair-ratio-sd.py FILE.md [FILE.md ...] -- per-pass paired ratios and their spread.
 
 bench-llm.sh writes one <!--DATA pass arm test t/s--> line per timed arm. The statistic that

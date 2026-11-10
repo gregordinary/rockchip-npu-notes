@@ -1,4 +1,6 @@
 #!/bin/sh
+# SPDX-License-Identifier: MIT
+# Copyright (C) 2026 The rockchip-npu-notes authors
 # Run llama-bench under a CPU affinity mask taken from the environment.
 #
 # WHY A WRAPPER AND NOT `taskset` IN THE ARM'S ENV FIELD. bench-llm.sh builds its timed command

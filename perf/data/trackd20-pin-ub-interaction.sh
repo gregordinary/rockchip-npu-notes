@@ -1,4 +1,6 @@
 #!/bin/bash
+# SPDX-License-Identifier: MIT
+# Copyright (C) 2026 The rockchip-npu-notes authors
 # DOES PINNING INTERACT WITH A KNOB THAT IS NOT A RESIDENCY KNOB? The third cell of the 2x2.
 #
 # WHAT IT PRICES. Every ratio in perf/data/tuning-matrix.md takes both arms UNPINNED, which is

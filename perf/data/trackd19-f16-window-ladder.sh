@@ -1,4 +1,6 @@
 #!/bin/bash
+# SPDX-License-Identifier: MIT
+# Copyright (C) 2026 The rockchip-npu-notes authors
 # WHAT DOES RAISING ROCKET_N_THREADS BUY WHERE THE IOVA WINDOW IS THE ANNOUNCED BINDER?
 #
 # trackd13 established that on gemma4-12b F16 at -p 512 the f16 residency route first-declines

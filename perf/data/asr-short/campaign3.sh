@@ -1,4 +1,6 @@
 #!/bin/bash
+# SPDX-License-Identifier: MIT
+# Copyright (C) 2026 The rockchip-npu-notes authors
 # Admission map + profile pass (not timed for the ledger): which GEMMs each floor admits per bucket,
 # and the ROCKET_MM_PROFILE buckets per 10-utterance process at floors 4 and 16.
 set -u

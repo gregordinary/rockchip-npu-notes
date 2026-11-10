@@ -1,4 +1,6 @@
 #!/bin/bash
+# SPDX-License-Identifier: MIT
+# Copyright (C) 2026 The rockchip-npu-notes authors
 # FILL THE `phi` GAP, AND ASK WHETHER THE HOST SHARE IS A PROPERTY OF THE MODEL OR OF THE GGUF.
 #
 # WHAT IS SETTLED. `H/t = a/phi` returns the host term's share of prefill wall: a knob's paired

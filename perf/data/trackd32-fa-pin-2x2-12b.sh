@@ -1,4 +1,6 @@
 #!/bin/bash
+# SPDX-License-Identifier: MIT
+# Copyright (C) 2026 The rockchip-npu-notes authors
 # THE FLASH-ATTENTION OFFLOAD'S CURRENT WORTH AT pp2048, AND THE FIRST INTERACTION CELL WHOSE
 # KNOB ADDS HOST WORK.
 #

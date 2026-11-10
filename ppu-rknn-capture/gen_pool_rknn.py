@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-# SPDX-License-Identifier: GPL-3.0-or-later
+# SPDX-License-Identifier: MIT
+# Copyright (C) 2026 The rockchip-npu-notes authors
 # Build tiny 1-op ONNX pooling models and convert each to a .rknn for rk3588 with
 # rknn-toolkit2 (the gahingwoo capture method, SOURCES.md). The .rknn embeds the
 # vendor's NPU command stream; decode_pool_rknn.py walks it for the 64-bit regcmd

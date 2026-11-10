@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: MIT
+# Copyright (C) 2026 The rockchip-npu-notes authors
 # Pinned re-run of the decoder-step A/B: NPU probe vs whisper.cpp CPU, three rotated passes.
 # SUDOPW comes from the environment (read from stdin by the caller); nothing is written to disk.
 import json, os, re, resource, subprocess, sys, time

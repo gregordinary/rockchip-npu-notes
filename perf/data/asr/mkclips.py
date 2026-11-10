@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: MIT
+# Copyright (C) 2026 The rockchip-npu-notes authors
 # Cut fixed-length clips from jfk_long.wav for the M6 length sweep.
 # All clips start at the same offset so they share a speech onset; each longer
 # clip is a strict superset of the shorter ones, which keeps the length axis the

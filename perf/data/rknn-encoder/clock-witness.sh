@@ -1,5 +1,6 @@
 #!/bin/bash
-# SPDX-License-Identifier: GPL-3.0-or-later
+# SPDX-License-Identifier: MIT
+# Copyright (C) 2026 The rockchip-npu-notes authors
 # Clock witness + attribution for the RKNN encoder: 300/600/1000 MHz, timed arm then perf-detail arm.
 #   PW=<sudo password> clock-witness.sh <outdir>
 set -u

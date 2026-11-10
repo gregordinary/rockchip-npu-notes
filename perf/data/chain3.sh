@@ -1,4 +1,6 @@
 #!/bin/bash
+# SPDX-License-Identifier: MIT
+# Copyright (C) 2026 The rockchip-npu-notes authors
 # Runs trackd28 then trackd29 back to back, one shell per driver so no OUTD leaks across.
 # Its own marker is CHAIN3-DONE, which neither driver writes.
 set -u

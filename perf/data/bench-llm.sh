@@ -1,4 +1,6 @@
 #!/bin/bash
+# SPDX-License-Identifier: MIT
+# Copyright (C) 2026 The rockchip-npu-notes authors
 # bench-llm.sh MODEL LABEL [extra llama-bench args...]
 # One pass = CPU baseline + NPU, warm, covering prefill / decode / interactive.
 #   prefill:     -p 512,1024,2048    (prompt-processing curve; the NPU's job)

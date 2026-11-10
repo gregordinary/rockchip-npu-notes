@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+// Copyright (C) 2026 The rockchip-npu-notes authors
 // Standalone: quantify the whisper-exact (tanh-approx GELU) vs rocket (erf GELU)
 // encoder-block divergence. No NPU, no deps. Pure double-precision references of the
 // SAME pre-norm Whisper encoder block, differing ONLY in the GELU variant (and we also

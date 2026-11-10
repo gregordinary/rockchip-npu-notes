@@ -1,4 +1,6 @@
 #!/bin/bash
+# SPDX-License-Identifier: MIT
+# Copyright (C) 2026 The rockchip-npu-notes authors
 # THE QUANT-RESIDENCY INGEST'S CPU COST, AND THE UNCONTAMINATED HOST SHARE ON THE 9B.
 #
 # WHAT IS SETTLED. `H/t = a/phi` returns the host term's share of prefill wall. On `qwen35-9b`

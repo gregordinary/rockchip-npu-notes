@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: MIT
+# Copyright (C) 2026 The rockchip-npu-notes authors
 # Neighbor (run2), LLM crossover (run4), sherpa (run5) readouts.
 import sys, os, re, json, glob, statistics as st, collections
 base = sys.argv[1]

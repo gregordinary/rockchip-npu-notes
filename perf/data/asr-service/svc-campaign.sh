@@ -1,4 +1,6 @@
 #!/bin/bash
+# SPDX-License-Identifier: MIT
+# Copyright (C) 2026 The rockchip-npu-notes authors
 # The whisper-server service sweep: every arm is one server process driven by the same
 # 20 s (or 30 s) radio-channel chunk sets, rotated across passes, memory reset per arm.
 #

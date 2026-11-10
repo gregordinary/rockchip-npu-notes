@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+# Copyright (C) 2026 The rockchip-npu-notes authors
 """Compare one FA op's dumped tiles between two runs, value by value.
 
 ROCKET_FA_DUMP_OP=N writes op N's dense fp16 tiles and output as five raw files per run:

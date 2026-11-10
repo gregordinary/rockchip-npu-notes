@@ -1,4 +1,6 @@
 #!/bin/bash
+# SPDX-License-Identifier: MIT
+# Copyright (C) 2026 The rockchip-npu-notes authors
 # WHAT DOES THE PER-CALL WEIGHT PACK COST ON THE 12B -- the CAP read that gates the
 # "what does full residency buy" campaign, and a readout rather than a timed arm.
 #

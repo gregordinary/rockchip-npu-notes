@@ -1,4 +1,6 @@
 #!/bin/bash
+# SPDX-License-Identifier: MIT
+# Copyright (C) 2026 The rockchip-npu-notes authors
 # ro-selftest-p1.sh -- the placement half of the readout's positive control, re-taken.
 #
 # Two earlier attempts at the fragmenting cell both failed, both SILENTLY, and both by coming

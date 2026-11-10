@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+# Copyright (C) 2026 The rockchip-npu-notes authors
 # Phase 1.2 prep: load REAL whisper encoder weights, compute a double-precision
 # whisper-EXACT golden encoder (tanh-GELU, biased-var LN eps=1e-5, attn scale
 # 1/sqrt(d_head), K has no bias), and export weights + per-block golden in/out as

@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: MIT
+# Copyright (C) 2026 The rockchip-npu-notes authors
 # sherpa-onnx Parakeet TDT int8 CPU baseline. One persistent process,
 # model loaded once, per-utterance wall and process CPU (utime+stime over all threads).
 import sys, time, resource, wave, glob, os, json

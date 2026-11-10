@@ -1,4 +1,6 @@
 #!/bin/bash
+# SPDX-License-Identifier: MIT
+# Copyright (C) 2026 The rockchip-npu-notes authors
 # THE 12B F16 DISAGREEMENT. A standing negative records whole-process `taskset 0xf0` as no win with
 # prefill FLAT, measured on Gemma-4-12B F16. Prefill then measured 1.103x (pin76) and 1.126x
 # (pin76t4) on qwen35-08b-f16 and 1.059x / 1.062x on qwen35-9b quant-resident, under rotated

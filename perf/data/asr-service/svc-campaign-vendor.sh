@@ -1,4 +1,6 @@
 #!/bin/bash
+# SPDX-License-Identifier: MIT
+# Copyright (C) 2026 The rockchip-npu-notes authors
 # The two recommended service configurations on the vendor RK1, against the shipped NPU arm and
 # the CPU arm, stream s61-70968, arm order reversed on even passes. CPU governor performance,
 # NPU 1000 MHz and DDR 2112 MHz pinned and read back, all restored on exit.

@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+# Copyright (C) 2026 The rockchip-npu-notes authors
 # Build the REAL encoder block-0 input inpL = pe + transpose(embd_conv) from whisper's
 # dump, and stash whisper's real final output embd_enc, both as f32 [T,d] for the
 # golden/rocket cross-check.

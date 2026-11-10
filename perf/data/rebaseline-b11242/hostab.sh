@@ -1,4 +1,6 @@
 #!/bin/bash
+# SPDX-License-Identifier: MIT
+# Copyright (C) 2026 The rockchip-npu-notes authors
 # Why do the NPU arms read above the historical campaign? Three NPU arms, same ggml-rocket source
 # (ggml-rocket as of 2026-09-28; gr2-* are built from a tree byte-identical to it), 3 passes rotated, memory reset and a
 # discarded warm-up before every arm. Runs as ROOT, queues on the board lock behind the campaign.

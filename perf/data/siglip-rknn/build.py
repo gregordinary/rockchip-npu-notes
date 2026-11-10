@@ -1,10 +1,5 @@
-# SPDX-License-Identifier: GPL-3.0-or-later
-#
-# Additional permission under GNU GPL version 3 section 7: if you modify this program, or any
-# covered work, by linking or combining it with Rockchip's rknn-toolkit2 or rknn-toolkit-lite2
-# (or a modified version of either), containing parts covered by the terms of Rockchip's license
-# for them, the licensors of this program grant you additional permission to convey the
-# resulting work.
+# SPDX-License-Identifier: MIT
+# Copyright (C) 2026 The rockchip-npu-notes authors
 #
 # Build the RKNN models for the SHARD reproduction with rknn-toolkit2 2.3.2, each with SHARD's own
 # recipe (the file named beside it). Verbose compile logs are kept: they carry the vendor wording.

@@ -1,4 +1,6 @@
 #!/bin/bash
+# SPDX-License-Identifier: MIT
+# Copyright (C) 2026 The rockchip-npu-notes authors
 # THE A76 SYMBOL HISTOGRAM, WHICH IS THE HALF OF THE libgomp CAP THAT WAS NEVER MEASURED.
 #
 # WHAT IS ALREADY SETTLED. `libggml-cpu.so` imports `GOMP_barrier`, `GOMP_parallel` and

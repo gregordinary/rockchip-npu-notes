@@ -1,4 +1,6 @@
 #!/bin/bash
+# SPDX-License-Identifier: MIT
+# Copyright (C) 2026 The rockchip-npu-notes authors
 # IS THE NON-MONOTONIC fd CURVE REAL, OR ONE PROCESS EACH? The repeat pass.
 #
 # The first ladder read 286 at 5 workers (twice), 293 at 6, 274 at 7, at near-identical resident

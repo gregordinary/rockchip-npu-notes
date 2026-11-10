@@ -1,4 +1,6 @@
 #!/bin/bash
+# SPDX-License-Identifier: MIT
+# Copyright (C) 2026 The rockchip-npu-notes authors
 # THE RATE AT WHICH THE FA HANDLER DISAGREES WITH ITSELF.
 #
 # WHAT IS MEASURED. On one build and one config, 2 of 7 runs printed a different aggregate FA

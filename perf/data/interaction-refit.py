@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+# Copyright (C) 2026 The rockchip-npu-notes authors
 # Re-fit of the pinning-by-knob interaction model over the stored 2x2 campaigns, with no board time.
 #
 # The model [tuning-matrix.md, "The interaction is forced by an additive-time model"] is

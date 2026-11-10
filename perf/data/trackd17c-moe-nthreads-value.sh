@@ -1,4 +1,6 @@
 #!/bin/bash
+# SPDX-License-Identifier: MIT
+# Copyright (C) 2026 The rockchip-npu-notes authors
 # WHAT ROCKET_N_THREADS COSTS AND BUYS ACROSS THE BINDER CROSSOVER, on the MoE route.
 #
 # WHAT IT PRICES. `ggml-rocket/API.md` prescribes raising ROCKET_N_THREADS as the exit from an

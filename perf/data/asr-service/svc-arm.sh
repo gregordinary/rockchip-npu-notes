@@ -1,4 +1,6 @@
 #!/bin/bash
+# SPDX-License-Identifier: MIT
+# Copyright (C) 2026 The rockchip-npu-notes authors
 # One arm of the whisper-server service benchmark: start a server with this arm's
 # environment and flags, drive it with svc-client.py over every requested set, stop it.
 #

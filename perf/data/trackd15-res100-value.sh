@@ -1,4 +1,6 @@
 #!/bin/bash
+# SPDX-License-Identifier: MIT
+# Copyright (C) 2026 The rockchip-npu-notes authors
 # WHAT DOES FULL RESIDENCY BUY ON THE 12B -- and the control that keeps the answer readable.
 #
 # THE QUESTION. `ROCKET_F16_RESIDENT=auto` places 286 of 328 weights (18078MB, 87%) and prices at

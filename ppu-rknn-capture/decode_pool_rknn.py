@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-# SPDX-License-Identifier: GPL-3.0-or-later
+# SPDX-License-Identifier: MIT
+# Copyright (C) 2026 The rockchip-npu-notes authors
 # Walk a vendor .rknn for the embedded 64-bit NPU command words and decode the PPU
 # (0x6000) / PPU_RDMA (0x7000) register page (the gahingwoo capture method).
 #

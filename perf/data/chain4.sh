@@ -1,4 +1,6 @@
 #!/bin/bash
+# SPDX-License-Identifier: MIT
+# Copyright (C) 2026 The rockchip-npu-notes authors
 # Runs trackd30, trackd31 and trackd32 back to back, one shell per driver so no OUTD leaks across.
 # Its own marker is CHAIN4-DONE, which no driver writes. Restores the board to idle defaults at
 # the end (ondemand, power/control=auto) so the next session does not inherit a pinned board.

@@ -1,4 +1,6 @@
 #!/bin/bash
+# SPDX-License-Identifier: MIT
+# Copyright (C) 2026 The rockchip-npu-notes authors
 # THE FIRST NON-NESTED THIRD POINT ON THE 9B: UNSTACKED QUANT RESIDENCY, WITH ITS OWN `a`.
 #
 # WHAT IS SETTLED. `qwen35-9b` Q4_K_M reads `a/phi` = 0.602 on quant residency (phi 0.6645 off the

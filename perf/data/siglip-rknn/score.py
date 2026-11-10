@@ -1,4 +1,5 @@
-# SPDX-License-Identifier: GPL-3.0-or-later
+# SPDX-License-Identifier: MIT
+# Copyright (C) 2026 The rockchip-npu-notes authors
 # Score board outputs against the fp32 reference.
 #   score.py <data> <outdir>...
 # End-to-end: cosine of the encoder output (all 1024x768 values, fp64) against fp32 PyTorch.

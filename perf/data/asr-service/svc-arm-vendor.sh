@@ -1,4 +1,6 @@
 #!/bin/bash
+# SPDX-License-Identifier: MIT
+# Copyright (C) 2026 The rockchip-npu-notes authors
 # svc-arm.sh adapted to the vendor RK1: this board's paths, the server run as the invoking user
 # (render + video cover the NPU), and the memory reset through the password sudo helper.
 #   PW=... svc-arm-vendor.sh ARM REP "SET1 SET2 ..." -- [whisper-server flags]

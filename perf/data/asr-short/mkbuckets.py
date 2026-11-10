@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: MIT
+# Copyright (C) 2026 The rockchip-npu-notes authors
 # Select LibriSpeech test-clean utterances into duration buckets, deterministic: b02-b12 one per
 # speaker in utterance-id order, b01 the ten shortest. Usage: python3 mkbuckets.py OUTDIR
 import os, struct, glob, shutil, sys

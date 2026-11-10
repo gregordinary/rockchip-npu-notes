@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+# Copyright (C) 2026 The rockchip-npu-notes authors
 """Aggregate the service campaign TSV: per arm and set, CPU core-seconds per audio-second,
 wall, realtime factor, and pass-paired ratios against a reference arm.
 

@@ -1,4 +1,6 @@
 #!/bin/bash
+# SPDX-License-Identifier: MIT
+# Copyright (C) 2026 The rockchip-npu-notes authors
 # Follow-up service sweep: the real no-fallback arm (per-request temperature_inc=0, the
 # field OpenWebRX+ can send; whisper-server's -nf flag is parsed and never applied) and the
 # stacked candidate configurations, against the shipped NPU arm. Same shape as svc-campaign.sh.

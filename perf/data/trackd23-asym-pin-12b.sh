@@ -1,4 +1,6 @@
 #!/bin/bash
+# SPDX-License-Identifier: MIT
+# Copyright (C) 2026 The rockchip-npu-notes authors
 # A SECOND INTERACTION CELL ON gemma4-12b F16, WITH A KNOB THAT IS NOT A HOST-WORK KNOB.
 #
 # WHAT IS BEING TESTED. Three interaction cells exist and a form appears in them: the pin-gain

@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+# Copyright (C) 2026 The rockchip-npu-notes authors
 """ro-pagemap.py PID -- one-shot physical-placement readout of a LIVE process.
 
 The surviving suspects for this board's per-process wall spread -- the same configuration

@@ -1,4 +1,6 @@
 #!/bin/bash
+# SPDX-License-Identifier: MIT
+# Copyright (C) 2026 The rockchip-npu-notes authors
 # Short-utterance STT campaign. parakeet-cli, Parakeet TDT 0.6B v3 F16.
 # Arms x buckets x {1-file, 10-file process} x REPS, arm order rotated per (rep, bucket).
 # Per-utterance cost = (10-file process - 1-file process) / 9.

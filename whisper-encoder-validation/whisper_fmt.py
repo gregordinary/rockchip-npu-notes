@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+# Copyright (C) 2026 The rockchip-npu-notes authors
 # Parse whisper.cpp's legacy ggml model format (magic 'ggml', NOT GGUF).
 # Returns {name: np.ndarray} with ggml ne-order shape (ne[0] fastest/contiguous),
 # so a 2D linear weight comes back as shape (out, in) row-major == nn.Linear.

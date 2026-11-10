@@ -1,4 +1,6 @@
 #!/bin/bash
+# SPDX-License-Identifier: MIT
+# Copyright (C) 2026 The rockchip-npu-notes authors
 # READING ROCKET_FA_PROFILE ON HARDWARE: WHERE THE FLASH-ATTENTION COMPUTE SEGMENT GOES.
 #
 # WHAT IS OPEN. The handler's bracket splits the FA offload into gather / compute / scatter, and

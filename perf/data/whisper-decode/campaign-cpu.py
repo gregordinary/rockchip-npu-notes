@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: MIT
+# Copyright (C) 2026 The rockchip-npu-notes authors
 # CPU side: the NPU arm split vs the CPU decoder at 4/2/1 threads and with passive OpenMP waits.
 import json, os, re, subprocess, time
 D = "/path/to/workdir"

@@ -1,4 +1,5 @@
-# SPDX-License-Identifier: GPL-3.0-or-later
+# SPDX-License-Identifier: MIT
+# Copyright (C) 2026 The rockchip-npu-notes authors
 # Real-image encoder inputs and the fp32 reference for the SHARD reproduction.
 # Each image is resized to exactly 512x512 so all 1024 patches are valid (no attention mask).
 # Saves, per image: x0 = encoder input [1,1024,768] (post patch+pos embedding), the residual

@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+# Copyright (C) 2026 The rockchip-npu-notes authors
 # Phase 2 (prove): patch whisper.cpp so each encoder layer's whole block runs on the NPU
 # via one ggml_map_custom1 -> rocket_encoder_block_fp16. Two gates:
 #   build: -DWHISPER_ROCKET=ON  (default OFF -> stock build unaffected)

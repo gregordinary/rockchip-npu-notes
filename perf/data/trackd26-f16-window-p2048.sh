@@ -1,4 +1,6 @@
 #!/bin/bash
+# SPDX-License-Identifier: MIT
+# Copyright (C) 2026 The rockchip-npu-notes authors
 # DOES SIX WORKERS BUY PLACEMENT ON THE DENSE f16 ROUTE AT THE CAMPAIGN SHAPE?
 #
 # WHY THIS EXISTS. Six is the recommended `ROCKET_N_THREADS` on both routes, and on the dense f16

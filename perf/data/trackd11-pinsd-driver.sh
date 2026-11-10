@@ -1,4 +1,6 @@
 #!/bin/bash
+# SPDX-License-Identifier: MIT
+# Copyright (C) 2026 The rockchip-npu-notes authors
 # THE PINNED-PROTOCOL QUESTION. Does pinning BOTH arms shrink the ratio's per-pass spread?
 # The ~6.5% per-pass paired-ratio sd on the 0.8B class is the binding constraint on the whole
 # tuning matrix -- at three passes the ratio's se is ~3.8% and a knob under ~8% cannot resolve.

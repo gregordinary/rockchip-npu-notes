@@ -1,4 +1,6 @@
 #!/bin/bash
+# SPDX-License-Identifier: MIT
+# Copyright (C) 2026 The rockchip-npu-notes authors
 # THE 2x2 IN PINNING AND RESIDENCY, ON ONE MODEL. Two questions, one campaign.
 #
 # QUESTION 1, the de-confounder the plan asked for and could not schedule. The pinning lever

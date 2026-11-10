@@ -1,5 +1,6 @@
 #!/bin/bash
-# SPDX-License-Identifier: GPL-3.0-or-later
+# SPDX-License-Identifier: MIT
+# Copyright (C) 2026 The rockchip-npu-notes authors
 # DDR devfreq A/B on the vendor RK1: dmc_ondemand (od) against dmc pinned at 2112 MHz (pin).
 # CPU governor performance, taskset -c 4-7, caches dropped before every arm, DDR frequency
 # sampled every 50 ms during each arm.

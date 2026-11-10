@@ -1,4 +1,6 @@
 #!/bin/bash
+# SPDX-License-Identifier: MIT
+# Copyright (C) 2026 The rockchip-npu-notes authors
 # WHICH ADMISSION LIMIT STOPS THE 12B AT 87% RESIDENT -- a readout, not a campaign.
 #
 # `ROCKET_F16_RESIDENT=auto` on gemma-4-12b-it-F16 places 286 of 328 weights (18078MB) and

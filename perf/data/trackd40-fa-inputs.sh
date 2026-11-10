@@ -1,4 +1,6 @@
 #!/bin/bash
+# SPDX-License-Identifier: MIT
+# Copyright (C) 2026 The rockchip-npu-notes authors
 # DO THE INPUTS OF THE OP THE FA HANDLER DISAGREES AT ALREADY DIFFER?
 #
 # WHAT IS KNOWN. On gemma4-12b F16 at pp2048 the handler's output takes one of two values, about

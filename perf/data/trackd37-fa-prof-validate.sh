@@ -1,4 +1,6 @@
 #!/bin/bash
+# SPDX-License-Identifier: MIT
+# Copyright (C) 2026 The rockchip-npu-notes authors
 # Validate ROCKET_FA_PROFILE before believing it: an instrument that perturbs its own subject
 # is the failure mode. Both FA paths (chained and per-head), knob ON and OFF, the knob order
 # rotated between passes so a board drift cannot land on one arm. Detached: every result is
